@@ -177,3 +177,15 @@ input, select, textarea {
   text-align: left; background: transparent; color: var(--text);
   border: 1px solid var(--border); width: 100%;
 }
+
+.card-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-top: 12px; flex-wrap: wrap;
+}
+.model-pill {
+  font-size: 11px; font-weight: 600; color: var(--text);
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

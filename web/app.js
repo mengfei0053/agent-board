@@ -71,7 +71,10 @@ function renderList() {
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
-      <span class="kind-pill">${escapeHtml(t.kind)}${t.model ? " · " + escapeHtml(t.model) : ""}</span>`;
+      <div class="card-footer">
+        <span class="kind-pill">${escapeHtml(t.kind)}</span>
+        <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "默认模型")}</span>
+      </div>`;
     btn.onclick = () => openDetail(t.id);
     listEl.appendChild(btn);
   }
