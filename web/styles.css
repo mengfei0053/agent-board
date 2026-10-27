@@ -100,3 +100,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 12px;
 }
 .log { height: 52vh; overflow: auto; margin: 0; }
+
+.cwd-row { display: flex; gap: 8px; align-items: stretch; margin-top: 4px; }
+.cwd-row input { flex: 1; margin-top: 0; }
+.cwd-row button.secondary {
+  width: auto;
+  margin-top: 0;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.cwd-hint { display: block; margin-top: 4px; font-size: 11px; }

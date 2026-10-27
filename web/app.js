@@ -6,6 +6,63 @@ const detailMeta = document.getElementById("detail-meta");
 const logEl = document.getElementById("log");
 const stopBtn = document.getElementById("stop-btn");
 
+const cwdInput = document.getElementById("cwd-input");
+const cwdPick = document.getElementById("cwd-pick");
+const cwdDir = document.getElementById("cwd-dir");
+
+cwdPick?.addEventListener("click", async () => {
+  if (window.showDirectoryPicker) {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      // File System Access API has no absolute path; keep name and ask user to complete if needed
+      const name = handle.name;
+      const cur = cwdInput.value.trim();
+      if (!cur || cur.endsWith("/" + name) || cur.endsWith(name)) {
+        // if current path already ends with this folder, keep it; else append under projects heuristic
+        if (cur && (cur.endsWith("/" + name) || cur === name)) {
+          /* keep */
+        } else if (cur.includes("/")) {
+          const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
+          cwdInput.value = `${parent}/${name}`;
+        } else {
+          cwdInput.value = `/home/menghongfei/projects/${name}`;
+        }
+      } else if (cur.includes("/")) {
+        const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
+        cwdInput.value = `${parent}/${name}`;
+      } else {
+        cwdInput.value = `/home/menghongfei/projects/${name}`;
+      }
+      cwdInput.focus();
+      cwdInput.select();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      // fall through to input[type=file]
+    }
+  }
+  cwdDir.click();
+});
+
+cwdDir?.addEventListener("change", () => {
+  const files = cwdDir.files;
+  if (!files || !files.length) return;
+  const rel = files[0].webkitRelativePath || "";
+  const top = rel.split("/")[0] || "";
+  if (!top) return;
+  const cur = cwdInput.value.trim();
+  if (cur.includes("/")) {
+    const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
+    cwdInput.value = `${parent}/${top}`;
+  } else {
+    cwdInput.value = `/home/menghongfei/projects/${top}`;
+  }
+  cwdInput.focus();
+  cwdInput.select();
+  cwdDir.value = "";
+});
+
+
 /** @type {Map<string, any>} */
 const tasks = new Map();
 let selectedId = null;
