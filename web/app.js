@@ -1,9 +1,7 @@
-const listEl = document.getElementById("task-list");
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
 const formError = document.getElementById("form-error");
 const searchEl = document.getElementById("search");
-const tabsEl = document.getElementById("tabs");
 const createModal = document.getElementById("create-modal");
 const detailModal = document.getElementById("detail-modal");
 const detailTitle = document.getElementById("detail-title");
@@ -17,7 +15,6 @@ const cwdPick = document.getElementById("cwd-pick");
 /** @type {Map<string, any>} */
 const tasks = new Map();
 let selectedId = null;
-let activeTab = "todo"; // todo | running | done
 let query = "";
 
 const TAB_STATUSES = {
@@ -53,18 +50,11 @@ function updateCounts() {
   document.getElementById("count-done").textContent = String(c.done);
 }
 
-function renderList() {
-  updateCounts();
-  const items = [...tasks.values()]
-    .filter((t) => tabOf(t.status) === activeTab && matchesQuery(t))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  listEl.innerHTML = "";
-  emptyEl.hidden = items.length > 0;
-  for (const t of items) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "card";
-    btn.innerHTML = `
+function makeCard(t) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "card";
+  btn.innerHTML = `
       <div class="card-top">
         <p class="card-title">${escapeHtml(t.title)}</p>
         <span class="badge ${t.status}">${t.status}</span>
@@ -75,9 +65,26 @@ function renderList() {
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
         <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "默认模型")}</span>
       </div>`;
-    btn.onclick = () => openDetail(t.id);
-    listEl.appendChild(btn);
+  btn.onclick = () => openDetail(t.id);
+  return btn;
+}
+
+function renderList() {
+  updateCounts();
+  const buckets = { todo: [], running: [], done: [] };
+  for (const t of tasks.values()) {
+    if (!matchesQuery(t)) continue;
+    buckets[tabOf(t.status)].push(t);
   }
+  let total = 0;
+  for (const key of ["todo", "running", "done"]) {
+    const el = document.getElementById(`list-${key}`);
+    el.innerHTML = "";
+    const items = buckets[key].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    total += items.length;
+    for (const t of items) el.appendChild(makeCard(t));
+  }
+  emptyEl.hidden = total > 0;
 }
 
 function openCreate() {
@@ -137,14 +144,6 @@ document.getElementById("detail-close").onclick = closeDetail;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
 detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeDetail(); });
 
-tabsEl.addEventListener("click", (e) => {
-  const btn = e.target.closest(".tab");
-  if (!btn) return;
-  activeTab = btn.dataset.tab;
-  for (const el of tabsEl.querySelectorAll(".tab")) el.classList.toggle("active", el === btn);
-  renderList();
-});
-
 searchEl.addEventListener("input", () => {
   query = searchEl.value;
   renderList();
@@ -174,10 +173,6 @@ form.addEventListener("submit", async (e) => {
   }
   tasks.set(data.task.id, data.task);
   closeCreate();
-  activeTab = tabOf(data.task.status);
-  for (const el of tabsEl.querySelectorAll(".tab")) {
-    el.classList.toggle("active", el.dataset.tab === activeTab);
-  }
   renderList();
   openDetail(data.task.id);
   form.reset();

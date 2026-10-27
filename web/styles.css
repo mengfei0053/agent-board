@@ -189,3 +189,42 @@ input, select, textarea {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+
+.swimlanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+  min-height: 60vh;
+}
+@media (max-width: 960px) {
+  .swimlanes { grid-template-columns: 1fr; }
+}
+.lane {
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lane-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  position: sticky; top: 0; z-index: 1;
+}
+.lane-head h2 { margin: 0; font-size: 14px; letter-spacing: .02em; }
+.lane-body {
+  padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+  overflow: auto;
+  max-height: calc(100vh - 180px);
+}
+.lane .cards { display: flex; flex-direction: column; gap: 10px; }
+.lane[data-tab="todo"] .lane-head { box-shadow: inset 3px 0 0 var(--muted); }
+.lane[data-tab="running"] .lane-head { box-shadow: inset 3px 0 0 var(--run); }
+.lane[data-tab="done"] .lane-head { box-shadow: inset 3px 0 0 var(--ok); }

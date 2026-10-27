@@ -19,19 +19,23 @@
       </div>
     </header>
 
-    <nav class="tabs" id="tabs">
-      <button type="button" class="tab active" data-tab="todo">Todo <span class="count" id="count-todo">0</span></button>
-      <button type="button" class="tab" data-tab="running">进行中 <span class="count" id="count-running">0</span></button>
-      <button type="button" class="tab" data-tab="done">已完成 <span class="count" id="count-done">0</span></button>
-    </nav>
-
-    <section class="board">
-      <div id="task-list" class="cards"></div>
-      <p id="empty" class="empty muted" hidden>这一栏还没有任务</p>
+    <section class="swimlanes" id="swimlanes">
+      <div class="lane" data-tab="todo">
+        <div class="lane-head"><h2>Todo</h2><span class="count" id="count-todo">0</span></div>
+        <div class="lane-body cards" id="list-todo"></div>
+      </div>
+      <div class="lane" data-tab="running">
+        <div class="lane-head"><h2>进行中</h2><span class="count" id="count-running">0</span></div>
+        <div class="lane-body cards" id="list-running"></div>
+      </div>
+      <div class="lane" data-tab="done">
+        <div class="lane-head"><h2>已完成</h2><span class="count" id="count-done">0</span></div>
+        <div class="lane-body cards" id="list-done"></div>
+      </div>
     </section>
+    <p id="empty" class="empty muted" hidden>没有匹配的任务</p>
   </div>
 
-  <!-- create modal -->
   <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="modal-head">
@@ -70,7 +74,6 @@
     </div>
   </div>
 
-  <!-- detail modal -->
   <div id="detail-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card wide">
       <div class="modal-head">
