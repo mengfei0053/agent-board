@@ -5,63 +5,8 @@ const detailTitle = document.getElementById("detail-title");
 const detailMeta = document.getElementById("detail-meta");
 const logEl = document.getElementById("log");
 const stopBtn = document.getElementById("stop-btn");
-
 const cwdInput = document.getElementById("cwd-input");
 const cwdPick = document.getElementById("cwd-pick");
-const cwdDir = document.getElementById("cwd-dir");
-
-cwdPick?.addEventListener("click", async () => {
-  if (window.showDirectoryPicker) {
-    try {
-      const handle = await window.showDirectoryPicker({ mode: "read" });
-      // File System Access API has no absolute path; keep name and ask user to complete if needed
-      const name = handle.name;
-      const cur = cwdInput.value.trim();
-      if (!cur || cur.endsWith("/" + name) || cur.endsWith(name)) {
-        // if current path already ends with this folder, keep it; else append under projects heuristic
-        if (cur && (cur.endsWith("/" + name) || cur === name)) {
-          /* keep */
-        } else if (cur.includes("/")) {
-          const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
-          cwdInput.value = `${parent}/${name}`;
-        } else {
-          cwdInput.value = `/home/menghongfei/projects/${name}`;
-        }
-      } else if (cur.includes("/")) {
-        const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
-        cwdInput.value = `${parent}/${name}`;
-      } else {
-        cwdInput.value = `/home/menghongfei/projects/${name}`;
-      }
-      cwdInput.focus();
-      cwdInput.select();
-      return;
-    } catch (err) {
-      if (err && err.name === "AbortError") return;
-      // fall through to input[type=file]
-    }
-  }
-  cwdDir.click();
-});
-
-cwdDir?.addEventListener("change", () => {
-  const files = cwdDir.files;
-  if (!files || !files.length) return;
-  const rel = files[0].webkitRelativePath || "";
-  const top = rel.split("/")[0] || "";
-  if (!top) return;
-  const cur = cwdInput.value.trim();
-  if (cur.includes("/")) {
-    const parent = cur.replace(/\/+$/, "").replace(/\/[^/]+$/, "");
-    cwdInput.value = `${parent}/${top}`;
-  } else {
-    cwdInput.value = `/home/menghongfei/projects/${top}`;
-  }
-  cwdInput.focus();
-  cwdInput.select();
-  cwdDir.value = "";
-});
-
 
 /** @type {Map<string, any>} */
 const tasks = new Map();
@@ -144,6 +89,81 @@ form.addEventListener("submit", async (e) => {
 stopBtn.addEventListener("click", async () => {
   if (!selectedId) return;
   await fetch(`/api/tasks/${selectedId}/stop`, { method: "POST" });
+});
+
+function ensureFolderModal() {
+  let modal = document.getElementById("folder-modal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.id = "folder-modal";
+  modal.className = "modal hidden";
+  modal.innerHTML = `
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>选择工作目录</strong>
+        <button type="button" class="secondary" id="folder-close">关闭</button>
+      </div>
+      <div class="folder-path" id="folder-path"></div>
+      <div class="folder-actions">
+        <button type="button" class="secondary" id="folder-up">上级</button>
+        <button type="button" id="folder-use">使用此目录</button>
+      </div>
+      <div class="folder-list" id="folder-list"></div>
+      <p class="error" id="folder-error" hidden></p>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener("click", (ev) => {
+    if (ev.target === modal) closeFolderModal();
+  });
+  document.getElementById("folder-close").onclick = closeFolderModal;
+  document.getElementById("folder-up").onclick = () => {
+    const parent = modal.dataset.parent;
+    if (parent) loadFolder(parent);
+  };
+  document.getElementById("folder-use").onclick = () => {
+    cwdInput.value = modal.dataset.path || cwdInput.value;
+    closeFolderModal();
+  };
+  return modal;
+}
+
+function closeFolderModal() {
+  const modal = document.getElementById("folder-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function loadFolder(path) {
+  const modal = ensureFolderModal();
+  const err = document.getElementById("folder-error");
+  err.hidden = true;
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  const res = await fetch(`/api/browse${q}`);
+  const data = await res.json();
+  if (!res.ok) {
+    err.hidden = false;
+    err.textContent = data.error || res.statusText;
+    return;
+  }
+  modal.dataset.path = data.path;
+  modal.dataset.parent = data.parent || "";
+  document.getElementById("folder-path").textContent = data.path;
+  document.getElementById("folder-up").disabled = !data.parent;
+  const list = document.getElementById("folder-list");
+  list.innerHTML = "";
+  for (const name of data.entries) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "folder-item";
+    b.textContent = name + "/";
+    b.onclick = () => loadFolder(`${data.path.replace(/\/$/, "")}/${name}`);
+    list.appendChild(b);
+  }
+}
+
+cwdPick?.addEventListener("click", async () => {
+  const modal = ensureFolderModal();
+  modal.classList.remove("hidden");
+  await loadFolder(cwdInput.value.trim() || undefined);
 });
 
 function connectEvents() {

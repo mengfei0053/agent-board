@@ -27,7 +27,12 @@
           <input name="title" placeholder="简短标题" />
         </label>
         <label>工作目录
-          <input name="cwd" required placeholder="/home/menghongfei/projects/agent-board" value="/home/menghongfei/projects/agent-board" />
+          <div class="cwd-row">
+            <input name="cwd" id="cwd-input" required placeholder="选择或粘贴路径" value="/home/menghongfei/projects/agent-board" />
+            <button type="button" id="cwd-pick" class="secondary">选择文件夹</button>
+            <input type="file" id="cwd-dir" webkitdirectory directory hidden />
+          </div>
+          <span class="muted cwd-hint">浏览器安全限制下选完后请核对完整绝对路径</span>
         </label>
         <label>Model（可选）
           <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />

@@ -9,6 +9,7 @@ import { subscribe } from "./bus.js";
 import { boardSnapshot, createAndStart, readLogTail, stopTask } from "./manager.js";
 import { getTask } from "./store.js";
 import type { AgentKind, CreateTaskInput } from "./types.js";
+import { browseHome, listDirs } from "./fsbrowse.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -17,6 +18,16 @@ const port = Number(process.env.PORT || 8791);
 const app = new Hono();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+app.get("/api/browse", (c) => {
+  try {
+    const path = c.req.query("path") || browseHome;
+    return c.json(listDirs(path));
+  } catch (err) {
+    return c.json({ error: String(err) }, 400);
+  }
+});
+
 
 app.get("/api/tasks", (c) => c.json({ tasks: boardSnapshot() }));
 
