@@ -7,14 +7,37 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>agent-board</h1>
-    <p class="muted">本机看板 · pi / Claude Code / Cursor CLI</p>
-  </header>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <h1>agent-board</h1>
+        <p class="muted">本机看板 · pi / Claude Code / Cursor CLI</p>
+      </div>
+      <div class="topbar-actions">
+        <input id="search" type="search" placeholder="搜索标题 / 目录 / prompt…" />
+        <button type="button" id="btn-new" class="primary">新建任务</button>
+      </div>
+    </header>
 
-  <main class="layout">
-    <section class="panel">
-      <h2>新建任务</h2>
+    <nav class="tabs" id="tabs">
+      <button type="button" class="tab active" data-tab="todo">Todo <span class="count" id="count-todo">0</span></button>
+      <button type="button" class="tab" data-tab="running">进行中 <span class="count" id="count-running">0</span></button>
+      <button type="button" class="tab" data-tab="done">已完成 <span class="count" id="count-done">0</span></button>
+    </nav>
+
+    <section class="board">
+      <div id="task-list" class="cards"></div>
+      <p id="empty" class="empty muted" hidden>这一栏还没有任务</p>
+    </section>
+  </div>
+
+  <!-- create modal -->
+  <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>新建任务</h2>
+        <button type="button" class="icon-btn" id="create-close" aria-label="关闭">×</button>
+      </div>
       <form id="create-form">
         <label>Agent
           <select name="kind">
@@ -30,35 +53,41 @@
           <div class="cwd-row">
             <input name="cwd" id="cwd-input" required placeholder="选择或粘贴路径" value="/home/menghongfei/projects/agent-board" />
             <button type="button" id="cwd-pick" class="secondary">选择文件夹</button>
-            <input type="file" id="cwd-dir" webkitdirectory directory hidden />
           </div>
-          <span class="muted cwd-hint">浏览器安全限制下选完后请核对完整绝对路径</span>
         </label>
         <label>Model（可选）
           <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />
         </label>
         <label>任务内容
-          <textarea name="prompt" required rows="5" placeholder="要 Agent 做的事"></textarea>
+          <textarea name="prompt" required rows="6" placeholder="要 Agent 做的事"></textarea>
         </label>
-        <button type="submit">启动</button>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="create-cancel">取消</button>
+          <button type="submit" class="primary">启动</button>
+        </div>
         <p id="form-error" class="error" hidden></p>
       </form>
-    </section>
+    </div>
+  </div>
 
-    <section class="panel">
-      <h2>任务列表</h2>
-      <div id="task-list" class="task-list"></div>
-    </section>
-
-    <section class="panel wide">
-      <div class="detail-head">
-        <h2 id="detail-title">详情</h2>
-        <button id="stop-btn" type="button" hidden>停止</button>
+  <!-- detail modal -->
+  <div id="detail-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <div>
+          <h2 id="detail-title">详情</h2>
+          <p class="muted" id="detail-sub"></p>
+        </div>
+        <div class="modal-head-actions">
+          <button type="button" id="stop-btn" class="danger" hidden>停止</button>
+          <button type="button" class="icon-btn" id="detail-close" aria-label="关闭">×</button>
+        </div>
       </div>
       <pre id="detail-meta" class="meta"></pre>
+      <h3 class="log-label">日志</h3>
       <pre id="log" class="log"></pre>
-    </section>
-  </main>
+    </div>
+  </div>
 
   <script src="/app.js" type="module"></script>
 </body>

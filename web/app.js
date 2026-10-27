@@ -1,7 +1,13 @@
 const listEl = document.getElementById("task-list");
+const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
 const formError = document.getElementById("form-error");
+const searchEl = document.getElementById("search");
+const tabsEl = document.getElementById("tabs");
+const createModal = document.getElementById("create-modal");
+const detailModal = document.getElementById("detail-modal");
 const detailTitle = document.getElementById("detail-title");
+const detailSub = document.getElementById("detail-sub");
 const detailMeta = document.getElementById("detail-meta");
 const logEl = document.getElementById("log");
 const stopBtn = document.getElementById("stop-btn");
@@ -11,53 +17,135 @@ const cwdPick = document.getElementById("cwd-pick");
 /** @type {Map<string, any>} */
 const tasks = new Map();
 let selectedId = null;
+let activeTab = "todo"; // todo | running | done
+let query = "";
 
-function renderList() {
-  const items = [...tasks.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  listEl.innerHTML = "";
-  for (const t of items) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "task" + (t.id === selectedId ? " active" : "");
-    btn.innerHTML = `<div class="row"><strong>${escapeHtml(t.title)}</strong><span class="badge ${t.status}">${t.status}</span></div>
-      <div class="muted">${t.kind} · ${escapeHtml(t.cwd)}</div>`;
-    btn.onclick = () => selectTask(t.id);
-    listEl.appendChild(btn);
-  }
-}
+const TAB_STATUSES = {
+  todo: ["queued"],
+  running: ["running", "blocked"],
+  done: ["succeeded", "failed", "stopped"],
+};
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
-async function selectTask(id) {
+function tabOf(status) {
+  if (TAB_STATUSES.todo.includes(status)) return "todo";
+  if (TAB_STATUSES.running.includes(status)) return "running";
+  return "done";
+}
+
+function matchesQuery(t) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status]
+    .filter(Boolean)
+    .some((x) => String(x).toLowerCase().includes(q));
+}
+
+function updateCounts() {
+  const all = [...tasks.values()].filter(matchesQuery);
+  const c = { todo: 0, running: 0, done: 0 };
+  for (const t of all) c[tabOf(t.status)]++;
+  document.getElementById("count-todo").textContent = String(c.todo);
+  document.getElementById("count-running").textContent = String(c.running);
+  document.getElementById("count-done").textContent = String(c.done);
+}
+
+function renderList() {
+  updateCounts();
+  const items = [...tasks.values()]
+    .filter((t) => tabOf(t.status) === activeTab && matchesQuery(t))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  listEl.innerHTML = "";
+  emptyEl.hidden = items.length > 0;
+  for (const t of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "card";
+    btn.innerHTML = `
+      <div class="card-top">
+        <p class="card-title">${escapeHtml(t.title)}</p>
+        <span class="badge ${t.status}">${t.status}</span>
+      </div>
+      <div class="card-meta">${escapeHtml(t.cwd)}</div>
+      <div class="card-prompt">${escapeHtml(t.prompt)}</div>
+      <span class="kind-pill">${escapeHtml(t.kind)}${t.model ? " · " + escapeHtml(t.model) : ""}</span>`;
+    btn.onclick = () => openDetail(t.id);
+    listEl.appendChild(btn);
+  }
+}
+
+function openCreate() {
+  formError.hidden = true;
+  createModal.classList.remove("hidden");
+}
+function closeCreate() {
+  createModal.classList.add("hidden");
+}
+
+async function openDetail(id) {
   selectedId = id;
-  renderList();
+  detailModal.classList.remove("hidden");
   const res = await fetch(`/api/tasks/${id}`);
   if (!res.ok) return;
   const data = await res.json();
   tasks.set(id, data.task);
-  detailTitle.textContent = data.task.title;
+  paintDetail(data.task, data.log || []);
+  renderList();
+}
+
+function paintDetail(task, logLines) {
+  detailTitle.textContent = task.title;
+  detailSub.textContent = `${task.kind} · ${task.status}`;
   detailMeta.textContent = JSON.stringify(
     {
-      id: data.task.id,
-      kind: data.task.kind,
-      status: data.task.status,
-      cwd: data.task.cwd,
-      model: data.task.model,
-      pid: data.task.pid,
-      lastEvent: data.task.lastEvent,
-      error: data.task.error,
-      exitCode: data.task.exitCode,
+      id: task.id,
+      kind: task.kind,
+      status: task.status,
+      cwd: task.cwd,
+      model: task.model,
+      pid: task.pid,
+      lastEvent: task.lastEvent,
+      error: task.error,
+      exitCode: task.exitCode,
+      createdAt: task.createdAt,
+      startedAt: task.startedAt,
+      endedAt: task.endedAt,
     },
     null,
     2,
   );
-  logEl.textContent = (data.log || []).join("\n");
+  logEl.textContent = logLines.join("\n");
   logEl.scrollTop = logEl.scrollHeight;
-  const live = ["queued", "running", "blocked"].includes(data.task.status);
-  stopBtn.hidden = !live;
+  stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
 }
+
+function closeDetail() {
+  detailModal.classList.add("hidden");
+  selectedId = null;
+}
+
+document.getElementById("btn-new").onclick = openCreate;
+document.getElementById("create-close").onclick = closeCreate;
+document.getElementById("create-cancel").onclick = closeCreate;
+document.getElementById("detail-close").onclick = closeDetail;
+createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
+detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeDetail(); });
+
+tabsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  activeTab = btn.dataset.tab;
+  for (const el of tabsEl.querySelectorAll(".tab")) el.classList.toggle("active", el === btn);
+  renderList();
+});
+
+searchEl.addEventListener("input", () => {
+  query = searchEl.value;
+  renderList();
+});
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -82,8 +170,15 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   tasks.set(data.task.id, data.task);
+  closeCreate();
+  activeTab = tabOf(data.task.status);
+  for (const el of tabsEl.querySelectorAll(".tab")) {
+    el.classList.toggle("active", el.dataset.tab === activeTab);
+  }
   renderList();
-  selectTask(data.task.id);
+  openDetail(data.task.id);
+  form.reset();
+  cwdInput.value = "/home/menghongfei/projects/agent-board";
 });
 
 stopBtn.addEventListener("click", async () => {
@@ -101,12 +196,12 @@ function ensureFolderModal() {
     <div class="modal-card">
       <div class="modal-head">
         <strong>选择工作目录</strong>
-        <button type="button" class="secondary" id="folder-close">关闭</button>
+        <button type="button" class="icon-btn" id="folder-close" aria-label="关闭">×</button>
       </div>
       <div class="folder-path" id="folder-path"></div>
       <div class="folder-actions">
         <button type="button" class="secondary" id="folder-up">上级</button>
-        <button type="button" id="folder-use">使用此目录</button>
+        <button type="button" class="primary" id="folder-use">使用此目录</button>
       </div>
       <div class="folder-list" id="folder-list"></div>
       <p class="error" id="folder-error" hidden></p>
@@ -128,8 +223,7 @@ function ensureFolderModal() {
 }
 
 function closeFolderModal() {
-  const modal = document.getElementById("folder-modal");
-  if (modal) modal.classList.add("hidden");
+  document.getElementById("folder-modal")?.classList.add("hidden");
 }
 
 async function loadFolder(path) {
@@ -166,6 +260,13 @@ cwdPick?.addEventListener("click", async () => {
   await loadFolder(cwdInput.value.trim() || undefined);
 });
 
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!document.getElementById("folder-modal")?.classList.contains("hidden")) return closeFolderModal();
+  if (!createModal.classList.contains("hidden")) return closeCreate();
+  if (!detailModal.classList.contains("hidden")) return closeDetail();
+});
+
 function connectEvents() {
   const es = new EventSource("/api/events");
   es.addEventListener("hello", (ev) => {
@@ -178,11 +279,14 @@ function connectEvents() {
     const data = JSON.parse(ev.data);
     tasks.set(data.task.id, data.task);
     renderList();
-    if (data.task.id === selectedId) selectTask(data.task.id);
+    if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
+      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+      stopBtn.hidden = !["queued", "running", "blocked"].includes(data.task.status);
+    }
   });
   es.addEventListener("task_log", (ev) => {
     const data = JSON.parse(ev.data);
-    if (data.taskId !== selectedId) return;
+    if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
     logEl.textContent += (logEl.textContent ? "\n" : "") + data.line;
     logEl.scrollTop = logEl.scrollHeight;
   });
