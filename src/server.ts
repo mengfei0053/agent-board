@@ -6,7 +6,14 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { subscribe } from "./bus.js";
-import { boardSnapshot, createAndStart, readLogTail, stopTask } from "./manager.js";
+import {
+  boardSnapshot,
+  continueTask,
+  createAndStart,
+  readLogTail,
+  removeTasks,
+  stopTask,
+} from "./manager.js";
 import { getTask } from "./store.js";
 import type { AgentKind, CreateTaskInput } from "./types.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
@@ -27,7 +34,6 @@ app.get("/api/browse", (c) => {
     return c.json({ error: String(err) }, 400);
   }
 });
-
 
 app.get("/api/tasks", (c) => c.json({ tasks: boardSnapshot() }));
 
@@ -59,6 +65,15 @@ app.post("/api/tasks", async (c) => {
   return c.json({ task }, 201);
 });
 
+app.post("/api/tasks/batch-delete", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
+  const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
+  if (!ids.length) return c.json({ error: "ids required" }, 400);
+  const result = removeTasks(ids);
+  return c.json(result);
+});
+
+
 app.post("/api/tasks/:id/stop", (c) => {
   try {
     const task = stopTask(c.req.param("id"));
@@ -67,6 +82,25 @@ app.post("/api/tasks/:id/stop", (c) => {
     return c.json({ error: "not found" }, 404);
   }
 });
+
+app.post("/api/tasks/:id/continue", async (c) => {
+  let prompt: string | undefined;
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { prompt?: string };
+    prompt = body.prompt;
+  } catch {
+    prompt = undefined;
+  }
+  try {
+    const task = continueTask(c.req.param("id"), prompt);
+    return c.json({ task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = msg === "not found" ? 404 : 400;
+    return c.json({ error: msg }, code);
+  }
+});
+
 
 app.get("/api/events", (c) => {
   return streamSSE(c, async (stream) => {
@@ -77,7 +111,6 @@ app.get("/api/events", (c) => {
     const unsub = subscribe((ev) => {
       void stream.writeSSE({ event: ev.type, data: JSON.stringify(ev) });
     });
-    // keep alive
     const alive = setInterval(() => {
       void stream.writeSSE({ event: "ping", data: "{}" });
     }, 15000);

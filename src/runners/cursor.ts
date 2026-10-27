@@ -1,13 +1,63 @@
+import { spawnSync } from "node:child_process";
 import { modelFromJsonLine } from "./modelFromEvent.js";
+import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 
+function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p: { sessionId: string }) => void; onLog: (line: string) => void }): string | undefined {
+  if (task.sessionId) return task.sessionId;
+  try {
+    const r = spawnSync("agent", ["create-chat"], {
+      encoding: "utf8",
+      env: { ...process.env, NO_COLOR: "1" },
+      timeout: 20000,
+    });
+    const out = `${r.stdout || ""}\n${r.stderr || ""}`.trim();
+    const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const id = lines[lines.length - 1];
+    if (id && /^[0-9a-f-]{20,}$/i.test(id)) {
+      hooks.onStatus({ sessionId: id });
+      hooks.onLog(JSON.stringify({ type: "cursor_create_chat", sessionId: id }));
+      return id;
+    }
+    hooks.onLog(JSON.stringify({ type: "cursor_create_chat_failed", out: out.slice(0, 500) }));
+  } catch (err) {
+    hooks.onLog(JSON.stringify({ type: "cursor_create_chat_error", error: String(err) }));
+  }
+  return undefined;
+}
+
 export const cursorRunner: Runner = {
-  start(task, hooks) {
-    // Cursor Agent CLI: non-interactive print + stream-json
-    const args = ["-p", "--output-format", "stream-json"];
+  start(task, hooks, opts) {
+    const prompt = opts?.continuePrompt?.trim() || task.prompt;
+    const isContinue = Boolean(opts?.continuePrompt);
+    // --trust: non-interactive board must not hang on workspace trust prompt
+    const args = ["-p", "--output-format", "stream-json", "--trust"];
+
+    let sessionId = task.sessionId;
+    if (isContinue) {
+      if (sessionId) {
+        args.push("--resume", sessionId);
+      } else {
+        args.push("--continue");
+        hooks.onLog(
+          JSON.stringify({
+            type: "continue_fallback",
+            kind: "cursor",
+            note: "no sessionId; using --continue (cwd most-recent)",
+          }),
+        );
+      }
+    } else {
+      sessionId = ensureCursorChatId(task, hooks) || sessionId;
+      if (sessionId) {
+        task.sessionId = sessionId;
+        args.push("--resume", sessionId);
+      }
+    }
+
     if (task.model) args.push("--model", task.model);
-    args.push(task.prompt);
+    args.push(prompt);
 
     let status = task.status;
     return spawnLogged("agent", args, task.cwd, hooks, {
@@ -17,6 +67,11 @@ export const cursorRunner: Runner = {
         if (detected && !task.model) {
           task.model = detected;
           h.onStatus({ model: detected });
+        }
+        const sid = sessionFromJsonLine(line);
+        if (sid && sid !== task.sessionId) {
+          task.sessionId = sid;
+          h.onStatus({ sessionId: sid });
         }
         try {
           const ev = JSON.parse(line) as { type?: string };

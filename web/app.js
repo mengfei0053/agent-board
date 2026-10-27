@@ -9,11 +9,20 @@ const detailSub = document.getElementById("detail-sub");
 const detailMeta = document.getElementById("detail-meta");
 const logEl = document.getElementById("log");
 const stopBtn = document.getElementById("stop-btn");
+const continueRow = document.getElementById("continue-row");
+const continueBtn = document.getElementById("continue-btn");
+const continuePrompt = document.getElementById("continue-prompt");
+const continueHint = document.getElementById("continue-hint");
+const continueError = document.getElementById("continue-error");
 const cwdInput = document.getElementById("cwd-input");
 const cwdPick = document.getElementById("cwd-pick");
+const bulkBar = document.getElementById("bulk-bar");
+const bulkCount = document.getElementById("bulk-count");
 
 /** @type {Map<string, any>} */
 const tasks = new Map();
+/** @type {Set<string>} */
+const selected = new Set();
 let selectedId = null;
 let query = "";
 
@@ -27,6 +36,10 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
+function iterationOf(t) {
+  return typeof t?.iteration === "number" && t.iteration >= 1 ? t.iteration : 1;
+}
+
 function tabOf(status) {
   if (TAB_STATUSES.todo.includes(status)) return "todo";
   if (TAB_STATUSES.running.includes(status)) return "running";
@@ -36,9 +49,13 @@ function tabOf(status) {
 function matchesQuery(t) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status]
+  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, `迭代${iterationOf(t)}`]
     .filter(Boolean)
     .some((x) => String(x).toLowerCase().includes(q));
+}
+
+function visibleTaskIds() {
+  return [...tasks.values()].filter(matchesQuery).map((t) => t.id);
 }
 
 function updateCounts() {
@@ -50,11 +67,30 @@ function updateCounts() {
   document.getElementById("count-done").textContent = String(c.done);
 }
 
+function updateBulkBar() {
+  // drop stale selections
+  for (const id of [...selected]) {
+    if (!tasks.has(id)) selected.delete(id);
+  }
+  const n = selected.size;
+  bulkCount.textContent = `已选 ${n}`;
+  bulkBar.classList.toggle("hidden", n === 0);
+}
+
+function setSelected(id, on) {
+  if (on) selected.add(id);
+  else selected.delete(id);
+  updateBulkBar();
+}
+
 function makeCard(t) {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = "card";
+  btn.className = "card has-check" + (selected.has(t.id) ? " selected" : "");
+  btn.dataset.id = t.id;
+  const iter = iterationOf(t);
   btn.innerHTML = `
+      <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
       <div class="card-top">
         <p class="card-title">${escapeHtml(t.title)}</p>
         <span class="badge ${t.status}">${t.status}</span>
@@ -63,13 +99,55 @@ function makeCard(t) {
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
       <div class="card-footer">
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
+        <span class="iter-pill" title="迭代次数">迭代 ${iter}</span>
         <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
       </div>`;
-  btn.onclick = () => openDetail(t.id);
+  const check = btn.querySelector(".card-check");
+  check.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+  check.addEventListener("change", (e) => {
+    e.stopPropagation();
+    setSelected(t.id, check.checked);
+    btn.classList.toggle("selected", check.checked);
+  });
+  btn.onclick = (e) => {
+    if (e.target === check) return;
+    openDetail(t.id);
+  };
   return btn;
 }
 
+function ensureLaneSelectButtons() {
+  for (const key of ["todo", "running", "done"]) {
+    const head = document.querySelector(`.lane[data-tab="${key}"] .lane-head`);
+    if (!head || head.querySelector(".lane-select")) continue;
+    const actions = document.createElement("div");
+    actions.className = "lane-head-actions";
+    const count = head.querySelector(".count");
+    if (count) count.remove();
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lane-select";
+    btn.textContent = "全选";
+    btn.title = "全选本泳道（当前筛选）";
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const ids = [...tasks.values()]
+        .filter((t) => matchesQuery(t) && tabOf(t.status) === key)
+        .map((t) => t.id);
+      for (const id of ids) selected.add(id);
+      updateBulkBar();
+      renderList();
+    };
+    actions.appendChild(btn);
+    if (count) actions.appendChild(count);
+    head.appendChild(actions);
+  }
+}
+
 function renderList() {
+  ensureLaneSelectButtons();
   updateCounts();
   const buckets = { todo: [], running: [], done: [] };
   for (const t of tasks.values()) {
@@ -85,6 +163,7 @@ function renderList() {
     for (const t of items) el.appendChild(makeCard(t));
   }
   emptyEl.hidden = total > 0;
+  updateBulkBar();
 }
 
 function openCreate() {
@@ -106,14 +185,21 @@ async function openDetail(id) {
   renderList();
 }
 
+function canContinue(task) {
+  return !["queued", "running"].includes(task.status);
+}
+
 function paintDetail(task, logLines) {
+  const iter = iterationOf(task);
   detailTitle.textContent = task.title;
-  detailSub.textContent = `${task.kind} · ${task.status}`;
+  detailSub.textContent = `${task.kind} · ${task.status} · 迭代 ${iter}`;
   detailMeta.textContent = JSON.stringify(
     {
       id: task.id,
       kind: task.kind,
       status: task.status,
+      iteration: iter,
+      sessionId: task.sessionId,
       cwd: task.cwd,
       model: task.model,
       pid: task.pid,
@@ -130,6 +216,15 @@ function paintDetail(task, logLines) {
   logEl.textContent = logLines.join("\n");
   logEl.scrollTop = logEl.scrollHeight;
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
+  const ok = canContinue(task);
+  continueRow.hidden = false;
+  continueBtn.disabled = !ok;
+  continueHint.textContent = ok
+    ? task.sessionId
+      ? `将续会话 ${task.sessionId}`
+      : "无已存 sessionId 时将尝试 CLI 的 continue（同目录最近会话）"
+    : "任务运行中，请先停止再继续";
+  continueError.hidden = true;
 }
 
 function closeDetail() {
@@ -183,6 +278,67 @@ stopBtn.addEventListener("click", async () => {
   if (!selectedId) return;
   await fetch(`/api/tasks/${selectedId}/stop`, { method: "POST" });
 });
+
+continueBtn.addEventListener("click", async () => {
+  if (!selectedId) return;
+  continueError.hidden = true;
+  continueBtn.disabled = true;
+  const body = { prompt: continuePrompt.value.trim() || undefined };
+  const res = await fetch(`/api/tasks/${selectedId}/continue`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    continueError.hidden = false;
+    continueError.textContent = data.error || res.statusText;
+    const t = tasks.get(selectedId);
+    continueBtn.disabled = t ? !canContinue(t) : false;
+    return;
+  }
+  if (data.task) {
+    tasks.set(data.task.id, data.task);
+    paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+    renderList();
+  }
+});
+
+document.getElementById("bulk-clear").onclick = () => {
+  selected.clear();
+  updateBulkBar();
+  renderList();
+};
+
+document.getElementById("bulk-select-visible").onclick = () => {
+  for (const id of visibleTaskIds()) selected.add(id);
+  updateBulkBar();
+  renderList();
+};
+
+document.getElementById("bulk-delete").onclick = async () => {
+  const ids = [...selected];
+  if (!ids.length) return;
+  const ok = window.confirm(`确认删除选中的 ${ids.length} 个任务？\n运行中的任务会先停止再删除。`);
+  if (!ok) return;
+  const res = await fetch("/api/tasks/batch-delete", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    window.alert(data.error || res.statusText);
+    return;
+  }
+  for (const id of data.deleted || ids) {
+    tasks.delete(id);
+    selected.delete(id);
+    if (selectedId === id) closeDetail();
+  }
+  updateBulkBar();
+  renderList();
+};
 
 function ensureFolderModal() {
   let modal = document.getElementById("folder-modal");
@@ -279,8 +435,16 @@ function connectEvents() {
     renderList();
     if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
       paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
-      stopBtn.hidden = !["queued", "running", "blocked"].includes(data.task.status);
     }
+  });
+  es.addEventListener("task_delete", (ev) => {
+    const data = JSON.parse(ev.data);
+    for (const id of data.taskIds || []) {
+      tasks.delete(id);
+      selected.delete(id);
+      if (selectedId === id) closeDetail();
+    }
+    renderList();
   });
   es.addEventListener("task_log", (ev) => {
     const data = JSON.parse(ev.data);

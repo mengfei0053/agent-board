@@ -1,15 +1,18 @@
 import { modelFromJsonLine } from "./modelFromEvent.js";
+import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 
 export const piRunner: Runner = {
-  start(task, hooks) {
-    const args = ["-p", "--mode", "json", "--no-session"];
-    if (task.model) {
-      // allow "wb/cn:glm-5.3" or "provider/model" forms pi understands via --model
-      args.push("--model", task.model);
-    }
-    args.push(task.prompt);
+  start(task, hooks, opts) {
+    const prompt = opts?.continuePrompt?.trim() || task.prompt;
+    const sessionId = task.sessionId || task.id;
+    // Persist session so later "继续任务" can resume the same context.
+    const args = ["-p", "--mode", "json", "--session-id", sessionId];
+    if (task.model) args.push("--model", task.model);
+    args.push(prompt);
+
+    if (!task.sessionId) hooks.onStatus({ sessionId });
 
     let status = task.status;
     return spawnLogged("pi", args, task.cwd, hooks, {
@@ -19,6 +22,11 @@ export const piRunner: Runner = {
         if (detected && !task.model) {
           task.model = detected;
           h.onStatus({ model: detected });
+        }
+        const sid = sessionFromJsonLine(line);
+        if (sid && sid !== task.sessionId) {
+          task.sessionId = sid;
+          h.onStatus({ sessionId: sid });
         }
         try {
           const ev = JSON.parse(line) as { type?: string; toolName?: string };
@@ -33,7 +41,6 @@ export const piRunner: Runner = {
               h.onStatus({ status: "running", lastEvent: ev.type });
             }
           } else if (ev.type === "agent_settled") {
-            // exit handler will set succeeded; keep running until process exits
             h.onStatus({ lastEvent: ev.type, summary: "agent settled" });
           }
         } catch {

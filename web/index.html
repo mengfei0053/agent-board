@@ -36,6 +36,13 @@
     <p id="empty" class="empty muted" hidden>没有匹配的任务</p>
   </div>
 
+  <div id="bulk-bar" class="bulk-bar hidden" role="toolbar" aria-label="批量操作">
+    <span id="bulk-count">已选 0</span>
+    <button type="button" class="secondary" id="bulk-select-visible">全选当前筛选</button>
+    <button type="button" class="secondary" id="bulk-clear">取消选择</button>
+    <button type="button" class="danger" id="bulk-delete">批量删除</button>
+  </div>
+
   <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="modal-head">
@@ -87,6 +94,16 @@
         </div>
       </div>
       <pre id="detail-meta" class="meta"></pre>
+      <div id="continue-row" class="continue-row" hidden>
+        <label class="continue-label">继续任务（基于原会话上下文）
+          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则使用默认「请基于当前上下文继续完成任务」"></textarea>
+        </label>
+        <div class="continue-actions">
+          <button type="button" id="continue-btn" class="primary">继续任务</button>
+          <span id="continue-hint" class="muted continue-hint"></span>
+        </div>
+        <p id="continue-error" class="error" hidden></p>
+      </div>
       <h3 class="log-label">日志</h3>
       <pre id="log" class="log"></pre>
     </div>

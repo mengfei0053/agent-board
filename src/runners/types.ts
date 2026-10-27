@@ -10,6 +10,11 @@ export type RunnerHandle = {
   stop: () => void;
 };
 
+export type RunnerStartOptions = {
+  /** Follow-up prompt when resuming the same CLI session */
+  continuePrompt?: string;
+};
+
 export type Runner = {
-  start: (task: Task, hooks: RunnerHooks) => RunnerHandle;
+  start: (task: Task, hooks: RunnerHooks, opts?: RunnerStartOptions) => RunnerHandle;
 };

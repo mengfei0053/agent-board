@@ -8,6 +8,8 @@
 - 看到运行中任务的状态：`queued | running | blocked | succeeded | failed | stopped`
 - 实时尾随日志（SSE）
 - 停止任务（杀进程组）
+- 任务迭代次数 +「继续任务」（基于各 CLI session/resume 续上下文）
+- 卡片多选与批量删除（运行中先 stop 再删）
 
 ## 不做（v0.1）
 
@@ -40,3 +42,17 @@
 1. 用 Claude hooks / pi extension / Cursor ACP 上报「外部已开会话」到同一 Store
 2. 接 Herdr socket（本机已有 `herdr-agent-state.ts`）做旁路状态
 3. SQLite、多用户、按仓库过滤、重跑、模板任务
+
+## 继续任务 / 迭代
+
+- `Task.iteration`：创建为 1，每次 `POST /api/tasks/:id/continue` 成功后 +1
+- `Task.sessionId`：各 runner 持久化会话 id，供续跑
+- pi：`--session-id`（不再 `--no-session`）
+- Claude：首跑 `--session-id <uuid>`，续跑 `--resume <id>`（无 id 时回退 `-c`）
+- Cursor：首跑 `agent create-chat` + `--resume` + `--trust`，续跑 `--resume`（无 id 时回退 `--continue`）
+
+## 批量删除
+
+- `POST /api/tasks/batch-delete` body `{ ids: string[] }`
+- 对仍在跑 / 有 handle 的任务先 stop，再从 store 删除并清日志；SSE `task_delete`
+

@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { nanoid } from "nanoid";
-import { getTask, listTasks, logPath, upsertTask } from "./store.js";
+import { deleteTasks, getTask, listTasks, logPath, removeLog, upsertTask } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
 import type { CreateTaskInput, Task, TaskStatus } from "./types.js";
@@ -30,6 +30,8 @@ function patch(id: string, partial: Partial<Task>): Task {
   return next;
 }
 
+const ACTIVE: TaskStatus[] = ["queued", "running", "blocked"];
+
 export function createAndStart(input: CreateTaskInput): Task {
   const id = nanoid(10);
   const title = input.title?.trim() || input.prompt.trim().slice(0, 48) || `${input.kind} task`;
@@ -40,6 +42,7 @@ export function createAndStart(input: CreateTaskInput): Task {
     cwd: input.cwd,
     prompt: input.prompt,
     model: input.model?.trim() || resolveDefaultModel(input.kind),
+    iteration: 1,
     status: "queued",
     createdAt: now(),
     updatedAt: now(),
@@ -57,6 +60,59 @@ export function createAndStart(input: CreateTaskInput): Task {
   return getTask(id)!;
 }
 
+export function continueTask(id: string, prompt?: string): Task {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  if (t.status === "queued" || t.status === "running") {
+    throw new Error("task is still running; stop it before continue");
+  }
+
+  // blocked may still have a live child — stop first so we can resume cleanly
+  const existing = handles.get(id);
+  if (existing) {
+    existing.stop();
+    handles.delete(id);
+  }
+
+  const continuePrompt = prompt?.trim() || "请基于当前上下文继续完成任务";
+  const nextIter = (t.iteration ?? 1) + 1;
+
+  patch(id, {
+    status: "queued",
+    iteration: nextIter,
+    error: undefined,
+    exitCode: undefined,
+    endedAt: undefined,
+    summary: `continuing (iteration ${nextIter})`,
+    lastEvent: "continue",
+    pid: undefined,
+  });
+
+  writeLog(
+    id,
+    JSON.stringify({
+      type: "continue",
+      iteration: nextIter,
+      prompt: continuePrompt,
+      sessionId: t.sessionId,
+    }),
+  );
+
+  const fresh = getTask(id)!;
+  const runner = runners[fresh.kind];
+  const handle = runner.start(
+    fresh,
+    {
+      onStatus: (p) => patch(id, p),
+      onLog: (line) => writeLog(id, line),
+    },
+    { continuePrompt },
+  );
+  handles.set(id, handle);
+  if (handle.pid) patch(id, { pid: handle.pid });
+  return getTask(id)!;
+}
+
 export function stopTask(id: string): Task {
   const t = getTask(id);
   if (!t) throw new Error("not found");
@@ -68,6 +124,30 @@ export function stopTask(id: string): Task {
     endedAt: now(),
     summary: t.summary ?? "stopped by user",
   });
+}
+
+/** Stop live processes if needed, then remove tasks + logs. Returns deleted ids. */
+export function removeTasks(ids: string[]): { deleted: string[]; stopped: string[] } {
+  const stopped: string[] = [];
+  const unique = [...new Set(ids.filter(Boolean))];
+  for (const id of unique) {
+    const t = getTask(id);
+    if (!t) continue;
+    const h = handles.get(id);
+    if (h || ACTIVE.includes(t.status)) {
+      try {
+        h?.stop();
+      } catch {
+        /* ignore */
+      }
+      handles.delete(id);
+      stopped.push(id);
+    }
+  }
+  const deleted = deleteTasks(unique);
+  for (const id of deleted) removeLog(id);
+  if (deleted.length) publish({ type: "task_delete", taskIds: deleted });
+  return { deleted, stopped };
 }
 
 export function boardSnapshot() {

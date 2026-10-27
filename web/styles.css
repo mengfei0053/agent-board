@@ -228,3 +228,58 @@ input, select, textarea {
 .lane[data-tab="todo"] .lane-head { box-shadow: inset 3px 0 0 var(--muted); }
 .lane[data-tab="running"] .lane-head { box-shadow: inset 3px 0 0 var(--run); }
 .lane[data-tab="done"] .lane-head { box-shadow: inset 3px 0 0 var(--ok); }
+
+.iter-pill {
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.card {
+  position: relative;
+}
+.card.selected {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), var(--shadow);
+}
+.card-check {
+  position: absolute; top: 12px; left: 12px;
+  width: 16px; height: 16px; margin: 0;
+  accent-color: var(--accent);
+  z-index: 2;
+}
+.card.has-check .card-top { padding-left: 22px; }
+.card-footer { gap: 6px; }
+.lane-head-actions { display: flex; align-items: center; gap: 8px; }
+.lane-select {
+  font-size: 11px; padding: 4px 8px; border-radius: 8px;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  width: auto;
+}
+.bulk-bar {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  z-index: 30;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  max-width: calc(100vw - 32px);
+}
+.bulk-bar.hidden { display: none; }
+.bulk-bar #bulk-count { font-weight: 700; min-width: 4.5em; }
+.bulk-bar button { width: auto; padding: 8px 12px; }
+.continue-row {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-2) 80%, transparent);
+}
+.continue-label { margin-bottom: 0; }
+.continue-actions {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap;
+}
+.continue-actions button { width: auto; }
+.continue-hint { font-size: 12px; margin: 0; }
