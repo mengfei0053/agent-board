@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./markdown.js";
+
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
 const formError = document.getElementById("form-error");
@@ -7,7 +9,12 @@ const detailModal = document.getElementById("detail-modal");
 const detailTitle = document.getElementById("detail-title");
 const detailSub = document.getElementById("detail-sub");
 const detailMeta = document.getElementById("detail-meta");
+const detailMetaGrid = document.getElementById("detail-meta-grid");
+const detailOutput = document.getElementById("detail-output");
+const detailError = document.getElementById("detail-error");
+const outputHint = document.getElementById("output-hint");
 const logEl = document.getElementById("log");
+const logCount = document.getElementById("log-count");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const deleteBtn = document.getElementById("delete-btn");
@@ -63,15 +70,26 @@ function tabOf(status) {
   return "done";
 }
 
-/** Todo(queued) / 进行中(running) 不可删；blocked 在进行中泳道但可删（需先停也可直接删会 stop） */
 function isUndeletable(task) {
   return task?.status === "queued" || task?.status === "running";
+}
+
+function previewText(t) {
+  if (t.status === "failed" || t.status === "stopped") {
+    const err = t.error || (t.status === "stopped" ? "已停止" : "失败");
+    return { text: err, error: true };
+  }
+  if (t.summary && !["starting", "agent settled", "continuing"].some((x) => String(t.summary).startsWith(x))) {
+    return { text: t.summary, error: false };
+  }
+  if (t.output) return { text: t.output.replace(/\s+/g, " ").trim(), error: false };
+  return { text: "", error: false };
 }
 
 function matchesQuery(t) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, STATUS_LABEL[t.status], `迭代${iterationOf(t)}`]
+  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, t.summary, t.output, STATUS_LABEL[t.status], `迭代${iterationOf(t)}`]
     .filter(Boolean)
     .some((x) => String(x).toLowerCase().includes(q));
 }
@@ -113,6 +131,10 @@ function makeCard(t) {
   btn.draggable = true;
   const iter = iterationOf(t);
   const statusText = STATUS_LABEL[t.status] || t.status;
+  const preview = previewText(t);
+  const summaryHtml = preview.text
+    ? `<div class="card-summary ${preview.error ? "is-error" : "has-output"}">${escapeHtml(preview.text)}</div>`
+    : "";
   btn.innerHTML = `
       <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
       <div class="card-top">
@@ -121,6 +143,7 @@ function makeCard(t) {
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
+      ${summaryHtml}
       <div class="card-footer">
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
         <span class="iter-pill" title="迭代次数">迭代 ${iter}</span>
@@ -230,7 +253,7 @@ async function moveToLane(id, lane) {
     tasks.set(data.task.id, data.task);
     renderList();
     if (selectedId === id && !detailModal.classList.contains("hidden")) {
-      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
     }
   }
 }
@@ -279,10 +302,65 @@ function canContinue(task) {
   return !["draft", "queued", "running"].includes(task.status);
 }
 
+function metaItem(k, v, wide = false) {
+  return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span><span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span></div>`;
+}
+
+function paintOutput(task) {
+  const running = ["queued", "running", "blocked"].includes(task.status);
+  if (task.status === "failed" || (task.status === "stopped" && !task.output)) {
+    detailError.hidden = false;
+    const bits = [];
+    if (task.error) bits.push(task.error);
+    if (task.exitCode != null && task.exitCode !== 0) bits.push(`退出码 ${task.exitCode}`);
+    if (!bits.length) bits.push(task.status === "stopped" ? "已由用户停止" : "任务失败");
+    detailError.textContent = bits.join("\n");
+  } else {
+    detailError.hidden = true;
+    detailError.textContent = "";
+  }
+
+  if (task.output && task.output.trim()) {
+    detailOutput.classList.remove("empty-output");
+    detailOutput.innerHTML = renderMarkdown(task.output);
+    outputHint.textContent = running ? "运行中 · 实时更新" : "来自本轮助手回复";
+  } else if (running) {
+    detailOutput.classList.add("empty-output");
+    detailOutput.textContent = "模型输出生成中…";
+    outputHint.textContent = "等待助手回复";
+  } else if (task.status === "draft") {
+    detailOutput.classList.add("empty-output");
+    detailOutput.textContent = "草稿尚未执行。拖到 Todo 或点击「开始任务」。";
+    outputHint.textContent = "";
+  } else if (task.status === "failed") {
+    detailOutput.classList.add("empty-output");
+    detailOutput.textContent = "没有可用的助手输出，请查看上方错误与原始日志。";
+    outputHint.textContent = "";
+  } else {
+    detailOutput.classList.add("empty-output");
+    detailOutput.textContent = "暂无抽取到的最终输出。";
+    outputHint.textContent = "";
+  }
+}
+
 function paintDetail(task, logLines) {
   const iter = iterationOf(task);
+  const statusText = STATUS_LABEL[task.status] || task.status;
   detailTitle.textContent = task.title;
-  detailSub.textContent = `${task.kind} · ${STATUS_LABEL[task.status] || task.status} · 迭代 ${iter}`;
+  detailSub.textContent = `${task.kind} · ${statusText} · 迭代 ${iter}`;
+
+  detailMetaGrid.innerHTML = [
+    metaItem("状态", statusText),
+    metaItem("迭代", String(iter)),
+    metaItem("Agent", task.kind),
+    metaItem("模型", task.model || "—"),
+    metaItem("PID", task.pid != null ? String(task.pid) : "—"),
+    metaItem("退出码", task.exitCode != null ? String(task.exitCode) : "—"),
+    metaItem("会话", task.sessionId || "—", true),
+    metaItem("工作目录", task.cwd, true),
+    metaItem("任务内容", task.prompt, true),
+  ].join("");
+
   detailMeta.textContent = JSON.stringify(
     {
       id: task.id,
@@ -296,6 +374,7 @@ function paintDetail(task, logLines) {
       lastEvent: task.lastEvent,
       error: task.error,
       exitCode: task.exitCode,
+      summary: task.summary,
       createdAt: task.createdAt,
       startedAt: task.startedAt,
       endedAt: task.endedAt,
@@ -303,11 +382,18 @@ function paintDetail(task, logLines) {
     null,
     2,
   );
-  logEl.textContent = logLines.join("\n");
+
+  paintOutput(task);
+
+  const lines = Array.isArray(logLines) ? logLines : [];
+  logEl.textContent = lines.join("\n");
   logEl.scrollTop = logEl.scrollHeight;
+  logCount.textContent = lines.length ? `（${lines.length} 行）` : "";
+
   startBtn.hidden = task.status !== "draft";
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
   deleteBtn.hidden = isUndeletable(task);
+
   const showContinue = canContinue(task);
   continueRow.hidden = task.status === "draft";
   continueBtn.disabled = !showContinue;
@@ -316,7 +402,7 @@ function paintDetail(task, logLines) {
     : showContinue
       ? task.sessionId
         ? `将续会话 ${task.sessionId}`
-        : "无已存 sessionId 时将尝试 CLI 的 continue（同目录最近会话）"
+        : "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
       : "任务运行中，请先停止再继续";
   continueError.hidden = true;
 }
@@ -425,7 +511,7 @@ continueBtn.addEventListener("click", async () => {
   }
   if (data.task) {
     tasks.set(data.task.id, data.task);
-    paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+    paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
     renderList();
   }
 });
@@ -574,7 +660,7 @@ function connectEvents() {
     tasks.set(data.task.id, data.task);
     renderList();
     if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
-      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
     }
   });
   es.addEventListener("task_delete", (ev) => {
@@ -591,6 +677,8 @@ function connectEvents() {
     if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
     logEl.textContent += (logEl.textContent ? "\n" : "") + data.line;
     logEl.scrollTop = logEl.scrollHeight;
+    const n = logEl.textContent.split("\n").filter(Boolean).length;
+    logCount.textContent = `（${n} 行）`;
   });
   es.onerror = () => {
     es.close();

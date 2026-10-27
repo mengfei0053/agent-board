@@ -30,6 +30,8 @@ export type Task = {
   endedAt?: string;
   pid?: number;
   summary?: string;
+  /** Final assistant reply (markdown/plain), extracted from logs */
+  output?: string;
   lastEvent?: string;
   error?: string;
   exitCode?: number | null;

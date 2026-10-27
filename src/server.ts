@@ -11,10 +11,10 @@ import {
   continueTask,
   createDraft,
   moveTask,
-  readLogTail,
   removeTasks,
   startTask,
   stopTask,
+  taskWithOutput,
 } from "./manager.js";
 import { getTask } from "./store.js";
 import type { AgentKind, BoardLane, CreateTaskInput } from "./types.js";
@@ -40,9 +40,9 @@ app.get("/api/browse", (c) => {
 app.get("/api/tasks", (c) => c.json({ tasks: boardSnapshot() }));
 
 app.get("/api/tasks/:id", (c) => {
-  const t = getTask(c.req.param("id"));
-  if (!t) return c.json({ error: "not found" }, 404);
-  return c.json({ task: t, log: readLogTail(t.id) });
+  const data = taskWithOutput(c.req.param("id"));
+  if (!data) return c.json({ error: "not found" }, 404);
+  return c.json(data);
 });
 
 app.post("/api/tasks", async (c) => {

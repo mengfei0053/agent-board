@@ -7,6 +7,11 @@ import { runners } from "./runners/index.js";
 import type { BoardLane, CreateTaskInput, Task, TaskStatus } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
+import {
+  extractFinalOutput,
+  extractTextFromEventLine,
+  summarizeOutput,
+} from "./extractOutput.js";
 
 const handles = new Map<string, RunnerHandle>();
 
@@ -19,6 +24,13 @@ function writeLog(id: string, line: string) {
   mkdirSync(dirname(p), { recursive: true });
   appendFileSync(p, line.endsWith("\n") ? line : `${line}\n`);
   publish({ type: "task_log", taskId: id, line, at: now() });
+  const piece = extractTextFromEventLine(line);
+  if (piece) {
+    const cur = getTask(id);
+    if (cur && cur.output !== piece) {
+      patch(id, { output: piece, summary: summarizeOutput(piece) });
+    }
+  }
 }
 
 function patch(id: string, partial: Partial<Task>): Task {
@@ -28,6 +40,25 @@ function patch(id: string, partial: Partial<Task>): Task {
   upsertTask(next);
   publish({ type: "task_upsert", task: next });
   return next;
+}
+
+function applyStatus(id: string, partial: Partial<Task>): Task {
+  const next = patch(id, partial);
+  if (
+    partial.status === "succeeded" ||
+    partial.status === "failed" ||
+    partial.status === "stopped"
+  ) {
+    refreshOutputFromLogs(id);
+  }
+  return getTask(id) ?? next;
+}
+
+export function refreshOutputFromLogs(id: string): Task | undefined {
+  const lines = readLogTail(id, 2500);
+  const out = extractFinalOutput(lines);
+  if (!out) return getTask(id);
+  return patch(id, { output: out, summary: summarizeOutput(out) });
 }
 
 /** Statuses that still own a live/soon-live runner (cannot delete). */
@@ -42,7 +73,7 @@ function spawnRunner(task: Task): Task {
   const id = task.id;
   const runner = runners[task.kind];
   const handle = runner.start(task, {
-    onStatus: (p) => patch(id, p),
+    onStatus: (p) => applyStatus(id, p),
     onLog: (line) => writeLog(id, line),
   });
   handles.set(id, handle);
@@ -94,6 +125,7 @@ export function startTask(id: string): Task {
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
+    output: undefined,
     summary: "starting",
     lastEvent: "start",
     pid: undefined,
@@ -127,6 +159,7 @@ export function continueTask(id: string, prompt?: string): Task {
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
+    output: undefined,
     summary: `continuing (iteration ${nextIter})`,
     lastEvent: "continue",
     pid: undefined,
@@ -147,7 +180,7 @@ export function continueTask(id: string, prompt?: string): Task {
   const handle = runner.start(
     fresh,
     {
-      onStatus: (p) => patch(id, p),
+      onStatus: (p) => applyStatus(id, p),
       onLog: (line) => writeLog(id, line),
     },
     { continuePrompt },
@@ -269,6 +302,20 @@ export function readLogTail(id: string, maxLines = 400): string[] {
   if (!existsSync(p)) return [];
   const lines = readFileSync(p, "utf8").split(/\r?\n/).filter(Boolean);
   return lines.slice(-maxLines);
+}
+
+export function taskWithOutput(id: string): { task: Task; log: string[] } | undefined {
+  const t = getTask(id);
+  if (!t) return undefined;
+  const log = readLogTail(t.id, 2500);
+  if (t.output) return { task: t, log };
+  const out = extractFinalOutput(log);
+  if (!out) return { task: t, log };
+  const summary = t.summary && t.summary !== "agent settled" && t.summary !== "starting"
+    ? t.summary
+    : summarizeOutput(out);
+  const task = patch(id, { output: out, summary });
+  return { task, log };
 }
 
 /** @deprecated alias kept for clarity in older call sites */
