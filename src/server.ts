@@ -9,6 +9,7 @@ import { subscribe } from "./bus.js";
 import {
   boardSnapshot,
   continueTask,
+  createAndStart,
   createDraft,
   moveTask,
   removeTasks,
@@ -57,14 +58,20 @@ app.post("/api/tasks", async (c) => {
   if (!existsSync(body.cwd)) {
     return c.json({ error: `cwd not found: ${body.cwd}` }, 400);
   }
-  const task = createDraft({
+  const input = {
     kind,
     cwd: body.cwd,
     prompt: body.prompt.trim(),
     title: body.title,
     model: body.model,
-  });
-  return c.json({ task }, 201);
+  };
+  const start = Boolean((body as { start?: boolean }).start);
+  try {
+    const task = start ? createAndStart(input) : createDraft(input);
+    return c.json({ task }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+  }
 });
 
 app.post("/api/tasks/batch-delete", async (c) => {

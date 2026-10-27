@@ -35,6 +35,11 @@ const selected = new Set();
 let selectedId = null;
 let query = "";
 let dragTaskId = null;
+/** @type {"draft"|"todo"} */
+let createMode = "draft";
+const createTitle = document.getElementById("create-title");
+const createHint = document.getElementById("create-hint");
+const createSubmit = document.getElementById("create-submit");
 
 const LANES = ["draft", "todo", "running", "done"];
 
@@ -279,8 +284,18 @@ function renderList() {
   updateBulkBar();
 }
 
-function openCreate() {
+function openCreate(mode = "draft") {
+  createMode = mode === "todo" ? "todo" : "draft";
   formError.hidden = true;
+  if (createMode === "todo") {
+    createTitle.textContent = "新建 Todo";
+    createHint.textContent = "创建后直接进入 Todo 并开始执行。";
+    createSubmit.textContent = "创建并开始";
+  } else {
+    createTitle.textContent = "新建草稿";
+    createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行。";
+    createSubmit.textContent = "保存草稿";
+  }
   createModal.classList.remove("hidden");
 }
 function closeCreate() {
@@ -412,7 +427,8 @@ function closeDetail() {
   selectedId = null;
 }
 
-document.getElementById("btn-new").onclick = openCreate;
+document.getElementById("btn-new").onclick = () => openCreate("draft");
+document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
@@ -434,6 +450,7 @@ form.addEventListener("submit", async (e) => {
     cwd: fd.get("cwd"),
     model: fd.get("model") || undefined,
     prompt: fd.get("prompt"),
+    start: createMode === "todo",
   };
   const res = await fetch("/api/tasks", {
     method: "POST",

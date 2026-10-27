@@ -11,11 +11,12 @@
     <header class="topbar">
       <div>
         <h1>agent-board</h1>
-        <p class="muted">本机看板 · 草稿拖到 Todo 后开始跑 · pi / Claude / Cursor</p>
+        <p class="muted">本机看板 · 草稿 / 新建 Todo 直接开跑 · pi / Claude / Cursor</p>
       </div>
       <div class="topbar-actions">
         <input id="search" type="search" placeholder="搜索标题 / 目录 / prompt…" />
-        <button type="button" id="btn-new" class="primary">新建草稿</button>
+        <button type="button" id="btn-new" class="secondary">新建草稿</button>
+        <button type="button" id="btn-new-todo" class="primary">新建 Todo</button>
       </div>
     </header>
 
@@ -50,10 +51,10 @@
   <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>新建草稿</h2>
+        <h2 id="create-title">新建草稿</h2>
         <button type="button" class="icon-btn" id="create-close" aria-label="关闭">×</button>
       </div>
-      <p class="muted create-hint">保存后进入「草稿」列；拖到 Todo 才会开始执行。</p>
+      <p class="muted create-hint" id="create-hint">保存后进入「草稿」列；拖到 Todo 才会开始执行。</p>
       <form id="create-form">
         <label>Agent
           <select name="kind">
@@ -79,7 +80,7 @@
         </label>
         <div class="modal-actions">
           <button type="button" class="secondary" id="create-cancel">取消</button>
-          <button type="submit" class="primary">保存草稿</button>
+          <button type="submit" class="primary" id="create-submit">保存草稿</button>
         </div>
         <p id="form-error" class="error" hidden></p>
       </form>

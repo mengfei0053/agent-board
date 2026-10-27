@@ -318,5 +318,8 @@ export function taskWithOutput(id: string): { task: Task; log: string[] } | unde
   return { task, log };
 }
 
-/** @deprecated alias kept for clarity in older call sites */
-export const createAndStart = createDraft;
+/** Create draft then immediately start (queued → runner). */
+export function createAndStart(input: CreateTaskInput): Task {
+  const draft = createDraft(input);
+  return startTask(draft.id);
+}
