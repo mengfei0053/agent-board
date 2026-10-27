@@ -32,7 +32,9 @@
 
 ## 状态机
 
-`queued → running → (blocked?) → succeeded|failed|stopped`
+`draft → queued → running → (blocked?) → succeeded|failed|stopped`
+
+- 新建默认 **draft**（不 spawn）；拖到 Todo / `POST .../start|move` 才开始跑
 
 - **pi**：`agent_start`/`tool_execution_start` → running；`ask_user_question` → blocked；`agent_settled` / 进程退出 → 终态
 - **claude / cursor**：收到 stream-json 事件 → running；进程 exit 0 → succeeded，非 0 → failed；未知事件只记日志
@@ -56,3 +58,7 @@
 - `POST /api/tasks/batch-delete` body `{ ids: string[] }`
 - 对仍在跑 / 有 handle 的任务先 stop，再从 store 删除并清日志；SSE `task_delete`
 
+## 删除限制
+
+- `queued`（Todo）与 `running`（进行中）不可删除；批量删除会跳过并返回 `skipped`
+- `draft` / `blocked` / 终态可删（blocked 删除时会先 stop）

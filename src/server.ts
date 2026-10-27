@@ -9,13 +9,15 @@ import { subscribe } from "./bus.js";
 import {
   boardSnapshot,
   continueTask,
-  createAndStart,
+  createDraft,
+  moveTask,
   readLogTail,
   removeTasks,
+  startTask,
   stopTask,
 } from "./manager.js";
 import { getTask } from "./store.js";
-import type { AgentKind, CreateTaskInput } from "./types.js";
+import type { AgentKind, BoardLane, CreateTaskInput } from "./types.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,7 +57,7 @@ app.post("/api/tasks", async (c) => {
   if (!existsSync(body.cwd)) {
     return c.json({ error: `cwd not found: ${body.cwd}` }, 400);
   }
-  const task = createAndStart({
+  const task = createDraft({
     kind,
     cwd: body.cwd,
     prompt: body.prompt.trim(),
@@ -70,9 +72,44 @@ app.post("/api/tasks/batch-delete", async (c) => {
   const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
   if (!ids.length) return c.json({ error: "ids required" }, 400);
   const result = removeTasks(ids);
+  if (!result.deleted.length && result.skipped.length) {
+    return c.json(
+      {
+        error: "Todo/进行中的任务不可删除",
+        ...result,
+      },
+      400,
+    );
+  }
   return c.json(result);
 });
 
+app.post("/api/tasks/:id/start", (c) => {
+  try {
+    const task = startTask(c.req.param("id"));
+    return c.json({ task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = msg === "not found" ? 404 : 400;
+    return c.json({ error: msg }, code);
+  }
+});
+
+app.post("/api/tasks/:id/move", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { lane?: string };
+  const lane = body.lane as BoardLane;
+  if (!lane || !["draft", "todo", "running", "done"].includes(lane)) {
+    return c.json({ error: "lane must be draft|todo|running|done" }, 400);
+  }
+  try {
+    const task = moveTask(c.req.param("id"), lane);
+    return c.json({ task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = msg === "not found" ? 404 : 400;
+    return c.json({ error: msg }, code);
+  }
+});
 
 app.post("/api/tasks/:id/stop", (c) => {
   try {
@@ -100,7 +137,6 @@ app.post("/api/tasks/:id/continue", async (c) => {
     return c.json({ error: msg }, code);
   }
 });
-
 
 app.get("/api/events", (c) => {
   return streamSSE(c, async (stream) => {

@@ -11,15 +11,19 @@
     <header class="topbar">
       <div>
         <h1>agent-board</h1>
-        <p class="muted">本机看板 · pi / Claude Code / Cursor CLI</p>
+        <p class="muted">本机看板 · 草稿拖到 Todo 后开始跑 · pi / Claude / Cursor</p>
       </div>
       <div class="topbar-actions">
         <input id="search" type="search" placeholder="搜索标题 / 目录 / prompt…" />
-        <button type="button" id="btn-new" class="primary">新建任务</button>
+        <button type="button" id="btn-new" class="primary">新建草稿</button>
       </div>
     </header>
 
     <section class="swimlanes" id="swimlanes">
+      <div class="lane" data-tab="draft">
+        <div class="lane-head"><h2>草稿</h2><span class="count" id="count-draft">0</span></div>
+        <div class="lane-body cards" id="list-draft"></div>
+      </div>
       <div class="lane" data-tab="todo">
         <div class="lane-head"><h2>Todo</h2><span class="count" id="count-todo">0</span></div>
         <div class="lane-body cards" id="list-todo"></div>
@@ -46,9 +50,10 @@
   <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="modal-head">
-        <h2>新建任务</h2>
+        <h2>新建草稿</h2>
         <button type="button" class="icon-btn" id="create-close" aria-label="关闭">×</button>
       </div>
+      <p class="muted create-hint">保存后进入「草稿」列；拖到 Todo 才会开始执行。</p>
       <form id="create-form">
         <label>Agent
           <select name="kind">
@@ -74,7 +79,7 @@
         </label>
         <div class="modal-actions">
           <button type="button" class="secondary" id="create-cancel">取消</button>
-          <button type="submit" class="primary">启动</button>
+          <button type="submit" class="primary">保存草稿</button>
         </div>
         <p id="form-error" class="error" hidden></p>
       </form>
@@ -89,7 +94,9 @@
           <p class="muted" id="detail-sub"></p>
         </div>
         <div class="modal-head-actions">
+          <button type="button" id="start-btn" class="primary" hidden>开始任务</button>
           <button type="button" id="stop-btn" class="danger" hidden>停止</button>
+          <button type="button" id="delete-btn" class="danger" hidden>删除</button>
           <button type="button" class="icon-btn" id="detail-close" aria-label="关闭">×</button>
         </div>
       </div>

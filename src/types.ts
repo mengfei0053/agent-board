@@ -1,12 +1,16 @@
 export type AgentKind = "pi" | "claude" | "cursor";
 
 export type TaskStatus =
+  | "draft"
   | "queued"
   | "running"
   | "blocked"
   | "succeeded"
   | "failed"
   | "stopped";
+
+/** Board swimlane keys */
+export type BoardLane = "draft" | "todo" | "running" | "done";
 
 export type Task = {
   id: string;

@@ -8,7 +8,9 @@ const detailTitle = document.getElementById("detail-title");
 const detailSub = document.getElementById("detail-sub");
 const detailMeta = document.getElementById("detail-meta");
 const logEl = document.getElementById("log");
+const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
+const deleteBtn = document.getElementById("delete-btn");
 const continueRow = document.getElementById("continue-row");
 const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
@@ -25,11 +27,25 @@ const tasks = new Map();
 const selected = new Set();
 let selectedId = null;
 let query = "";
+let dragTaskId = null;
+
+const LANES = ["draft", "todo", "running", "done"];
 
 const TAB_STATUSES = {
+  draft: ["draft"],
   todo: ["queued"],
   running: ["running", "blocked"],
   done: ["succeeded", "failed", "stopped"],
+};
+
+const STATUS_LABEL = {
+  draft: "草稿",
+  queued: "Todo",
+  running: "进行中",
+  blocked: "等待确认",
+  succeeded: "成功",
+  failed: "失败",
+  stopped: "已停止",
 };
 
 function escapeHtml(s) {
@@ -41,15 +57,21 @@ function iterationOf(t) {
 }
 
 function tabOf(status) {
-  if (TAB_STATUSES.todo.includes(status)) return "todo";
-  if (TAB_STATUSES.running.includes(status)) return "running";
+  for (const lane of LANES) {
+    if (TAB_STATUSES[lane].includes(status)) return lane;
+  }
   return "done";
+}
+
+/** Todo(queued) / 进行中(running) 不可删；blocked 在进行中泳道但可删（需先停也可直接删会 stop） */
+function isUndeletable(task) {
+  return task?.status === "queued" || task?.status === "running";
 }
 
 function matchesQuery(t) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, `迭代${iterationOf(t)}`]
+  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, STATUS_LABEL[t.status], `迭代${iterationOf(t)}`]
     .filter(Boolean)
     .some((x) => String(x).toLowerCase().includes(q));
 }
@@ -60,15 +82,15 @@ function visibleTaskIds() {
 
 function updateCounts() {
   const all = [...tasks.values()].filter(matchesQuery);
-  const c = { todo: 0, running: 0, done: 0 };
+  const c = { draft: 0, todo: 0, running: 0, done: 0 };
   for (const t of all) c[tabOf(t.status)]++;
-  document.getElementById("count-todo").textContent = String(c.todo);
-  document.getElementById("count-running").textContent = String(c.running);
-  document.getElementById("count-done").textContent = String(c.done);
+  for (const key of LANES) {
+    const el = document.getElementById(`count-${key}`);
+    if (el) el.textContent = String(c[key]);
+  }
 }
 
 function updateBulkBar() {
-  // drop stale selections
   for (const id of [...selected]) {
     if (!tasks.has(id)) selected.delete(id);
   }
@@ -88,12 +110,14 @@ function makeCard(t) {
   btn.type = "button";
   btn.className = "card has-check" + (selected.has(t.id) ? " selected" : "");
   btn.dataset.id = t.id;
+  btn.draggable = true;
   const iter = iterationOf(t);
+  const statusText = STATUS_LABEL[t.status] || t.status;
   btn.innerHTML = `
       <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
       <div class="card-top">
         <p class="card-title">${escapeHtml(t.title)}</p>
-        <span class="badge ${t.status}">${t.status}</span>
+        <span class="badge ${t.status}">${escapeHtml(statusText)}</span>
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
@@ -103,13 +127,24 @@ function makeCard(t) {
         <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
       </div>`;
   const check = btn.querySelector(".card-check");
-  check.addEventListener("click", (e) => {
-    e.stopPropagation();
-  });
+  check.addEventListener("click", (e) => e.stopPropagation());
   check.addEventListener("change", (e) => {
     e.stopPropagation();
     setSelected(t.id, check.checked);
     btn.classList.toggle("selected", check.checked);
+  });
+  btn.addEventListener("dragstart", (e) => {
+    dragTaskId = t.id;
+    btn.classList.add("dragging");
+    e.dataTransfer.setData("text/plain", t.id);
+    e.dataTransfer.effectAllowed = "move";
+  });
+  btn.addEventListener("dragend", () => {
+    dragTaskId = null;
+    btn.classList.remove("dragging");
+    document.querySelectorAll(".lane.drag-over, .lane-body.drag-over").forEach((el) => {
+      el.classList.remove("drag-over");
+    });
   });
   btn.onclick = (e) => {
     if (e.target === check) return;
@@ -119,7 +154,7 @@ function makeCard(t) {
 }
 
 function ensureLaneSelectButtons() {
-  for (const key of ["todo", "running", "done"]) {
+  for (const key of LANES) {
     const head = document.querySelector(`.lane[data-tab="${key}"] .lane-head`);
     if (!head || head.querySelector(".lane-select")) continue;
     const actions = document.createElement("div");
@@ -146,16 +181,71 @@ function ensureLaneSelectButtons() {
   }
 }
 
+function bindLaneDropTargets() {
+  for (const key of LANES) {
+    const lane = document.querySelector(`.lane[data-tab="${key}"]`);
+    const body = document.getElementById(`list-${key}`);
+    if (!lane || lane.dataset.dropBound) continue;
+    lane.dataset.dropBound = "1";
+    const onDragOver = (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      lane.classList.add("drag-over");
+      body?.classList.add("drag-over");
+    };
+    const onDragLeave = (e) => {
+      if (lane.contains(e.relatedTarget)) return;
+      lane.classList.remove("drag-over");
+      body?.classList.remove("drag-over");
+    };
+    const onDrop = async (e) => {
+      e.preventDefault();
+      lane.classList.remove("drag-over");
+      body?.classList.remove("drag-over");
+      const id = e.dataTransfer.getData("text/plain") || dragTaskId;
+      if (!id) return;
+      const t = tasks.get(id);
+      if (!t) return;
+      if (tabOf(t.status) === key) return;
+      await moveToLane(id, key);
+    };
+    lane.addEventListener("dragover", onDragOver);
+    lane.addEventListener("dragleave", onDragLeave);
+    lane.addEventListener("drop", onDrop);
+  }
+}
+
+async function moveToLane(id, lane) {
+  const res = await fetch(`/api/tasks/${id}/move`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lane }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    window.alert(data.error || res.statusText);
+    return;
+  }
+  if (data.task) {
+    tasks.set(data.task.id, data.task);
+    renderList();
+    if (selectedId === id && !detailModal.classList.contains("hidden")) {
+      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n") : []);
+    }
+  }
+}
+
 function renderList() {
   ensureLaneSelectButtons();
+  bindLaneDropTargets();
   updateCounts();
-  const buckets = { todo: [], running: [], done: [] };
+  const buckets = { draft: [], todo: [], running: [], done: [] };
   for (const t of tasks.values()) {
     if (!matchesQuery(t)) continue;
     buckets[tabOf(t.status)].push(t);
   }
   let total = 0;
-  for (const key of ["todo", "running", "done"]) {
+  for (const key of LANES) {
     const el = document.getElementById(`list-${key}`);
     el.innerHTML = "";
     const items = buckets[key].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -186,13 +276,13 @@ async function openDetail(id) {
 }
 
 function canContinue(task) {
-  return !["queued", "running"].includes(task.status);
+  return !["draft", "queued", "running"].includes(task.status);
 }
 
 function paintDetail(task, logLines) {
   const iter = iterationOf(task);
   detailTitle.textContent = task.title;
-  detailSub.textContent = `${task.kind} · ${task.status} · 迭代 ${iter}`;
+  detailSub.textContent = `${task.kind} · ${STATUS_LABEL[task.status] || task.status} · 迭代 ${iter}`;
   detailMeta.textContent = JSON.stringify(
     {
       id: task.id,
@@ -215,15 +305,19 @@ function paintDetail(task, logLines) {
   );
   logEl.textContent = logLines.join("\n");
   logEl.scrollTop = logEl.scrollHeight;
+  startBtn.hidden = task.status !== "draft";
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
-  const ok = canContinue(task);
-  continueRow.hidden = false;
-  continueBtn.disabled = !ok;
-  continueHint.textContent = ok
-    ? task.sessionId
-      ? `将续会话 ${task.sessionId}`
-      : "无已存 sessionId 时将尝试 CLI 的 continue（同目录最近会话）"
-    : "任务运行中，请先停止再继续";
+  deleteBtn.hidden = isUndeletable(task);
+  const showContinue = canContinue(task);
+  continueRow.hidden = task.status === "draft";
+  continueBtn.disabled = !showContinue;
+  continueHint.textContent = task.status === "draft"
+    ? ""
+    : showContinue
+      ? task.sessionId
+        ? `将续会话 ${task.sessionId}`
+        : "无已存 sessionId 时将尝试 CLI 的 continue（同目录最近会话）"
+      : "任务运行中，请先停止再继续";
   continueError.hidden = true;
 }
 
@@ -274,9 +368,41 @@ form.addEventListener("submit", async (e) => {
   cwdInput.value = "/home/menghongfei/projects/agent-board";
 });
 
+startBtn.addEventListener("click", async () => {
+  if (!selectedId) return;
+  await moveToLane(selectedId, "todo");
+});
+
 stopBtn.addEventListener("click", async () => {
   if (!selectedId) return;
   await fetch(`/api/tasks/${selectedId}/stop`, { method: "POST" });
+});
+
+deleteBtn.addEventListener("click", async () => {
+  if (!selectedId) return;
+  const t = tasks.get(selectedId);
+  if (!t) return;
+  if (isUndeletable(t)) {
+    window.alert("Todo/进行中的任务不可删除，请先停止或等其结束");
+    return;
+  }
+  if (!window.confirm(`确认删除任务「${t.title}」？`)) return;
+  const res = await fetch("/api/tasks/batch-delete", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids: [selectedId] }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok && !(data.deleted || []).length) {
+    window.alert(data.error || res.statusText);
+    return;
+  }
+  for (const id of data.deleted || []) {
+    tasks.delete(id);
+    selected.delete(id);
+  }
+  closeDetail();
+  renderList();
 });
 
 continueBtn.addEventListener("click", async () => {
@@ -319,22 +445,36 @@ document.getElementById("bulk-select-visible").onclick = () => {
 document.getElementById("bulk-delete").onclick = async () => {
   const ids = [...selected];
   if (!ids.length) return;
-  const ok = window.confirm(`确认删除选中的 ${ids.length} 个任务？\n运行中的任务会先停止再删除。`);
-  if (!ok) return;
+  const blocked = ids.filter((id) => {
+    const t = tasks.get(id);
+    return t && isUndeletable(t);
+  });
+  const allowed = ids.filter((id) => !blocked.includes(id));
+  if (!allowed.length) {
+    window.alert(`选中的 ${blocked.length} 个任务均在 Todo/进行中，不可删除。请先停止或等其结束。`);
+    return;
+  }
+  let msg = `确认删除选中的 ${allowed.length} 个任务？`;
+  if (blocked.length) msg += `\n将跳过 ${blocked.length} 个 Todo/进行中任务。`;
+  if (!window.confirm(msg)) return;
   const res = await fetch("/api/tasks/batch-delete", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ids }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  if (!res.ok && !(data.deleted || []).length) {
     window.alert(data.error || res.statusText);
     return;
   }
-  for (const id of data.deleted || ids) {
+  for (const id of data.deleted || []) {
     tasks.delete(id);
     selected.delete(id);
     if (selectedId === id) closeDetail();
+  }
+  const skipped = data.skipped || [];
+  if (skipped.length) {
+    window.alert(`已删除 ${data.deleted?.length || 0} 个；跳过 ${skipped.length} 个不可删任务（Todo/进行中）。`);
   }
   updateBulkBar();
   renderList();

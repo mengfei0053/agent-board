@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { deleteTasks, getTask, listTasks, logPath, removeLog, upsertTask } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
-import type { CreateTaskInput, Task, TaskStatus } from "./types.js";
+import type { BoardLane, CreateTaskInput, Task, TaskStatus } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
 
@@ -30,9 +30,28 @@ function patch(id: string, partial: Partial<Task>): Task {
   return next;
 }
 
+/** Statuses that still own a live/soon-live runner (cannot delete). */
+const UNDELETABLE: TaskStatus[] = ["queued", "running"];
 const ACTIVE: TaskStatus[] = ["queued", "running", "blocked"];
 
-export function createAndStart(input: CreateTaskInput): Task {
+export function isUndeletableStatus(status: TaskStatus): boolean {
+  return UNDELETABLE.includes(status);
+}
+
+function spawnRunner(task: Task): Task {
+  const id = task.id;
+  const runner = runners[task.kind];
+  const handle = runner.start(task, {
+    onStatus: (p) => patch(id, p),
+    onLog: (line) => writeLog(id, line),
+  });
+  handles.set(id, handle);
+  if (handle.pid) patch(id, { pid: handle.pid });
+  return getTask(id)!;
+}
+
+/** Create a draft — do not spawn. */
+export function createDraft(input: CreateTaskInput): Task {
   const id = nanoid(10);
   const title = input.title?.trim() || input.prompt.trim().slice(0, 48) || `${input.kind} task`;
   const task: Task = {
@@ -43,31 +62,56 @@ export function createAndStart(input: CreateTaskInput): Task {
     prompt: input.prompt,
     model: input.model?.trim() || resolveDefaultModel(input.kind),
     iteration: 1,
-    status: "queued",
+    status: "draft",
     createdAt: now(),
     updatedAt: now(),
   };
   upsertTask(task);
   publish({ type: "task_upsert", task });
-
-  const runner = runners[input.kind];
-  const handle = runner.start(task, {
-    onStatus: (p) => patch(id, p),
-    onLog: (line) => writeLog(id, line),
-  });
-  handles.set(id, handle);
-  if (handle.pid) patch(id, { pid: handle.pid });
+  writeLog(id, JSON.stringify({ type: "draft_created" }));
   return getTask(id)!;
+}
+
+/** Start a draft (or re-queue a terminal task as a fresh run without continue). */
+export function startTask(id: string): Task {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  if (t.status === "queued" || t.status === "running") {
+    throw new Error("task is already running");
+  }
+  if (t.status === "blocked") {
+    throw new Error("task is blocked; stop it before starting again");
+  }
+
+  const existing = handles.get(id);
+  if (existing) {
+    existing.stop();
+    handles.delete(id);
+  }
+
+  patch(id, {
+    status: "queued",
+    error: undefined,
+    exitCode: undefined,
+    endedAt: undefined,
+    summary: "starting",
+    lastEvent: "start",
+    pid: undefined,
+  });
+  writeLog(id, JSON.stringify({ type: "start", from: t.status }));
+  return spawnRunner(getTask(id)!);
 }
 
 export function continueTask(id: string, prompt?: string): Task {
   const t = getTask(id);
   if (!t) throw new Error("not found");
+  if (t.status === "draft") {
+    throw new Error("draft has no session yet; start it first (drag to Todo)");
+  }
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is still running; stop it before continue");
   }
 
-  // blocked may still have a live child — stop first so we can resume cleanly
   const existing = handles.get(id);
   if (existing) {
     existing.stop();
@@ -126,15 +170,79 @@ export function stopTask(id: string): Task {
   });
 }
 
-/** Stop live processes if needed, then remove tasks + logs. Returns deleted ids. */
-export function removeTasks(ids: string[]): { deleted: string[]; stopped: string[] } {
+/**
+ * Move a card to a board lane.
+ * draft → todo|running: start runner
+ * * → draft: park as draft (stop if needed)
+ * * → done: stop if active → stopped
+ */
+export function moveTask(id: string, lane: BoardLane): Task {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  if (!["draft", "todo", "running", "done"].includes(lane)) {
+    throw new Error("lane must be draft|todo|running|done");
+  }
+
+  if (lane === "todo" || lane === "running") {
+    if (t.status === "queued" || t.status === "running" || t.status === "blocked") {
+      return t; // already in-flight
+    }
+    return startTask(id);
+  }
+
+  if (lane === "draft") {
+    if (t.status === "draft") return t;
+    const h = handles.get(id);
+    if (h || ACTIVE.includes(t.status)) {
+      h?.stop();
+      handles.delete(id);
+    }
+    return patch(id, {
+      status: "draft",
+      pid: undefined,
+      endedAt: undefined,
+      summary: "moved to draft",
+      lastEvent: "move_draft",
+    });
+  }
+
+  // done
+  if (["succeeded", "failed", "stopped"].includes(t.status)) return t;
+  if (t.status === "draft") {
+    return patch(id, {
+      status: "stopped",
+      endedAt: now(),
+      summary: "moved to done without running",
+      lastEvent: "move_done",
+    });
+  }
+  return stopTask(id);
+}
+
+/** Stop live processes if needed, then remove tasks + logs. Skips queued/running. */
+export function removeTasks(ids: string[]): {
+  deleted: string[];
+  stopped: string[];
+  skipped: { id: string; status: TaskStatus; reason: string }[];
+} {
   const stopped: string[] = [];
+  const skipped: { id: string; status: TaskStatus; reason: string }[] = [];
+  const deletable: string[] = [];
   const unique = [...new Set(ids.filter(Boolean))];
+
   for (const id of unique) {
     const t = getTask(id);
     if (!t) continue;
+    if (isUndeletableStatus(t.status)) {
+      skipped.push({
+        id,
+        status: t.status,
+        reason: "Todo/进行中的任务不可删除，请先停止或等其结束",
+      });
+      continue;
+    }
     const h = handles.get(id);
-    if (h || ACTIVE.includes(t.status)) {
+    if (h || t.status === "blocked") {
       try {
         h?.stop();
       } catch {
@@ -143,11 +251,13 @@ export function removeTasks(ids: string[]): { deleted: string[]; stopped: string
       handles.delete(id);
       stopped.push(id);
     }
+    deletable.push(id);
   }
-  const deleted = deleteTasks(unique);
+
+  const deleted = deleteTasks(deletable);
   for (const id of deleted) removeLog(id);
   if (deleted.length) publish({ type: "task_delete", taskIds: deleted });
-  return { deleted, stopped };
+  return { deleted, stopped, skipped };
 }
 
 export function boardSnapshot() {
@@ -160,3 +270,6 @@ export function readLogTail(id: string, maxLines = 400): string[] {
   const lines = readFileSync(p, "utf8").split(/\r?\n/).filter(Boolean);
   return lines.slice(-maxLines);
 }
+
+/** @deprecated alias kept for clarity in older call sites */
+export const createAndStart = createDraft;
