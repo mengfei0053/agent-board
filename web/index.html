@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agent-board</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>agent-board</h1>
+    <p class="muted">本机看板 · pi / Claude Code / Cursor CLI</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>新建任务</h2>
+      <form id="create-form">
+        <label>Agent
+          <select name="kind">
+            <option value="pi">pi</option>
+            <option value="claude">Claude Code</option>
+            <option value="cursor">Cursor CLI (agent)</option>
+          </select>
+        </label>
+        <label>标题（可选）
+          <input name="title" placeholder="简短标题" />
+        </label>
+        <label>工作目录
+          <input name="cwd" required placeholder="/home/menghongfei/projects/agent-board" value="/home/menghongfei/projects/agent-board" />
+        </label>
+        <label>Model（可选）
+          <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />
+        </label>
+        <label>任务内容
+          <textarea name="prompt" required rows="5" placeholder="要 Agent 做的事"></textarea>
+        </label>
+        <button type="submit">启动</button>
+        <p id="form-error" class="error" hidden></p>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>任务列表</h2>
+      <div id="task-list" class="task-list"></div>
+    </section>
+
+    <section class="panel wide">
+      <div class="detail-head">
+        <h2 id="detail-title">详情</h2>
+        <button id="stop-btn" type="button" hidden>停止</button>
+      </div>
+      <pre id="detail-meta" class="meta"></pre>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
