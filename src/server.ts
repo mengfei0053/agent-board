@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { subscribe } from "./bus.js";
@@ -264,6 +264,13 @@ app.get("/api/events", (c) => {
     });
   });
 });
+
+
+app.get("/docs", (c) => {
+  const html = readFileSync(join(webRoot, "docs.html"), "utf8");
+  return c.html(html);
+});
+app.get("/docs.html", (c) => c.redirect("/docs", 302));
 
 app.use("/*", serveStatic({ root: webRoot }));
 

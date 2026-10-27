@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>接口文档 · agent-board</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="docs-page">
+  <div class="app docs-app">
+    <header class="topbar">
+      <div>
+        <h1>接口文档</h1>
+        <p class="muted">agent-board REST / Webhook / SSE · 本机默认 <code>http://127.0.0.1:8791</code></p>
+      </div>
+      <div class="topbar-actions">
+        <a class="btn-link secondary" href="/">← 返回看板</a>
+      </div>
+    </header>
+
+    <nav class="docs-toc">
+      <a href="#overview">概览</a>
+      <a href="#webhook">Webhook</a>
+      <a href="#create">创建任务</a>
+      <a href="#task-ops">启停 / 移动 / 继续</a>
+      <a href="#batch">批量删除</a>
+      <a href="#query">查询</a>
+      <a href="#sse">SSE 事件</a>
+    </nav>
+
+    <main class="docs-main">
+      <section id="overview">
+        <h2>概览</h2>
+        <p>看板泳道：<code>draft</code>（草稿）→ <code>todo</code>（queued）→ <code>running</code> → <code>done</code>（succeeded / failed / stopped）。</p>
+        <ul>
+          <li><strong>新建草稿</strong>：只入库，不 spawn。</li>
+          <li><strong>新建 Todo</strong>：创建后立刻 <code>start</code>（进入 Todo 并开跑）。</li>
+          <li><code>queued</code> / <code>running</code> 不可删除，需先 stop。</li>
+        </ul>
+        <p>下列 curl 假设服务在 <code>http://127.0.0.1:8791</code>。</p>
+      </section>
+
+      <section id="webhook">
+        <h2>Webhook 新建草稿 / Todo</h2>
+        <p><code>POST /api/hooks/tasks</code>（别名 <code>POST /webhook/tasks</code>）</p>
+        <p>鉴权：环境变量 <code>AGENT_BOARD_WEBHOOK_SECRET</code>。未设置时返回 <code>503</code>。</p>
+        <ul>
+          <li><code>Authorization: Bearer &lt;secret&gt;</code></li>
+          <li>或 <code>X-Webhook-Secret: &lt;secret&gt;</code></li>
+        </ul>
+        <table class="docs-table">
+          <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>prompt</code></td><td>✅</td><td>任务内容</td></tr>
+            <tr><td><code>agent</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code>（别名 <code>kind</code>）</td></tr>
+            <tr><td><code>cwd</code></td><td>✅</td><td>工作目录（须已存在）</td></tr>
+            <tr><td><code>model</code></td><td></td><td>可选模型</td></tr>
+            <tr><td><code>title</code></td><td></td><td>可选标题</td></tr>
+            <tr><td><code>start</code></td><td></td><td><code>true</code> → 创建并开跑</td></tr>
+            <tr><td><code>lane</code> / <code>mode</code></td><td></td><td><code>draft</code>（默认）或 <code>todo</code></td></tr>
+          </tbody>
+        </table>
+        <p>响应：<code>201 { task, started }</code></p>
+        <h3>启动时设置 secret</h3>
+        <pre><code>export AGENT_BOARD_WEBHOOK_SECRET='replace-me'
+npm start</code></pre>
+        <h3>新建草稿</h3>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/hooks/tasks \
+  -H "Authorization: Bearer $AGENT_BOARD_WEBHOOK_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "整理 README",
+    "agent": "pi",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "mode": "draft"
+  }'</code></pre>
+        <h3>新建 Todo 并开跑</h3>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
+  -H "X-Webhook-Secret: $AGENT_BOARD_WEBHOOK_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "跑一遍 typecheck 并修错",
+    "agent": "claude",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "start": true
+  }'</code></pre>
+      </section>
+
+      <section id="create">
+        <h2>UI / API 创建任务</h2>
+        <p><code>POST /api/tasks</code>（看板表单使用；无 webhook 鉴权，仅本机服务）</p>
+        <table class="docs-table">
+          <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>kind</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code></td></tr>
+            <tr><td><code>cwd</code></td><td>✅</td><td>工作目录</td></tr>
+            <tr><td><code>prompt</code></td><td>✅</td><td>任务内容</td></tr>
+            <tr><td><code>title</code> / <code>model</code></td><td></td><td>可选</td></tr>
+            <tr><td><code>start</code></td><td></td><td><code>true</code> → 创建并开跑（等同「新建 Todo」）</td></tr>
+          </tbody>
+        </table>
+        <h3>新建草稿</h3>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks \
+  -H 'content-type: application/json' \
+  -d '{
+    "kind": "pi",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "prompt": "写一个 hello",
+    "title": "demo-draft"
+  }'</code></pre>
+        <h3>新建 Todo（创建并开始）</h3>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks \
+  -H 'content-type: application/json' \
+  -d '{
+    "kind": "pi",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "prompt": "只回复 OK",
+    "title": "demo-todo",
+    "start": true
+  }'</code></pre>
+      </section>
+
+      <section id="task-ops">
+        <h2>启停 / 移动 / 继续</h2>
+
+        <h3>开始任务</h3>
+        <p><code>POST /api/tasks/:id/start</code> — 将草稿（或终态任务）拉起 runner。</p>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/start</code></pre>
+
+        <h3>移动泳道</h3>
+        <p><code>POST /api/tasks/:id/move</code> body <code>{ "lane": "draft"|"todo"|"running"|"done" }</code></p>
+        <p>拖到 Todo 等价于 <code>lane: "todo"</code>（会 start）。</p>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/move \
+  -H 'content-type: application/json' \
+  -d '{ "lane": "todo" }'</code></pre>
+
+        <h3>停止</h3>
+        <p><code>POST /api/tasks/:id/stop</code></p>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/stop</code></pre>
+
+        <h3>继续（迭代）</h3>
+        <p><code>POST /api/tasks/:id/continue</code> body 可选 <code>{ "prompt": "补充说明" }</code>。成功后 <code>iteration + 1</code>，按各 CLI session/resume 续跑。</p>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/continue \
+  -H 'content-type: application/json' \
+  -d '{ "prompt": "接着把测试也补上" }'</code></pre>
+      </section>
+
+      <section id="batch">
+        <h2>批量删除</h2>
+        <p><code>POST /api/tasks/batch-delete</code> body <code>{ "ids": ["id1","id2"] }</code></p>
+        <p><code>queued</code> / <code>running</code> 会进入 <code>skipped</code>，需先 stop。</p>
+        <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/batch-delete \
+  -H 'content-type: application/json' \
+  -d '{ "ids": ["TASK_ID"] }'</code></pre>
+      </section>
+
+      <section id="query">
+        <h2>查询</h2>
+        <h3>健康检查</h3>
+        <pre><code>curl -sS http://127.0.0.1:8791/api/health</code></pre>
+        <h3>任务列表</h3>
+        <pre><code>curl -sS http://127.0.0.1:8791/api/tasks</code></pre>
+        <h3>任务详情（含 log 尾部与最终 output）</h3>
+        <pre><code>curl -sS http://127.0.0.1:8791/api/tasks/TASK_ID</code></pre>
+        <h3>浏览目录（选 cwd）</h3>
+        <pre><code>curl -sS 'http://127.0.0.1:8791/api/browse?path=/home/menghongfei/projects'</code></pre>
+      </section>
+
+      <section id="sse">
+        <h2>SSE 实时事件</h2>
+        <p><code>GET /api/events</code> — Server-Sent Events。</p>
+        <ul>
+          <li>连接时先发 <code>hello</code>（带当前 tasks 快照）</li>
+          <li>之后：<code>task_upsert</code> / <code>task_delete</code> / <code>task_log</code></li>
+          <li>约 15s 一次 <code>ping</code></li>
+        </ul>
+        <pre><code>curl -sSN http://127.0.0.1:8791/api/events</code></pre>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

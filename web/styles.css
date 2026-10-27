@@ -543,3 +543,116 @@ button.secondary-danger {
 }
 .card-summary.has-output { color: color-mix(in srgb, var(--text) 75%, var(--muted)); }
 .card-summary.is-error { color: var(--bad); }
+
+
+/* ---- docs page ---- */
+body.docs-page {
+  display: block;
+  overflow: auto;
+}
+.docs-app {
+  width: min(920px, 100%);
+  flex: none;
+  min-height: auto;
+}
+a.btn-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+}
+a.btn-link:hover { border-color: var(--accent); color: var(--accent); }
+a.btn-link.secondary { background: var(--panel-2); }
+.docs-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+}
+.docs-toc a {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.docs-toc a:hover { text-decoration: underline; }
+.docs-main section {
+  margin: 0 0 28px;
+  padding: 18px 18px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.docs-main h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.docs-main h3 {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+.docs-main p, .docs-main li {
+  color: var(--text);
+  line-height: 1.55;
+}
+.docs-main code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.docs-main pre {
+  margin: 8px 0 14px;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0a101c;
+  color: #e8eef7;
+}
+@media (prefers-color-scheme: light) {
+  .docs-main pre { background: #1e293b; color: #f8fafc; }
+}
+.docs-main pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.docs-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 14px;
+  font-size: 13px;
+}
+.docs-table th, .docs-table td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.docs-table th {
+  background: var(--panel-2);
+  color: var(--muted);
+  font-weight: 600;
+}
