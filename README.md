@@ -22,5 +22,6 @@ pnpm dev
 - 创建任务并在指定 cwd 启动对应 CLI（非交互、可脚本化模式）
 - 列表 / 详情 / 实时日志（SSE）
 - 停止任务
+- Webhook 新建草稿 / Todo（需 `AGENT_BOARD_WEBHOOK_SECRET`，见 ARCHITECTURE）
 
 详见 [ARCHITECTURE.md](./ARCHITECTURE.md)

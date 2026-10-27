@@ -62,3 +62,60 @@
 
 - `queued`（Todo）与 `running`（进行中）不可删除；批量删除会跳过并返回 `skipped`
 - `draft` / `blocked` / 终态可删（blocked 删除时会先 stop）
+
+## Webhook 新建任务
+
+外部系统可通过 webhook 新建**草稿**或**Todo（创建并开跑）**。
+
+- **Endpoint**：`POST /api/hooks/tasks`（别名 `POST /webhook/tasks`）
+- **鉴权**（必填）：环境变量 `AGENT_BOARD_WEBHOOK_SECRET`
+  - 未设置 → `503`（webhook 关闭）
+  - 请求头二选一：
+    - `Authorization: Bearer <secret>`
+    - `X-Webhook-Secret: <secret>`
+- **Body JSON**
+  | 字段 | 必填 | 说明 |
+  |---|---|---|
+  | `prompt` | ✅ | 任务内容 |
+  | `agent` | ✅ | `pi` \| `claude` \| `cursor`（也可用别名 `kind`） |
+  | `cwd` | ✅ | 工作目录（须已存在） |
+  | `model` | | 可选模型 |
+  | `title` | | 可选标题 |
+  | `start` | | `true` → 创建并开跑（Todo） |
+  | `lane` / `mode` | | `draft`（默认）或 `todo`（同 `start: true`） |
+- **响应**：`201 { task, started }`
+
+启动前设置 secret：
+
+```bash
+export AGENT_BOARD_WEBHOOK_SECRET='replace-me'
+pnpm start   # 或 npm start / PORT=8791 …
+```
+
+示例 — 新建草稿：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8791/api/hooks/tasks \
+  -H "Authorization: Bearer $AGENT_BOARD_WEBHOOK_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "整理 README",
+    "agent": "pi",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "mode": "draft"
+  }'
+```
+
+示例 — 新建 Todo 并立刻开跑：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
+  -H "X-Webhook-Secret: $AGENT_BOARD_WEBHOOK_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{
+    "prompt": "跑一遍 typecheck 并修错",
+    "agent": "claude",
+    "cwd": "/home/menghongfei/projects/agent-board",
+    "start": true
+  }'
+```

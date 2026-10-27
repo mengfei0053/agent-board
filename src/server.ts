@@ -1,7 +1,9 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
+import { timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +30,98 @@ const port = Number(process.env.PORT || 8791);
 const app = new Hono();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+
+function webhookSecret(): string | null {
+  const s = process.env.AGENT_BOARD_WEBHOOK_SECRET?.trim();
+  return s ? s : null;
+}
+
+function secretsEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
+type HookBody = {
+  prompt?: string;
+  agent?: string;
+  kind?: string;
+  cwd?: string;
+  model?: string;
+  title?: string;
+  start?: boolean;
+  lane?: string;
+  mode?: string;
+};
+
+function resolveHookStart(body: HookBody): boolean {
+  if (body.start === true) return true;
+  if (body.start === false) return false;
+  const lane = (body.lane || body.mode || "").toLowerCase();
+  if (lane === "todo") return true;
+  if (lane === "draft") return false;
+  return false;
+}
+
+
+
+async function createTaskViaWebhook(c: Context) {
+  const secret = webhookSecret();
+  if (!secret) {
+    return c.json(
+      {
+        error: "webhook disabled: set env AGENT_BOARD_WEBHOOK_SECRET",
+        hint: "export AGENT_BOARD_WEBHOOK_SECRET='your-secret' then restart agent-board",
+      },
+      503,
+    );
+  }
+  const auth = c.req.header("authorization") || "";
+  const m = /^Bearer\s+(\S+)/i.exec(auth);
+  const bearer = m?.[1];
+  const headerSecret = c.req.header("x-webhook-secret")?.trim();
+  const token = bearer || headerSecret || "";
+  if (!token || !secretsEqual(token, secret)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  let body: HookBody;
+  try {
+    body = (await c.req.json()) as HookBody;
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!prompt) return c.json({ error: "prompt required" }, 400);
+
+  const kindRaw = (body.agent || body.kind || "").toLowerCase();
+  if (!["pi", "claude", "cursor"].includes(kindRaw)) {
+    return c.json({ error: "agent must be pi|claude|cursor (alias: kind)" }, 400);
+  }
+  const kind = kindRaw as AgentKind;
+
+  const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+  if (!cwd) return c.json({ error: "cwd required" }, 400);
+  if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
+
+  const input: CreateTaskInput = {
+    kind,
+    cwd,
+    prompt,
+    title: typeof body.title === "string" ? body.title : undefined,
+    model: typeof body.model === "string" ? body.model : undefined,
+  };
+  const start = resolveHookStart(body);
+  try {
+    const task = start ? createAndStart(input) : createDraft(input);
+    return c.json({ task, started: start }, 201);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+  }
+}
 
 app.get("/api/browse", (c) => {
   try {
@@ -73,6 +167,10 @@ app.post("/api/tasks", async (c) => {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
   }
 });
+
+
+app.post("/api/hooks/tasks", (c) => createTaskViaWebhook(c));
+app.post("/webhook/tasks", (c) => createTaskViaWebhook(c));
 
 app.post("/api/tasks/batch-delete", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
