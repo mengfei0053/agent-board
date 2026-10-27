@@ -12,7 +12,7 @@ import type { AgentKind, CreateTaskInput } from "./types.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
-const port = Number(process.env.PORT || 8787);
+const port = Number(process.env.PORT || 8791);
 
 const app = new Hono();
 

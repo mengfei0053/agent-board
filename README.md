@@ -15,7 +15,7 @@ pnpm install   # 或 npm i / bun i
 pnpm dev
 ```
 
-浏览器打开 http://127.0.0.1:8787
+浏览器打开 http://127.0.0.1:8791
 
 ## 能力（v0.1）
 
