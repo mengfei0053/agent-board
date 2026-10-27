@@ -99,6 +99,41 @@ function matchesQuery(t) {
     .some((x) => String(x).toLowerCase().includes(q));
 }
 
+
+const DISPLAY_TZ = "Asia/Shanghai";
+
+/** @param {string|undefined|null} iso */
+function formatLocal(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    return new Intl.DateTimeFormat("zh-CN", {
+      timeZone: DISPLAY_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(d);
+  } catch {
+    return iso;
+  }
+}
+
+/** @param {any} t */
+function timeRowsHtml(t) {
+  const start = formatLocal(t.startedAt);
+  const end = formatLocal(t.endedAt);
+  const bits = [];
+  if (start) bits.push(`<span class="time-start" title="开始时间">开始 ${escapeHtml(start)}</span>`);
+  if (end) bits.push(`<span class="time-end" title="结束时间">结束 ${escapeHtml(end)}</span>`);
+  if (!bits.length) return "";
+  return `<div class="card-times">${bits.join("")}</div>`;
+}
+
 function visibleTaskIds() {
   return [...tasks.values()].filter(matchesQuery).map((t) => t.id);
 }
@@ -140,6 +175,7 @@ function makeCard(t) {
   const summaryHtml = preview.text
     ? `<div class="card-summary ${preview.error ? "is-error" : "has-output"}">${escapeHtml(preview.text)}</div>`
     : "";
+  const timesHtml = timeRowsHtml(t);
   btn.innerHTML = `
       <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
       <div class="card-top">
@@ -147,6 +183,7 @@ function makeCard(t) {
         <span class="badge ${t.status}">${escapeHtml(statusText)}</span>
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
+      ${timesHtml}
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
       ${summaryHtml}
       <div class="card-footer">
@@ -364,9 +401,13 @@ function paintDetail(task, logLines) {
   detailTitle.textContent = task.title;
   detailSub.textContent = `${task.kind} · ${statusText} · 迭代 ${iter}`;
 
+  const startLabel = formatLocal(task.startedAt) || "—";
+  const endLabel = formatLocal(task.endedAt) || "—";
   detailMetaGrid.innerHTML = [
     metaItem("状态", statusText),
     metaItem("迭代", String(iter)),
+    metaItem("开始时间", startLabel),
+    metaItem("结束时间", endLabel),
     metaItem("Agent", task.kind),
     metaItem("模型", task.model || "—"),
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),

@@ -43,11 +43,25 @@ function patch(id: string, partial: Partial<Task>): Task {
 }
 
 function applyStatus(id: string, partial: Partial<Task>): Task {
-  const next = patch(id, partial);
+  const cur = getTask(id);
+  const merged: Partial<Task> = { ...partial };
+  // Keep the first real start time across continue / re-runs.
+  if (merged.startedAt && cur?.startedAt) {
+    merged.startedAt = cur.startedAt;
+  }
   if (
-    partial.status === "succeeded" ||
-    partial.status === "failed" ||
-    partial.status === "stopped"
+    (merged.status === "succeeded" ||
+      merged.status === "failed" ||
+      merged.status === "stopped") &&
+    !merged.endedAt
+  ) {
+    merged.endedAt = now();
+  }
+  const next = patch(id, merged);
+  if (
+    merged.status === "succeeded" ||
+    merged.status === "failed" ||
+    merged.status === "stopped"
   ) {
     refreshOutputFromLogs(id);
   }

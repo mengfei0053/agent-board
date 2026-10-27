@@ -121,6 +121,19 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .card-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 .card-title { font-weight: 700; font-size: 15px; margin: 0; }
 .card-meta { margin-top: 8px; color: var(--muted); font-size: 12px; word-break: break-all; }
+.card-times {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.card-times .time-start,
+.card-times .time-end {
+  white-space: nowrap;
+}
 .card-prompt {
   margin-top: 10px; color: var(--text); font-size: 13px;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
