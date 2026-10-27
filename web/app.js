@@ -63,7 +63,7 @@ function makeCard(t) {
       <div class="card-prompt">${escapeHtml(t.prompt)}</div>
       <div class="card-footer">
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
-        <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "默认模型")}</span>
+        <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
       </div>`;
   btn.onclick = () => openDetail(t.id);
   return btn;

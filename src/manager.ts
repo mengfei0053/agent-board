@@ -5,6 +5,7 @@ import { getTask, listTasks, logPath, upsertTask } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
 import type { CreateTaskInput, Task, TaskStatus } from "./types.js";
+import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
 
 const handles = new Map<string, RunnerHandle>();
@@ -38,7 +39,7 @@ export function createAndStart(input: CreateTaskInput): Task {
     kind: input.kind,
     cwd: input.cwd,
     prompt: input.prompt,
-    model: input.model,
+    model: input.model?.trim() || resolveDefaultModel(input.kind),
     status: "queued",
     createdAt: now(),
     updatedAt: now(),

@@ -1,3 +1,4 @@
+import { modelFromJsonLine } from "./modelFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 
@@ -12,6 +13,11 @@ export const cursorRunner: Runner = {
     return spawnLogged("agent", args, task.cwd, hooks, {
       getStatus: () => status,
       classifyLine: (line, h) => {
+        const detected = modelFromJsonLine(line);
+        if (detected && !task.model) {
+          task.model = detected;
+          h.onStatus({ model: detected });
+        }
         try {
           const ev = JSON.parse(line) as { type?: string };
           if (ev.type) {
