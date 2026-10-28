@@ -9,8 +9,11 @@ import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
   extractFinalOutput,
+  extractOutputsByIteration,
   extractTextFromEventLine,
+  latestOutputText,
   summarizeOutput,
+  upsertOutputTurn,
 } from "./extractOutput.js";
 import {
   finalizeRunningSideJobs,
@@ -34,9 +37,15 @@ function writeLog(id: string, line: string) {
   const cur = getTask(id);
   if (!cur) return;
   const patchPartial: Parameters<typeof patch>[1] = {};
-  if (piece && cur.output !== piece) {
-    patchPartial.output = piece;
-    patchPartial.summary = summarizeOutput(piece);
+  if (piece) {
+    const iter = cur.iteration ?? 1;
+    const outputs = upsertOutputTurn(cur.outputs, { iteration: iter, text: piece, at });
+    const latest = latestOutputText(outputs);
+    if (latest !== cur.output || JSON.stringify(outputs) !== JSON.stringify(cur.outputs ?? [])) {
+      patchPartial.output = latest;
+      patchPartial.outputs = outputs;
+      patchPartial.summary = summarizeOutput(latest);
+    }
   }
   try {
     const updates = sideJobsFromLogLine(line, at);
@@ -98,10 +107,29 @@ function applyStatus(id: string, partial: Partial<Task>): Task {
 }
 
 export function refreshOutputFromLogs(id: string): Task | undefined {
+  const cur = getTask(id);
+  if (!cur) return undefined;
   const lines = readLogTail(id, 2500);
-  const out = extractFinalOutput(lines);
-  if (!out) return getTask(id);
-  return patch(id, { output: out, summary: summarizeOutput(out) });
+  const outputs = extractOutputsByIteration(lines);
+  // Preserve wall-clock `at` from prior turns when text unchanged
+  if (cur.outputs?.length) {
+    const prevByIter = new Map(cur.outputs.map((o) => [o.iteration, o]));
+    for (let i = 0; i < outputs.length; i++) {
+      const prev = prevByIter.get(outputs[i].iteration);
+      if (prev?.at && prev.text === outputs[i].text) {
+        outputs[i] = { ...outputs[i], at: prev.at };
+      } else if (prev?.at && !outputs[i].at) {
+        outputs[i] = { ...outputs[i], at: prev.at };
+      }
+    }
+  }
+  const out = latestOutputText(outputs) || extractFinalOutput(lines);
+  if (!out && !outputs.length) return cur;
+  return patch(id, {
+    output: out || undefined,
+    outputs,
+    summary: out ? summarizeOutput(out) : cur.summary,
+  });
 }
 
 /** Statuses that still own a live/soon-live runner (cannot delete). */
@@ -169,6 +197,7 @@ export function startTask(id: string): Task {
     exitCode: undefined,
     endedAt: undefined,
     output: undefined,
+    outputs: [],
     summary: "starting",
     lastEvent: "start",
     pid: undefined,
@@ -204,6 +233,7 @@ export function continueTask(id: string, prompt?: string): Task {
     exitCode: undefined,
     endedAt: undefined,
     output: undefined,
+    // keep outputs history; new iteration fills in as events arrive
     summary: `continuing (iteration ${nextIter})`,
     lastEvent: "continue",
     pid: undefined,
@@ -355,13 +385,27 @@ export function taskWithOutput(id: string): { task: Task; log: string[] } | unde
   const t = getTask(id);
   if (!t) return undefined;
   const log = readLogTail(t.id, 2500);
-  if (t.output) return { task: t, log };
-  const out = extractFinalOutput(log);
+  if (t.outputs?.length || t.output) {
+    // Backfill outputs from logs if only legacy `output` exists
+    if (!t.outputs?.length && t.output) {
+      const outputs = extractOutputsByIteration(log);
+      if (outputs.length) {
+        const task = patch(id, {
+          outputs,
+          output: latestOutputText(outputs) || t.output,
+        });
+        return { task, log };
+      }
+    }
+    return { task: t, log };
+  }
+  const outputs = extractOutputsByIteration(log);
+  const out = latestOutputText(outputs);
   if (!out) return { task: t, log };
   const summary = t.summary && t.summary !== "agent settled" && t.summary !== "starting"
     ? t.summary
     : summarizeOutput(out);
-  const task = patch(id, { output: out, summary });
+  const task = patch(id, { output: out, outputs, summary });
   return { task, log };
 }
 

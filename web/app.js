@@ -90,7 +90,11 @@ function previewText(t) {
   if (t.summary && !["starting", "agent settled", "continuing"].some((x) => String(t.summary).startsWith(x))) {
     return { text: t.summary, error: false };
   }
-  if (t.output) return { text: t.output.replace(/\s+/g, " ").trim(), error: false };
+  const latest =
+    (Array.isArray(t.outputs) && t.outputs.length
+      ? t.outputs[t.outputs.length - 1]?.text
+      : null) || t.output;
+  if (latest) return { text: String(latest).replace(/\s+/g, " ").trim(), error: false };
   return { text: "", error: false };
 }
 
@@ -364,7 +368,9 @@ function metaItem(k, v, wide = false) {
 
 function paintOutput(task) {
   const running = ["queued", "running", "blocked"].includes(task.status);
-  if (task.status === "failed" || (task.status === "stopped" && !task.output)) {
+  const hasOutput = Boolean(task.output && task.output.trim()) ||
+    (Array.isArray(task.outputs) && task.outputs.some((o) => o?.text?.trim()));
+  if (task.status === "failed" || (task.status === "stopped" && !hasOutput)) {
     detailError.hidden = false;
     const bits = [];
     if (task.error) bits.push(task.error);
@@ -376,10 +382,25 @@ function paintOutput(task) {
     detailError.textContent = "";
   }
 
-  if (task.output && task.output.trim()) {
+  let turns = Array.isArray(task.outputs) ? task.outputs.filter((o) => o && String(o.text || "").trim()) : [];
+  if (!turns.length && task.output && task.output.trim()) {
+    turns = [{ iteration: iterationOf(task), text: task.output, at: task.endedAt || task.updatedAt }];
+  }
+
+  if (turns.length) {
     detailOutput.classList.remove("empty-output");
-    detailOutput.innerHTML = renderMarkdown(task.output);
-    outputHint.textContent = running ? "运行中 · 实时更新" : "来自本轮助手回复";
+    detailOutput.innerHTML = turns.map((o) => {
+      const when = formatLocal(o.at) || "";
+      const head = `迭代 ${o.iteration}${when ? " · " + when : ""}`;
+      const live = running && o.iteration === iterationOf(task) ? ' <span class="turn-live">实时</span>' : "";
+      return `<article class="output-turn">
+        <header class="output-turn-head"><span>${escapeHtml(head)}</span>${live}</header>
+        <div class="output-turn-body md-body">${renderMarkdown(o.text)}</div>
+      </article>`;
+    }).join("");
+    outputHint.textContent = running
+      ? `共 ${turns.length} 轮 · 当前迭代 ${iterationOf(task)} 更新中`
+      : `共 ${turns.length} 轮`;
   } else if (running) {
     detailOutput.classList.add("empty-output");
     detailOutput.textContent = "模型输出生成中…";
@@ -394,7 +415,7 @@ function paintOutput(task) {
     outputHint.textContent = "";
   } else {
     detailOutput.classList.add("empty-output");
-    detailOutput.textContent = "暂无抽取到的最终输出。";
+    detailOutput.textContent = "暂无抽取到的模型输出。";
     outputHint.textContent = "";
   }
 }
@@ -495,6 +516,7 @@ function paintDetail(task, logLines) {
       startedAt: task.startedAt,
       endedAt: task.endedAt,
       sideJobs: task.sideJobs,
+      outputs: task.outputs,
     },
     null,
     2,

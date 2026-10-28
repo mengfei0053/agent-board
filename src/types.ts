@@ -27,6 +27,14 @@ export type SideJob = {
   endedAt?: string;
 };
 
+/** One assistant reply for a single start/continue iteration */
+export type OutputTurn = {
+  iteration: number;
+  text: string;
+  /** ISO time when this turn's text was last updated */
+  at?: string;
+};
+
 /** Board swimlane keys */
 export type BoardLane = "draft" | "todo" | "running" | "done";
 
@@ -48,8 +56,10 @@ export type Task = {
   endedAt?: string;
   pid?: number;
   summary?: string;
-  /** Final assistant reply (markdown/plain), extracted from logs */
+  /** Latest assistant reply (markdown/plain); mirrors outputs[-1].text */
   output?: string;
+  /** Per-iteration assistant outputs (start = 1, each continue +1) */
+  outputs?: OutputTurn[];
   lastEvent?: string;
   error?: string;
   exitCode?: number | null;

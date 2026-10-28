@@ -729,3 +729,45 @@ a.btn-link.secondary { background: var(--panel-2); }
   color: var(--muted);
 }
 .sidejob-times { font-variant-numeric: tabular-nums; }
+
+
+/* ---- per-iteration outputs ---- */
+.detail-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.detail-output-list.empty-output {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 2px;
+}
+.output-turn {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.output-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.turn-live {
+  color: var(--run);
+  font-weight: 700;
+  font-size: 11px;
+}
+.output-turn-body {
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.output-turn-body.md-body > :first-child { margin-top: 0; }
+.output-turn-body.md-body > :last-child { margin-bottom: 0; }
