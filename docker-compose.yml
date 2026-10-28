@@ -1,6 +1,18 @@
-# Optional local Postgres for agent-board.
-# ThinkBook already has a postgres:16 container on :5432 — prefer that and only
-# run this compose if you need an isolated instance (maps host 5433).
+# One-click: board (Hono) + Postgres
+#
+#   docker compose up -d --build
+#   open http://127.0.0.1:8791
+#
+# Postgres only (host still runs `pnpm dev`):
+#   docker compose up -d postgres
+#
+# IMPORTANT: Agent runners (pi / claude / agent / devin) spawn host CLIs.
+# The `app` container does NOT include those binaries or your CLI auth.
+# Use Compose for the UI + DB; for real task runs prefer host `pnpm dev`
+# against Compose Postgres (port 5433) or an existing local Postgres.
+# See README «Docker 与 CLI» for volume-mount caveats if you insist on
+# spawning agents from the container.
+
 services:
   postgres:
     image: docker.m.daocloud.io/library/postgres:16-alpine
@@ -10,6 +22,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agent_board
     ports:
+      # Host 5433 so a local Postgres on :5432 is not displaced
       - "5433:5432"
     volumes:
       - agent_board_pg:/var/lib/postgresql/data
@@ -18,6 +31,27 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: agent-board-app
+    ports:
+      - "8791:8791"
+    environment:
+      PORT: "8791"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agent_board
+      AGENT_BOARD_WEBHOOK_SECRET: ${AGENT_BOARD_WEBHOOK_SECRET:-}
+    volumes:
+      # Persist task logs / any on-disk data under ./data
+      - ./data:/app/data
+      # Optional (uncomment) — browse host home from the UI; agents still need CLIs:
+      # - ${HOME}:${HOME}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   agent_board_pg:

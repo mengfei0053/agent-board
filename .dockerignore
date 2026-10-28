@@ -1,0 +1,13 @@
+node_modules
+data
+.git
+.gitignore
+*.log
+.env
+.env.*
+!.env.example
+docs/screenshots
+ARCHITECTURE.md
+LICENSE
+README.md
+scripts

@@ -33,21 +33,84 @@
 
 ## 要求
 
-- Node 20+
-- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`（按你实际使用的 Agent）
-- Postgres（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
+- Node 20+（本机开发）或 Docker / Docker Compose（一键启动）
+- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
+- Postgres（本机或 Compose 内置）
 
-## 启动
+## 一键启动（Docker Compose）
+
+```bash
+cd ~/projects/agent-board   # 或你的 clone 路径
+cp -n .env.example .env     # 可选；webhook 等可在此改
+
+docker compose up -d --build
+```
+
+浏览器打开 **http://127.0.0.1:8791**
+
+| 服务 | 容器内 | 宿主机映射 |
+| --- | --- | --- |
+| `app`（看板） | `8791` | **8791** |
+| `postgres` | `5432` | **5433**（避免占本机已有 5432） |
+
+常用命令：
+
+```bash
+docker compose logs -f app      # 看看板日志
+docker compose down             # 停掉（保留 postgres volume）
+docker compose down -v          # 停掉并删库数据 volume
+```
+
+仅起数据库、看板仍在本机跑：
+
+```bash
+docker compose up -d postgres
+export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/agent_board'
+pnpm install && pnpm dev
+```
+
+数据卷：
+
+- Postgres：named volume `agent_board_pg`
+- 任务日志等：绑定挂载 `./data` → 容器 `/app/data`
+
+### 环境变量
+
+| 变量 | 默认 / Compose 行为 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8791` | HTTP 端口 |
+| `HOST` | 本机默认 `127.0.0.1`；Compose 内 `0.0.0.0` | 监听地址（容器内需 `0.0.0.0` 才能映射端口） |
+| `DATABASE_URL` | Compose 内：`postgresql://postgres:postgres@postgres:5432/agent_board`；本机默认见下节 | Postgres 连接串 |
+| `AGENT_BOARD_WEBHOOK_SECRET` | 空（webhook 关闭） | 设置后开启 `POST /api/hooks/tasks` |
+
+模板见 [.env.example](./.env.example)。Compose 会读取同目录 `.env` 里的 `AGENT_BOARD_WEBHOOK_SECRET`（若有）。
+
+### Docker 与 CLI（重要）
+
+看板通过 **Node `spawn` 调用本机 CLI**（`pi` / `claude` / `agent` / `devin`）。`app` 镜像**不包含**这些二进制，也不带你的登录态（API key / OAuth cookie）。
+
+因此：
+
+- **推荐**：`docker compose up -d postgres` + 本机 `pnpm dev` —— 完整建任务 / 跑 / 停 / 续跑。
+- **仅 Compose 起 `app`**：适合看 UI、调 HTTP/SSE、用 webhook 建草稿；在容器里点「开跑」通常会因找不到 CLI 而失败。
+- 若坚持在容器里 spawn：需自行挂载宿主机 home（工作区路径）、把 CLI 二进制挂进 `PATH`，并挂载各 CLI 的配置/凭证目录；不同工具路径不一，且权限/网络与宿主机差异大，本仓库不默认开启。
+
+工作区目录浏览默认限制在**进程可见的 home** 下；纯容器部署若不挂载 `${HOME}`，侧栏路径选择器看不到宿主机项目。
+
+## 本机启动（非 Docker）
+
+不破坏原有流程；与 Compose 可并存（注意 Postgres 端口）。
 
 ```bash
 cd ~/projects/agent-board
 pnpm install   # 或 npm i / bun i
 
-# Postgres（默认连本机 docker postgres:5432 / 库 agent_board）
+# 默认连本机 Postgres :5432 / 库 agent_board
 export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/agent_board'
 # 若库不存在：
 #   PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE agent_board;'
-# 或使用项目内隔离实例：docker compose up -d  → 端口 5433
+# 或只用 Compose 的库（宿主机 5433）：
+#   docker compose up -d postgres
 #   export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/agent_board'
 
 pnpm dev

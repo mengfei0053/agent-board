@@ -45,6 +45,8 @@ import { publish } from "./bus.js";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
 const port = Number(process.env.PORT || 8791);
+/** Bind address: 127.0.0.1 locally; set HOST=0.0.0.0 in Docker */
+const hostname = (process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
 
 const app = new Hono();
 
@@ -395,8 +397,8 @@ app.use("/*", serveStatic({ root: webRoot }));
 
 async function main() {
   await initStore();
-  serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
-    console.log(`agent-board http://127.0.0.1:${info.port}`);
+  serve({ fetch: app.fetch, port, hostname }, (info) => {
+    console.log(`agent-board http://${hostname}:${info.port}`);
     console.log(`database ${databaseUrl().replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@")}`);
   });
   const shutdown = async () => {
