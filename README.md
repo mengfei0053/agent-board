@@ -67,3 +67,7 @@ pnpm exec node scripts/capture-screenshots.mjs
 ```
 
 截图输出到 `docs/screenshots/`。
+
+## 致谢 / 友情链接
+
+- [LINUX DO](https://linux.do/) — 感谢社区氛围与开源推广支持
