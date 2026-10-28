@@ -60,6 +60,60 @@ const createTitle = document.getElementById("create-title");
 const createHint = document.getElementById("create-hint");
 const createSubmit = document.getElementById("create-submit");
 
+
+const THEME_KEY = "agent-board.theme";
+const THEME_ORDER = ["system", "light", "dark"];
+const THEME_LABEL = {
+  system: "主题：跟随系统（点击切换）",
+  light: "主题：浅色（点击切换）",
+  dark: "主题：深色（点击切换）",
+};
+
+function systemTheme() {
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function readThemePref() {
+  const v = localStorage.getItem(THEME_KEY) || "system";
+  return THEME_ORDER.includes(v) ? v : "system";
+}
+
+function resolveTheme(pref) {
+  return pref === "system" ? systemTheme() : pref;
+}
+
+function applyTheme(pref) {
+  const resolved = resolveTheme(pref);
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.documentElement.setAttribute("data-theme-pref", pref);
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.title = THEME_LABEL[pref] || THEME_LABEL.system;
+    btn.setAttribute("aria-label", THEME_LABEL[pref] || THEME_LABEL.system);
+  }
+}
+
+function initThemeToggle() {
+  applyTheme(readThemePref());
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const cur = readThemePref();
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length];
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+  });
+  const mq = window.matchMedia("(prefers-color-scheme: light)");
+  const onChange = () => {
+    if (readThemePref() === "system") applyTheme("system");
+  };
+  if (typeof mq.addEventListener === "function") mq.addEventListener("change", onChange);
+  else if (typeof mq.addListener === "function") mq.addListener(onChange);
+}
+
+initThemeToggle();
+
+
 const LANES = ["draft", "todo", "running", "done"];
 
 const TAB_STATUSES = {
