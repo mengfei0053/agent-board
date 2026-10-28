@@ -25,7 +25,9 @@ export function spawnLogged(
 
   let buf = "";
   const feed = (chunk: Buffer) => {
+    if (stoppedByUser) return;
     buf += chunk.toString("utf8");
+    // Cap per-chunk processing so a huge dump cannot block the event loop.
     const parts = buf.split(/\r?\n/);
     buf = parts.pop() ?? "";
     for (const line of parts) {
@@ -48,13 +50,16 @@ export function spawnLogged(
   });
 
   child.on("close", (code) => {
+    if (stoppedByUser) {
+      hooks.onLog(JSON.stringify({ type: "exit", code, stopped: true }));
+      return;
+    }
     if (buf.trim()) {
       hooks.onLog(buf);
       opts.classifyLine?.(buf, hooks);
       buf = "";
     }
     hooks.onLog(JSON.stringify({ type: "exit", code }));
-    if (stoppedByUser) return;
     const cur = opts.getStatus();
     if (cur === "stopped" || cur === "failed") return;
     if (code === 0) {
@@ -69,19 +74,60 @@ export function spawnLogged(
     }
   });
 
+  const signalGroup = (sig: NodeJS.Signals) => {
+    if (!child.pid) return;
+    try {
+      process.kill(-child.pid, sig);
+    } catch {
+      try {
+        child.kill(sig);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   return {
     pid: child.pid,
     stop: () => {
+      if (stoppedByUser) return;
       stoppedByUser = true;
-      if (!child.pid) return;
+      // Cut pipes first so exit dumps cannot flood writeLog/SSE on this tick.
       try {
-        process.kill(-child.pid, "SIGTERM");
+        child.stdout?.removeAllListeners("data");
+        child.stderr?.removeAllListeners("data");
+        child.stdout?.destroy();
+        child.stderr?.destroy();
       } catch {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          /* ignore */
-        }
+        /* ignore */
+      }
+      buf = "";
+      signalGroup("SIGTERM");
+      const pid = child.pid;
+      if (pid) {
+        setTimeout(() => {
+          try {
+            // Throws if process is gone
+            process.kill(-pid, 0);
+            signalGroup("SIGKILL");
+          } catch {
+            try {
+              process.kill(pid, 0);
+              try {
+                child.kill("SIGKILL");
+              } catch {
+                /* ignore */
+              }
+            } catch {
+              /* already dead */
+            }
+          }
+        }, 1200).unref?.();
+      }
+      try {
+        child.unref();
+      } catch {
+        /* ignore */
       }
     },
   };

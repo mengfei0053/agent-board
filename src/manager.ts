@@ -28,6 +28,33 @@ import {
 } from "./sideJobs.js";
 
 const handles = new Map<string, RunnerHandle>();
+/** Coalesce rapid output/sideJob patches so stop/SSE stay responsive. */
+const pendingPatch = new Map<string, Partial<Task>>();
+const patchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function flushPendingPatch(id: string) {
+  const timer = patchTimers.get(id);
+  if (timer) clearTimeout(timer);
+  patchTimers.delete(id);
+  const partial = pendingPatch.get(id);
+  pendingPatch.delete(id);
+  if (partial && Object.keys(partial).length) patch(id, partial);
+}
+
+function schedulePatch(id: string, partial: Partial<Task>, immediate = false) {
+  const cur = pendingPatch.get(id) || {};
+  pendingPatch.set(id, { ...cur, ...partial });
+  if (immediate) {
+    flushPendingPatch(id);
+    return;
+  }
+  if (patchTimers.has(id)) return;
+  patchTimers.set(
+    id,
+    setTimeout(() => flushPendingPatch(id), 200),
+  );
+}
+
 
 function now() {
   return new Date().toISOString();
@@ -36,29 +63,39 @@ function now() {
 function writeLog(id: string, line: string) {
   appendLog(id, line);
   const at = now();
-  publish({ type: "task_log", taskId: id, line, at });
-  const piece = extractTextFromEventLine(line);
   const cur = getTask(id);
-  if (!cur) return;
-  const patchPartial: Parameters<typeof patch>[1] = {};
+  // After terminal status, keep logs in DB but do not flood SSE/UI with upserts.
+  const terminal = cur && ["stopped", "succeeded", "failed"].includes(cur.status);
+  if (!terminal) {
+    publish({ type: "task_log", taskId: id, line, at });
+  }
+  if (!cur || terminal) return;
+
+  const patchPartial: Partial<Task> = {};
+  const piece = extractTextFromEventLine(line);
   if (piece) {
     const iter = cur.iteration ?? 1;
-    const outputs = upsertOutputTurn(cur.outputs, { iteration: iter, text: piece, at });
-    const latest = latestOutputText(outputs);
-    if (latest !== cur.output || JSON.stringify(outputs) !== JSON.stringify(cur.outputs ?? [])) {
+    const prevTurn = cur.outputs?.find((o) => o.iteration === iter);
+    if (!prevTurn || prevTurn.text !== piece) {
+      const pending = pendingPatch.get(id);
+      const baseOutputs = (pending?.outputs as Task["outputs"]) || cur.outputs;
+      const outputs = upsertOutputTurn(baseOutputs, { iteration: iter, text: piece, at });
+      const latest = latestOutputText(outputs);
       patchPartial.output = latest;
       patchPartial.outputs = outputs;
       patchPartial.summary = summarizeOutput(latest);
     }
   }
   try {
+    const baseSides =
+      ((pendingPatch.get(id)?.sideJobs as Task["sideJobs"]) || cur.sideJobs);
     const updates = sideJobsFromLogLine(line, at);
-    const merged = mergeSideJobs(cur.sideJobs, updates);
+    const merged = mergeSideJobs(baseSides, updates);
     if (merged) patchPartial.sideJobs = merged;
   } catch {
     /* never break the log stream on parse errors */
   }
-  if (Object.keys(patchPartial).length) patch(id, patchPartial);
+  if (Object.keys(patchPartial).length) schedulePatch(id, patchPartial);
 }
 
 function patch(id: string, partial: Partial<Task>): Task {
@@ -271,17 +308,25 @@ export function continueTask(id: string, prompt?: string): Task {
 export function stopTask(id: string): Task {
   const t = getTask(id);
   if (!t) throw new Error("not found");
-  const h = handles.get(id);
-  h?.stop();
-  handles.delete(id);
+  // Mark stopped first so writeLog stops upsert/SSE flood, then cut the child.
+  flushPendingPatch(id);
   const endedAt = now();
   const sideJobs = finalizeRunningSideJobs(t.sideJobs, endedAt, "stopped") ?? t.sideJobs;
-  return patch(id, {
+  const updated = patch(id, {
     status: "stopped" satisfies TaskStatus,
     endedAt,
     summary: t.summary ?? "stopped by user",
     sideJobs,
+    pid: undefined,
   });
+  const h = handles.get(id);
+  handles.delete(id);
+  try {
+    h?.stop();
+  } catch (err) {
+    console.warn("[stop] kill failed", id, err);
+  }
+  return updated;
 }
 
 /**

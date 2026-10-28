@@ -602,7 +602,33 @@ startBtn.addEventListener("click", async () => {
 
 stopBtn.addEventListener("click", async () => {
   if (!selectedId) return;
-  await fetch(`/api/tasks/${selectedId}/stop`, { method: "POST" });
+  const id = selectedId;
+  stopBtn.disabled = true;
+  const prev = tasks.get(id);
+  if (prev && ["queued", "running", "blocked"].includes(prev.status)) {
+    const optimistic = { ...prev, status: "stopped", pid: undefined };
+    tasks.set(id, optimistic);
+    scheduleRenderList();
+    schedulePaintDetail(optimistic);
+  }
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  try {
+    const res = await fetch(`/api/tasks/${id}/stop`, { method: "POST", signal: ac.signal });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.task) {
+      tasks.set(data.task.id, data.task);
+      scheduleRenderList();
+      if (selectedId === id) schedulePaintDetail(data.task);
+    } else if (!res.ok) {
+      console.warn("stop failed", data.error || res.statusText);
+    }
+  } catch (err) {
+    console.warn("stop request error", err);
+  } finally {
+    clearTimeout(timer);
+    stopBtn.disabled = false;
+  }
 });
 
 deleteBtn.addEventListener("click", async () => {
@@ -788,6 +814,28 @@ document.addEventListener("keydown", (e) => {
   if (!detailModal.classList.contains("hidden")) return closeDetail();
 });
 
+
+let renderListTimer = null;
+let paintDetailTimer = null;
+
+function scheduleRenderList() {
+  if (renderListTimer) return;
+  renderListTimer = setTimeout(() => {
+    renderListTimer = null;
+    renderList();
+  }, 80);
+}
+
+function schedulePaintDetail(task) {
+  if (paintDetailTimer) clearTimeout(paintDetailTimer);
+  paintDetailTimer = setTimeout(() => {
+    paintDetailTimer = null;
+    if (task.id !== selectedId || detailModal.classList.contains("hidden")) return;
+    const lines = logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : [];
+    paintDetail(task, lines);
+  }, 120);
+}
+
 function connectEvents() {
   const es = new EventSource("/api/events");
   es.addEventListener("hello", (ev) => {
@@ -799,9 +847,9 @@ function connectEvents() {
   es.addEventListener("task_upsert", (ev) => {
     const data = JSON.parse(ev.data);
     tasks.set(data.task.id, data.task);
-    renderList();
+    scheduleRenderList();
     if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
-      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
+      schedulePaintDetail(data.task);
     }
   });
   es.addEventListener("task_delete", (ev) => {
@@ -813,13 +861,36 @@ function connectEvents() {
     }
     renderList();
   });
-  es.addEventListener("task_log", (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
-    logEl.textContent += (logEl.textContent ? "\n" : "") + data.line;
+  let logBuf = [];
+  let logFlushTimer = null;
+  const flushLogBuf = () => {
+    logFlushTimer = null;
+    if (!logBuf.length) return;
+    if (!selectedId || detailModal.classList.contains("hidden")) {
+      logBuf = [];
+      return;
+    }
+    const chunk = logBuf.join("\n");
+    logBuf = [];
+    logEl.textContent += (logEl.textContent ? "\n" : "") + chunk;
+    // Cap DOM log size to keep UI responsive
+    const maxChars = 400_000;
+    if (logEl.textContent.length > maxChars) {
+      logEl.textContent = logEl.textContent.slice(-maxChars);
+    }
     logEl.scrollTop = logEl.scrollHeight;
     const n = logEl.textContent.split("\n").filter(Boolean).length;
     logCount.textContent = `（${n} 行）`;
+  };
+  es.addEventListener("task_log", (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
+    logBuf.push(data.line);
+    if (logBuf.length > 200) {
+      flushLogBuf();
+      return;
+    }
+    if (!logFlushTimer) logFlushTimer = setTimeout(flushLogBuf, 100);
   });
   es.onerror = () => {
     es.close();
