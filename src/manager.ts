@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { deleteTasks, getTask, listTasks, logPath, removeLog, upsertTask } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
-import type { BoardLane, CreateTaskInput, Task, TaskStatus } from "./types.js";
+import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
@@ -12,6 +12,11 @@ import {
   extractTextFromEventLine,
   summarizeOutput,
 } from "./extractOutput.js";
+import {
+  finalizeRunningSideJobs,
+  mergeSideJobs,
+  sideJobsFromLogLine,
+} from "./sideJobs.js";
 
 const handles = new Map<string, RunnerHandle>();
 
@@ -23,14 +28,24 @@ function writeLog(id: string, line: string) {
   const p = logPath(id);
   mkdirSync(dirname(p), { recursive: true });
   appendFileSync(p, line.endsWith("\n") ? line : `${line}\n`);
-  publish({ type: "task_log", taskId: id, line, at: now() });
+  const at = now();
+  publish({ type: "task_log", taskId: id, line, at });
   const piece = extractTextFromEventLine(line);
-  if (piece) {
-    const cur = getTask(id);
-    if (cur && cur.output !== piece) {
-      patch(id, { output: piece, summary: summarizeOutput(piece) });
-    }
+  const cur = getTask(id);
+  if (!cur) return;
+  const patchPartial: Parameters<typeof patch>[1] = {};
+  if (piece && cur.output !== piece) {
+    patchPartial.output = piece;
+    patchPartial.summary = summarizeOutput(piece);
   }
+  try {
+    const updates = sideJobsFromLogLine(line, at);
+    const merged = mergeSideJobs(cur.sideJobs, updates);
+    if (merged) patchPartial.sideJobs = merged;
+  } catch {
+    /* never break the log stream on parse errors */
+  }
+  if (Object.keys(patchPartial).length) patch(id, patchPartial);
 }
 
 function patch(id: string, partial: Partial<Task>): Task {
@@ -56,6 +71,20 @@ function applyStatus(id: string, partial: Partial<Task>): Task {
     !merged.endedAt
   ) {
     merged.endedAt = now();
+  }
+  if (
+    merged.status === "succeeded" ||
+    merged.status === "failed" ||
+    merged.status === "stopped"
+  ) {
+    const endedAt = merged.endedAt || now();
+    merged.endedAt = endedAt;
+    const closed = finalizeRunningSideJobs(
+      (merged.sideJobs as SideJob[] | undefined) || cur?.sideJobs,
+      endedAt,
+      merged.status === "failed" ? "failed" : "stopped",
+    );
+    if (closed) merged.sideJobs = closed;
   }
   const next = patch(id, merged);
   if (
@@ -143,6 +172,7 @@ export function startTask(id: string): Task {
     summary: "starting",
     lastEvent: "start",
     pid: undefined,
+    sideJobs: [],
   });
   writeLog(id, JSON.stringify({ type: "start", from: t.status }));
   return spawnRunner(getTask(id)!);
@@ -210,10 +240,13 @@ export function stopTask(id: string): Task {
   const h = handles.get(id);
   h?.stop();
   handles.delete(id);
+  const endedAt = now();
+  const sideJobs = finalizeRunningSideJobs(t.sideJobs, endedAt, "stopped") ?? t.sideJobs;
   return patch(id, {
     status: "stopped" satisfies TaskStatus,
-    endedAt: now(),
+    endedAt,
     summary: t.summary ?? "stopped by user",
+    sideJobs,
   });
 }
 

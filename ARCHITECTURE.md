@@ -119,3 +119,11 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
     "start": true
   }'
 ```
+
+## 后台 / Monitor / 子代理（sideJobs）
+
+从 pi / Claude / Cursor 事件流解析并写入 `Task.sideJobs`：
+
+- pi：`tool_execution_start|end`（`Agent` / `Task*` / `Monitor` / 带 `run_in_background` 的 `Bash`）
+- Claude/Cursor stream-json：`assistant`/`user` 的 `tool_use` / `tool_result`；`system`+task/monitor subtype
+- 详情「后台 / Monitor」；卡片角标「N 后台」；解析失败不影响主流程

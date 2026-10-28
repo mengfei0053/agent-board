@@ -13,6 +13,9 @@ const detailMetaGrid = document.getElementById("detail-meta-grid");
 const detailOutput = document.getElementById("detail-output");
 const detailError = document.getElementById("detail-error");
 const outputHint = document.getElementById("output-hint");
+const detailSidejobsSection = document.getElementById("detail-sidejobs-section");
+const detailSidejobs = document.getElementById("detail-sidejobs");
+const sidejobsHint = document.getElementById("sidejobs-hint");
 const logEl = document.getElementById("log");
 const logCount = document.getElementById("log-count");
 const startBtn = document.getElementById("start-btn");
@@ -189,6 +192,7 @@ function makeCard(t) {
       <div class="card-footer">
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
         <span class="iter-pill" title="迭代次数">迭代 ${iter}</span>
+        ${(t.sideJobs && t.sideJobs.length) ? `<span class="sidejob-pill" title="后台 / Monitor / 子代理">${t.sideJobs.length} 后台</span>` : ""}
         <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
       </div>`;
   const check = btn.querySelector(".card-check");
@@ -395,6 +399,62 @@ function paintOutput(task) {
   }
 }
 
+
+const SIDE_KIND_LABEL = {
+  agent: "子代理",
+  task: "Task",
+  monitor: "Monitor",
+  background: "后台",
+  other: "其他",
+};
+const SIDE_STATUS_LABEL = {
+  running: "进行中",
+  succeeded: "成功",
+  failed: "失败",
+  stopped: "已停止",
+  unknown: "未知",
+};
+
+function paintSideJobs(task) {
+  const jobs = Array.isArray(task.sideJobs) ? task.sideJobs : [];
+  if (!detailSidejobsSection || !detailSidejobs) return;
+  if (!jobs.length) {
+    detailSidejobsSection.hidden = true;
+    detailSidejobs.innerHTML = "";
+    if (sidejobsHint) sidejobsHint.textContent = "";
+    return;
+  }
+  detailSidejobsSection.hidden = false;
+  const running = jobs.filter((j) => j.status === "running").length;
+  if (sidejobsHint) {
+    sidejobsHint.textContent = running
+      ? `${jobs.length} 项 · ${running} 进行中`
+      : `${jobs.length} 项`;
+  }
+  detailSidejobs.innerHTML = jobs.map((j) => {
+    const kind = SIDE_KIND_LABEL[j.kind] || j.kind || "其他";
+    const st = SIDE_STATUS_LABEL[j.status] || j.status || "";
+    const start = formatLocal(j.startedAt);
+    const end = formatLocal(j.endedAt);
+    const times = [
+      start ? `开始 ${escapeHtml(start)}` : "",
+      end ? `结束 ${escapeHtml(end)}` : "",
+    ].filter(Boolean).join(" · ");
+    return `<article class="sidejob-card status-${escapeHtml(j.status || "unknown")}">
+      <div class="sidejob-top">
+        <span class="sidejob-kind">${escapeHtml(kind)}</span>
+        <span class="badge ${escapeHtml(j.status === "running" ? "running" : j.status === "succeeded" ? "succeeded" : j.status === "failed" ? "failed" : "stopped")}">${escapeHtml(st)}</span>
+      </div>
+      <p class="sidejob-title">${escapeHtml(j.title || j.toolName || j.id)}</p>
+      ${j.summary ? `<p class="sidejob-summary">${escapeHtml(j.summary)}</p>` : ""}
+      <div class="sidejob-meta">
+        ${j.toolName ? `<span class="kind-pill">${escapeHtml(j.toolName)}</span>` : ""}
+        ${times ? `<span class="sidejob-times">${times}</span>` : ""}
+      </div>
+    </article>`;
+  }).join("");
+}
+
 function paintDetail(task, logLines) {
   const iter = iterationOf(task);
   const statusText = STATUS_LABEL[task.status] || task.status;
@@ -434,6 +494,7 @@ function paintDetail(task, logLines) {
       createdAt: task.createdAt,
       startedAt: task.startedAt,
       endedAt: task.endedAt,
+      sideJobs: task.sideJobs,
     },
     null,
     2,

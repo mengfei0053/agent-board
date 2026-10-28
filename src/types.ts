@@ -9,6 +9,24 @@ export type TaskStatus =
   | "failed"
   | "stopped";
 
+
+/** Background / sub-agent / monitor jobs observed in the agent event stream */
+export type SideJobKind = "agent" | "task" | "monitor" | "background" | "other";
+
+export type SideJobStatus = "running" | "succeeded" | "failed" | "stopped" | "unknown";
+
+export type SideJob = {
+  id: string;
+  kind: SideJobKind;
+  /** Short label for UI */
+  title: string;
+  summary?: string;
+  status: SideJobStatus;
+  toolName?: string;
+  startedAt?: string;
+  endedAt?: string;
+};
+
 /** Board swimlane keys */
 export type BoardLane = "draft" | "todo" | "running" | "done";
 
@@ -35,6 +53,8 @@ export type Task = {
   lastEvent?: string;
   error?: string;
   exitCode?: number | null;
+  /** Sub-agents / background bash / monitors parsed from event stream */
+  sideJobs?: SideJob[];
 };
 
 export type CreateTaskInput = {
