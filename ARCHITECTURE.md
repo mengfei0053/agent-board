@@ -22,7 +22,7 @@
 ```
 浏览器 ──REST/SSE──▶ Hono 服务（本机）
                         │
-                        ├─ TaskStore（data/db.json）
+                        ├─ TaskStore（Postgres · DATABASE_URL）
                         ├─ Runner 注册表
                         │    ├─ pi:    pi -p --mode json --no-session
                         │    ├─ claude: claude -p --output-format stream-json
@@ -127,3 +127,11 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - pi：`tool_execution_start|end`（`Agent` / `Task*` / `Monitor` / 带 `run_in_background` 的 `Bash`）
 - Claude/Cursor stream-json：`assistant`/`user` 的 `tool_use` / `tool_result`；`system`+task/monitor subtype
 - 详情「后台 / Monitor」；卡片角标「N 后台」；解析失败不影响主流程
+
+## 存储（Postgres）
+
+- 连接串：环境变量 `DATABASE_URL`（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
+- 表：`tasks`、`task_logs`、`task_outputs`、`task_side_jobs`、`meta`
+- 进程内有内存镜像；写入先更新内存再异步落库（API/SSE 行为不变）
+- 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
+- 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`

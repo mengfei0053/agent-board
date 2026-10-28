@@ -19,6 +19,7 @@
     </header>
 
     <nav class="docs-toc">
+      <a href="#storage">存储</a>
       <a href="#overview">概览</a>
       <a href="#webhook">Webhook</a>
       <a href="#create">创建任务</a>
@@ -29,6 +30,14 @@
     </nav>
 
     <main class="docs-main">
+      <section id="storage">
+        <h2>存储（Postgres）</h2>
+        <p>任务 / 日志 / 各轮输出 / sideJobs 持久化在 Postgres。</p>
+        <pre><code>export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/agent_board'
+# 可选隔离实例：docker compose up -d 后改用端口 5433</code></pre>
+        <p>默认库名 <code>agent_board</code>。首次启动会迁移旧 <code>data/db.json</code>。</p>
+      </section>
+
       <section id="overview">
         <h2>概览</h2>
         <p>看板泳道：<code>draft</code>（草稿）→ <code>todo</code>（queued）→ <code>running</code> → <code>done</code>（succeeded / failed / stopped）。</p>

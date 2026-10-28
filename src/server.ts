@@ -19,7 +19,8 @@ import {
   stopTask,
   taskWithOutput,
 } from "./manager.js";
-import { getTask } from "./store.js";
+import { getTask, initStore, flushPersist } from "./store.js";
+import { databaseUrl } from "./db.js";
 import type { AgentKind, BoardLane, CreateTaskInput } from "./types.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 
@@ -274,6 +275,21 @@ app.get("/docs.html", (c) => c.redirect("/docs", 302));
 
 app.use("/*", serveStatic({ root: webRoot }));
 
-serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
-  console.log(`agent-board http://127.0.0.1:${info.port}`);
+async function main() {
+  await initStore();
+  serve({ fetch: app.fetch, port, hostname: "127.0.0.1" }, (info) => {
+    console.log(`agent-board http://127.0.0.1:${info.port}`);
+    console.log(`database ${databaseUrl().replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@")}`);
+  });
+  const shutdown = async () => {
+    await flushPersist();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+}
+
+main().catch((err) => {
+  console.error("failed to start:", err);
+  process.exit(1);
 });

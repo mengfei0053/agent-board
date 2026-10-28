@@ -1,0 +1,23 @@
+# Optional local Postgres for agent-board.
+# ThinkBook already has a postgres:16 container on :5432 — prefer that and only
+# run this compose if you need an isolated instance (maps host 5433).
+services:
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:16-alpine
+    container_name: agent-board-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_board
+    ports:
+      - "5433:5432"
+    volumes:
+      - agent_board_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_board"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  agent_board_pg:

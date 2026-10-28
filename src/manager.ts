@@ -1,7 +1,13 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { nanoid } from "nanoid";
-import { deleteTasks, getTask, listTasks, logPath, removeLog, upsertTask } from "./store.js";
+import {
+  appendLog,
+  deleteTasks,
+  getTask,
+  listTasks,
+  readLogTail as storeReadLogTail,
+  removeLog,
+  upsertTask,
+} from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
 import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus } from "./types.js";
@@ -28,9 +34,7 @@ function now() {
 }
 
 function writeLog(id: string, line: string) {
-  const p = logPath(id);
-  mkdirSync(dirname(p), { recursive: true });
-  appendFileSync(p, line.endsWith("\n") ? line : `${line}\n`);
+  appendLog(id, line);
   const at = now();
   publish({ type: "task_log", taskId: id, line, at });
   const piece = extractTextFromEventLine(line);
@@ -375,10 +379,7 @@ export function boardSnapshot() {
 }
 
 export function readLogTail(id: string, maxLines = 400): string[] {
-  const p = logPath(id);
-  if (!existsSync(p)) return [];
-  const lines = readFileSync(p, "utf8").split(/\r?\n/).filter(Boolean);
-  return lines.slice(-maxLines);
+  return storeReadLogTail(id, maxLines);
 }
 
 export function taskWithOutput(id: string): { task: Task; log: string[] } | undefined {
