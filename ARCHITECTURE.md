@@ -4,7 +4,7 @@
 
 ## 目标
 
-- 在浏览器里创建任务（选 kind、cwd、prompt、可选 model）
+- 左侧工作区 CRUD；右侧显示当前工作区任务（选 kind、prompt、可选 model；cwd 来自工作区）
 - 看到运行中任务的状态：`queued | running | blocked | succeeded | failed | stopped`
 - 实时尾随日志（SSE）
 - 停止任务（杀进程组）
@@ -23,6 +23,7 @@
 浏览器 ──REST/SSE──▶ Hono 服务（本机）
                         │
                         ├─ TaskStore（Postgres · DATABASE_URL）
+                        │     workspaces + tasks.workspace_id
                         ├─ Runner 注册表
                         │    ├─ pi:    pi -p --mode json --no-session
                         │    ├─ claude: claude -p --output-format stream-json

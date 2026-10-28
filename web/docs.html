@@ -187,5 +187,16 @@ npm start</code></pre>
       </section>
     </main>
   </div>
+
+<section>
+  <h2>工作区</h2>
+  <ul>
+    <li><code>GET /api/workspaces</code> — 列表</li>
+    <li><code>POST /api/workspaces</code> — <code>{ name, path }</code></li>
+    <li><code>PATCH /api/workspaces/:id</code> — <code>{ name?, path? }</code></li>
+    <li><code>DELETE /api/workspaces/:id</code> — 无任务时可删（默认工作区不可删）</li>
+  </ul>
+  <p>新建任务优先传 <code>workspaceId</code>；cwd 取自工作区 path。看板左侧侧栏管理工区，右侧只显示当前工区任务。</p>
+</section>
 </body>
 </html>

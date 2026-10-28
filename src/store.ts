@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { OutputTurn, SideJob, Task } from "./types.js";
+import { homedir } from "node:os";
+import { nanoid } from "nanoid";
+import type { OutputTurn, SideJob, Task, Workspace } from "./types.js";
 import {
   archiveJsonDb,
   dataDir,
@@ -15,14 +17,17 @@ export { dataDir, logsDir };
 
 /** In-memory mirror for sync reads; Postgres is the source of truth after init. */
 let tasks = new Map<string, Task>();
+let workspaces = new Map<string, Workspace>();
 let logs = new Map<string, string[]>();
 let ready = false;
 let persistChain: Promise<void> = Promise.resolve();
+let defaultWorkspaceId: string | null = null;
 
 function normalizeTask(t: Task): Task {
   return {
     ...t,
     iteration: typeof t.iteration === "number" && t.iteration >= 1 ? t.iteration : 1,
+    workspaceId: t.workspaceId || defaultWorkspaceId || "",
   };
 }
 
@@ -43,11 +48,20 @@ function iso(v: unknown): string | undefined {
   return String(v);
 }
 
+type WorkspaceRow = {
+  id: string;
+  name: string;
+  path: string;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
 type TaskRow = {
   id: string;
   title: string;
   kind: string;
   cwd: string;
+  workspace_id: string | null;
   prompt: string;
   model: string | null;
   session_id: string | null;
@@ -65,6 +79,16 @@ type TaskRow = {
   exit_code: number | null;
 };
 
+function rowToWorkspace(row: WorkspaceRow): Workspace {
+  return {
+    id: row.id,
+    name: row.name,
+    path: row.path,
+    createdAt: iso(row.created_at)!,
+    updatedAt: iso(row.updated_at)!,
+  };
+}
+
 function rowToTask(
   row: TaskRow,
   outputs: OutputTurn[] | undefined,
@@ -74,6 +98,7 @@ function rowToTask(
     id: row.id,
     title: row.title,
     kind: row.kind as Task["kind"],
+    workspaceId: row.workspace_id || defaultWorkspaceId || "",
     cwd: row.cwd,
     prompt: row.prompt,
     model: row.model ?? undefined,
@@ -95,6 +120,25 @@ function rowToTask(
   });
 }
 
+async function persistWorkspace(ws: Workspace): Promise<void> {
+  const p = getPool();
+  await p.query(
+    `INSERT INTO workspaces (id, name, path, created_at, updated_at)
+     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name,
+       path = EXCLUDED.path,
+       updated_at = EXCLUDED.updated_at`,
+    [ws.id, ws.name, ws.path, ws.createdAt, ws.updatedAt],
+  );
+}
+
+async function persistDeleteWorkspaces(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const p = getPool();
+  await p.query(`DELETE FROM workspaces WHERE id = ANY($1::text[])`, [ids]);
+}
+
 async function persistTask(task: Task): Promise<void> {
   const p = getPool();
   const client = await p.connect();
@@ -102,18 +146,19 @@ async function persistTask(task: Task): Promise<void> {
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO tasks (
-        id, title, kind, cwd, prompt, model, session_id, iteration, status,
+        id, title, kind, cwd, workspace_id, prompt, model, session_id, iteration, status,
         created_at, updated_at, started_at, ended_at, pid, summary, output,
         last_event, error, exit_code
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,
-        $10::timestamptz,$11::timestamptz,$12::timestamptz,$13::timestamptz,$14,$15,$16,
-        $17,$18,$19
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+        $11::timestamptz,$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,$16,$17,
+        $18,$19,$20
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         kind = EXCLUDED.kind,
         cwd = EXCLUDED.cwd,
+        workspace_id = EXCLUDED.workspace_id,
         prompt = EXCLUDED.prompt,
         model = EXCLUDED.model,
         session_id = EXCLUDED.session_id,
@@ -134,6 +179,7 @@ async function persistTask(task: Task): Promise<void> {
         task.title,
         task.kind,
         task.cwd,
+        task.workspaceId || null,
         task.prompt,
         task.model ?? null,
         task.sessionId ?? null,
@@ -201,7 +247,20 @@ async function persistLogLine(taskId: string, line: string): Promise<void> {
   await p.query(`INSERT INTO task_logs (task_id, line) VALUES ($1, $2)`, [taskId, line]);
 }
 
+async function loadWorkspacesFromPg(): Promise<void> {
+  const p = getPool();
+  const res = await p.query<WorkspaceRow>(
+    `SELECT * FROM workspaces ORDER BY created_at ASC`,
+  );
+  workspaces = new Map();
+  for (const row of res.rows) {
+    const ws = rowToWorkspace(row);
+    workspaces.set(ws.id, ws);
+  }
+}
+
 async function loadAllFromPg(): Promise<void> {
+  await loadWorkspacesFromPg();
   const p = getPool();
   const taskRes = await p.query<TaskRow>(`SELECT * FROM tasks ORDER BY created_at DESC`);
   const outRes = await p.query<{
@@ -285,14 +344,16 @@ async function migrateFromJsonIfNeeded(): Promise<void> {
   console.log(`[db] migrating ${list.length} tasks from data/db.json …`);
 
   for (const item of list) {
-    const t = normalizeTask(item);
+    const t = normalizeTask({
+      ...item,
+      workspaceId: item.workspaceId || defaultWorkspaceId || "",
+    });
     tasks.set(t.id, t);
     await persistTask(t);
   }
 
   for (const { id, path } of listJsonlLogFiles()) {
     if (!tasks.has(id) && !list.some((t) => t.id === id)) {
-      // orphan log — still import if we later need; skip without task FK
       continue;
     }
     try {
@@ -315,19 +376,89 @@ async function migrateFromJsonIfNeeded(): Promise<void> {
   console.log("[db] JSON migration complete");
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+async function ensureDefaultWorkspace(): Promise<void> {
+  const p = getPool();
+  await loadWorkspacesFromPg();
+
+  const meta = await p.query<{ value: string }>(
+    `SELECT value FROM meta WHERE key = 'default_workspace_id'`,
+  );
+  let id = meta.rows[0]?.value;
+  if (id && workspaces.has(id)) {
+    defaultWorkspaceId = id;
+  } else if (workspaces.size) {
+    // Prefer existing first workspace
+    defaultWorkspaceId = [...workspaces.values()][0].id;
+    await p.query(
+      `INSERT INTO meta (key, value) VALUES ('default_workspace_id', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [defaultWorkspaceId],
+    );
+  } else {
+    const home = homedir() || "/home/menghongfei";
+    const defaultPath = existsSync(`${home}/projects/agent-board`)
+      ? `${home}/projects/agent-board`
+      : home;
+    const ws: Workspace = {
+      id: nanoid(10),
+      name: "默认工作区",
+      path: defaultPath,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    workspaces.set(ws.id, ws);
+    await persistWorkspace(ws);
+    defaultWorkspaceId = ws.id;
+    await p.query(
+      `INSERT INTO meta (key, value) VALUES ('default_workspace_id', $1)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [ws.id],
+    );
+    console.log(`[db] created default workspace ${ws.id} → ${ws.path}`);
+  }
+
+  // Attach orphan tasks to default workspace
+  const orphan = await p.query(
+    `UPDATE tasks SET workspace_id = $1 WHERE workspace_id IS NULL`,
+    [defaultWorkspaceId],
+  );
+  if ((orphan.rowCount || 0) > 0) {
+    console.log(`[db] migrated ${orphan.rowCount} tasks → default workspace`);
+  }
+}
+
 /** Call once before serving HTTP. */
 export async function initStore(): Promise<void> {
   if (ready) return;
   await ensureSchema();
+  await ensureDefaultWorkspace();
   await migrateFromJsonIfNeeded();
+  // Re-ensure after JSON migration in case new tasks lacked workspace
+  await ensureDefaultWorkspace();
   await loadAllFromPg();
+  // Patch in-memory tasks missing workspaceId
+  for (const [id, t] of tasks) {
+    if (!t.workspaceId && defaultWorkspaceId) {
+      const next = { ...t, workspaceId: defaultWorkspaceId };
+      tasks.set(id, next);
+      enqueuePersist(() => persistTask(next));
+    }
+  }
   ready = true;
-  console.log(`[db] ready · ${tasks.size} tasks · ${databaseUrlRedacted()}`);
+  console.log(
+    `[db] ready · ${workspaces.size} workspaces · ${tasks.size} tasks · ${databaseUrlRedacted()}`,
+  );
 }
 
 function databaseUrlRedacted(): string {
   try {
-    const u = new URL(process.env.DATABASE_URL || "postgresql://postgres@127.0.0.1:5432/agent_board");
+    const u = new URL(
+      process.env.DATABASE_URL || "postgresql://postgres@127.0.0.1:5432/agent_board",
+    );
     if (u.password) u.password = "***";
     return u.toString();
   } catch {
@@ -335,10 +466,44 @@ function databaseUrlRedacted(): string {
   }
 }
 
-export function listTasks(): Task[] {
-  return [...tasks.values()]
-    .map(normalizeTask)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+export function listWorkspaces(): Workspace[] {
+  return [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function getWorkspace(id: string): Workspace | undefined {
+  return workspaces.get(id);
+}
+
+export function getDefaultWorkspaceId(): string {
+  if (!defaultWorkspaceId) throw new Error("default workspace not ready");
+  return defaultWorkspaceId;
+}
+
+export function upsertWorkspace(ws: Workspace): Workspace {
+  workspaces.set(ws.id, ws);
+  enqueuePersist(() => persistWorkspace(ws));
+  return ws;
+}
+
+export function deleteWorkspace(id: string): boolean {
+  if (!workspaces.has(id)) return false;
+  if (id === defaultWorkspaceId) {
+    throw new Error("cannot delete the default workspace");
+  }
+  for (const t of tasks.values()) {
+    if (t.workspaceId === id) {
+      throw new Error("workspace still has tasks; move or delete them first");
+    }
+  }
+  workspaces.delete(id);
+  enqueuePersist(() => persistDeleteWorkspaces([id]));
+  return true;
+}
+
+export function listTasks(workspaceId?: string): Task[] {
+  let list = [...tasks.values()].map(normalizeTask);
+  if (workspaceId) list = list.filter((t) => t.workspaceId === workspaceId);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export function getTask(id: string): Task | undefined {
@@ -392,4 +557,12 @@ export function removeLog(id: string): void {
 
 export function isStoreReady(): boolean {
   return ready;
+}
+
+export function countTasksInWorkspace(workspaceId: string): number {
+  let n = 0;
+  for (const t of tasks.values()) {
+    if (t.workspaceId === workspaceId) n++;
+  }
+  return n;
 }

@@ -42,11 +42,20 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   kind TEXT NOT NULL,
   cwd TEXT NOT NULL,
+  workspace_id TEXT REFERENCES workspaces(id),
   prompt TEXT NOT NULL,
   model TEXT,
   session_id TEXT,
@@ -98,6 +107,11 @@ CREATE TABLE IF NOT EXISTS task_side_jobs (
 export async function ensureSchema(): Promise<void> {
   const p = getPool();
   await p.query(SCHEMA_SQL);
+  // Existing DBs created before workspaces: add column if missing
+  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT`);
+  await p.query(
+    `CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`,
+  );
 }
 
 export function jsonDbExists(): boolean {

@@ -1,5 +1,7 @@
 # agent-board
 
+本机 Agent 看板：左侧工作区 CRUD，右侧泳道任务；新建草稿/Todo 使用当前工作区路径。
+
 本机 Web 看板：新建并管理 **pi / Claude Code / Cursor CLI** 正在跑的任务。
 
 ## 要求

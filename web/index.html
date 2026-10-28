@@ -11,35 +11,59 @@
     <header class="topbar">
       <div>
         <h1>agent-board</h1>
-        <p class="muted">本机看板 · 草稿 / 新建 Todo 直接开跑 · pi / Claude / Cursor</p>
+        <p class="muted">本机看板 · 工作区侧栏 · 草稿 / Todo · pi / Claude / Cursor</p>
       </div>
       <div class="topbar-actions">
         <a class="btn-link secondary" href="/docs">接口文档</a>
-        <input id="search" type="search" placeholder="搜索标题 / 目录 / prompt…" />
+        <input id="search" type="search" placeholder="搜索标题 / prompt…" />
         <button type="button" id="btn-new" class="secondary">新建草稿</button>
         <button type="button" id="btn-new-todo" class="primary">新建 Todo</button>
       </div>
     </header>
 
-    <section class="swimlanes" id="swimlanes">
-      <div class="lane" data-tab="draft">
-        <div class="lane-head"><h2>草稿</h2><span class="count" id="count-draft">0</span></div>
-        <div class="lane-body cards" id="list-draft"></div>
+    <div class="main-layout">
+      <aside class="sidebar" aria-label="工作区">
+        <div class="sidebar-head">
+          <h2>工作区</h2>
+          <button type="button" class="icon-btn" id="ws-add" title="新建工作区" aria-label="新建工作区">+</button>
+        </div>
+        <ul class="ws-list" id="ws-list"></ul>
+        <p class="ws-empty muted" id="ws-empty" hidden>还没有工作区</p>
+      </aside>
+
+      <div class="main-panel">
+        <div class="ws-banner" id="ws-banner">
+          <div class="ws-banner-text">
+            <strong id="ws-banner-name">—</strong>
+            <span class="muted" id="ws-banner-path"></span>
+          </div>
+          <div class="ws-banner-actions">
+            <button type="button" class="secondary" id="ws-edit" title="编辑工作区">编辑</button>
+            <button type="button" class="danger secondary-danger" id="ws-delete" title="删除工作区">删除</button>
+          </div>
+        </div>
+
+        <section class="swimlanes" id="swimlanes">
+          <div class="lane" data-tab="draft">
+            <div class="lane-head"><h2>草稿</h2><span class="count" id="count-draft">0</span></div>
+            <div class="lane-body cards" id="list-draft"></div>
+          </div>
+          <div class="lane" data-tab="todo">
+            <div class="lane-head"><h2>Todo</h2><span class="count" id="count-todo">0</span></div>
+            <div class="lane-body cards" id="list-todo"></div>
+          </div>
+          <div class="lane" data-tab="running">
+            <div class="lane-head"><h2>进行中</h2><span class="count" id="count-running">0</span></div>
+            <div class="lane-body cards" id="list-running"></div>
+          </div>
+          <div class="lane" data-tab="done">
+            <div class="lane-head"><h2>已完成</h2><span class="count" id="count-done">0</span></div>
+            <div class="lane-body cards" id="list-done"></div>
+          </div>
+        </section>
+        <p id="empty" class="empty muted" hidden>当前工作区没有匹配的任务</p>
       </div>
-      <div class="lane" data-tab="todo">
-        <div class="lane-head"><h2>Todo</h2><span class="count" id="count-todo">0</span></div>
-        <div class="lane-body cards" id="list-todo"></div>
-      </div>
-      <div class="lane" data-tab="running">
-        <div class="lane-head"><h2>进行中</h2><span class="count" id="count-running">0</span></div>
-        <div class="lane-body cards" id="list-running"></div>
-      </div>
-      <div class="lane" data-tab="done">
-        <div class="lane-head"><h2>已完成</h2><span class="count" id="count-done">0</span></div>
-        <div class="lane-body cards" id="list-done"></div>
-      </div>
-    </section>
-    <p id="empty" class="empty muted" hidden>没有匹配的任务</p>
+    </div>
   </div>
 
   <div id="bulk-bar" class="bulk-bar hidden" role="toolbar" aria-label="批量操作">
@@ -49,6 +73,31 @@
     <button type="button" class="danger" id="bulk-delete">批量删除</button>
   </div>
 
+  <div id="ws-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="ws-modal-title">新建工作区</h2>
+        <button type="button" class="icon-btn" id="ws-modal-close" aria-label="关闭">×</button>
+      </div>
+      <form id="ws-form">
+        <label>名称
+          <input name="name" id="ws-name" required placeholder="如：agent-board" />
+        </label>
+        <label>路径
+          <div class="cwd-row">
+            <input name="path" id="ws-path" required placeholder="选择或粘贴绝对路径" />
+            <button type="button" id="ws-path-pick" class="secondary">选择文件夹</button>
+          </div>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="secondary" id="ws-modal-cancel">取消</button>
+          <button type="submit" class="primary" id="ws-modal-submit">保存</button>
+        </div>
+        <p id="ws-form-error" class="error" hidden></p>
+      </form>
+    </div>
+  </div>
+
   <div id="create-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card">
       <div class="modal-head">
@@ -56,6 +105,7 @@
         <button type="button" class="icon-btn" id="create-close" aria-label="关闭">×</button>
       </div>
       <p class="muted create-hint" id="create-hint">保存后进入「草稿」列；拖到 Todo 才会开始执行。</p>
+      <p class="create-ws-hint muted" id="create-ws-hint"></p>
       <form id="create-form">
         <label>Agent
           <select name="kind">
@@ -66,12 +116,6 @@
         </label>
         <label>标题（可选）
           <input name="title" placeholder="简短标题" />
-        </label>
-        <label>工作目录
-          <div class="cwd-row">
-            <input name="cwd" id="cwd-input" required placeholder="选择或粘贴路径" value="/home/menghongfei/projects/agent-board" />
-            <button type="button" id="cwd-pick" class="secondary">选择文件夹</button>
-          </div>
         </label>
         <label>Model（可选）
           <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />

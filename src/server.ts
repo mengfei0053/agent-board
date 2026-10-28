@@ -18,11 +18,28 @@ import {
   startTask,
   stopTask,
   taskWithOutput,
+  workspaceSnapshot,
 } from "./manager.js";
-import { getTask, initStore, flushPersist } from "./store.js";
+import {
+  deleteWorkspace,
+  getDefaultWorkspaceId,
+  getWorkspace,
+  initStore,
+  flushPersist,
+  upsertWorkspace,
+} from "./store.js";
 import { databaseUrl } from "./db.js";
-import type { AgentKind, BoardLane, CreateTaskInput } from "./types.js";
+import type {
+  AgentKind,
+  BoardLane,
+  CreateTaskInput,
+  CreateWorkspaceInput,
+  UpdateWorkspaceInput,
+  Workspace,
+} from "./types.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
+import { nanoid } from "nanoid";
+import { publish } from "./bus.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -50,6 +67,7 @@ type HookBody = {
   agent?: string;
   kind?: string;
   cwd?: string;
+  workspaceId?: string;
   model?: string;
   title?: string;
   start?: boolean;
@@ -104,13 +122,23 @@ async function createTaskViaWebhook(c: Context) {
   }
   const kind = kindRaw as AgentKind;
 
+  const workspaceId =
+    typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
   const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
-  if (!cwd) return c.json({ error: "cwd required" }, 400);
-  if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
+  if (workspaceId) {
+    if (!getWorkspace(workspaceId)) {
+      return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+    }
+  } else if (cwd) {
+    if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
+  } else {
+    return c.json({ error: "workspaceId or cwd required" }, 400);
+  }
 
   const input: CreateTaskInput = {
     kind,
-    cwd,
+    workspaceId: workspaceId || undefined,
+    cwd: cwd || undefined,
     prompt,
     title: typeof body.title === "string" ? body.title : undefined,
     model: typeof body.model === "string" ? body.model : undefined,
@@ -133,7 +161,73 @@ app.get("/api/browse", (c) => {
   }
 });
 
-app.get("/api/tasks", (c) => c.json({ tasks: boardSnapshot() }));
+app.get("/api/workspaces", (c) =>
+  c.json({
+    workspaces: workspaceSnapshot(),
+    defaultWorkspaceId: getDefaultWorkspaceId(),
+  }),
+);
+
+app.post("/api/workspaces", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Partial<CreateWorkspaceInput>;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const path = typeof body.path === "string" ? body.path.trim() : "";
+  if (!name) return c.json({ error: "name required" }, 400);
+  if (!path) return c.json({ error: "path required" }, 400);
+  if (!existsSync(path)) return c.json({ error: `path not found: ${path}` }, 400);
+  const now = new Date().toISOString();
+  const ws: Workspace = {
+    id: nanoid(10),
+    name,
+    path,
+    createdAt: now,
+    updatedAt: now,
+  };
+  upsertWorkspace(ws);
+  publish({ type: "workspace_upsert", workspace: ws });
+  return c.json({ workspace: ws }, 201);
+});
+
+app.patch("/api/workspaces/:id", async (c) => {
+  const id = c.req.param("id");
+  const cur = getWorkspace(id);
+  if (!cur) return c.json({ error: "not found" }, 404);
+  const body = (await c.req.json().catch(() => ({}))) as UpdateWorkspaceInput;
+  const name =
+    typeof body.name === "string" && body.name.trim() ? body.name.trim() : cur.name;
+  const path =
+    typeof body.path === "string" && body.path.trim() ? body.path.trim() : cur.path;
+  if (!existsSync(path)) return c.json({ error: `path not found: ${path}` }, 400);
+  const ws: Workspace = {
+    ...cur,
+    name,
+    path,
+    updatedAt: new Date().toISOString(),
+  };
+  upsertWorkspace(ws);
+  publish({ type: "workspace_upsert", workspace: ws });
+  return c.json({ workspace: ws });
+});
+
+app.delete("/api/workspaces/:id", (c) => {
+  const id = c.req.param("id");
+  if (!getWorkspace(id)) return c.json({ error: "not found" }, 404);
+  try {
+    deleteWorkspace(id);
+    publish({ type: "workspace_delete", workspaceIds: [id] });
+    return c.json({ deleted: [id] });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+});
+
+app.get("/api/tasks", (c) => {
+  const workspaceId = c.req.query("workspaceId") || undefined;
+  return c.json({
+    tasks: boardSnapshot(workspaceId),
+    workspaceId: workspaceId || null,
+  });
+});
 
 app.get("/api/tasks/:id", (c) => {
   const data = taskWithOutput(c.req.param("id"));
@@ -142,25 +236,35 @@ app.get("/api/tasks/:id", (c) => {
 });
 
 app.post("/api/tasks", async (c) => {
-  const body = (await c.req.json()) as Partial<CreateTaskInput>;
+  const body = (await c.req.json()) as Partial<CreateTaskInput> & { start?: boolean };
   const kind = body.kind as AgentKind;
   if (!kind || !["pi", "claude", "cursor"].includes(kind)) {
     return c.json({ error: "kind must be pi|claude|cursor" }, 400);
   }
-  if (!body.cwd || !body.prompt?.trim()) {
-    return c.json({ error: "cwd and prompt required" }, 400);
+  if (!body.prompt?.trim()) {
+    return c.json({ error: "prompt required" }, 400);
   }
-  if (!existsSync(body.cwd)) {
-    return c.json({ error: `cwd not found: ${body.cwd}` }, 400);
+  const workspaceId =
+    typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
+  const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+  if (workspaceId) {
+    if (!getWorkspace(workspaceId)) {
+      return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+    }
+  } else if (cwd) {
+    if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
+  } else {
+    return c.json({ error: "workspaceId or cwd required" }, 400);
   }
-  const input = {
+  const input: CreateTaskInput = {
     kind,
-    cwd: body.cwd,
+    workspaceId: workspaceId || undefined,
+    cwd: cwd || undefined,
     prompt: body.prompt.trim(),
     title: body.title,
     model: body.model,
   };
-  const start = Boolean((body as { start?: boolean }).start);
+  const start = Boolean(body.start);
   try {
     const task = start ? createAndStart(input) : createDraft(input);
     return c.json({ task }, 201);
@@ -248,7 +352,11 @@ app.get("/api/events", (c) => {
   return streamSSE(c, async (stream) => {
     await stream.writeSSE({
       event: "hello",
-      data: JSON.stringify({ type: "hello", tasks: boardSnapshot() }),
+      data: JSON.stringify({
+        type: "hello",
+        tasks: boardSnapshot(),
+        workspaces: workspaceSnapshot(),
+      }),
     });
     const unsub = subscribe((ev) => {
       void stream.writeSSE({ event: ev.type, data: JSON.stringify(ev) });

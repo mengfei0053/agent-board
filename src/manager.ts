@@ -2,15 +2,18 @@ import { nanoid } from "nanoid";
 import {
   appendLog,
   deleteTasks,
+  getDefaultWorkspaceId,
   getTask,
+  getWorkspace,
   listTasks,
+  listWorkspaces,
   readLogTail as storeReadLogTail,
   removeLog,
   upsertTask,
 } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
-import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus } from "./types.js";
+import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus, Workspace } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
@@ -193,15 +196,31 @@ function spawnRunner(task: Task): Task {
   return getTask(id)!;
 }
 
+function resolveCreateCwd(input: CreateTaskInput): { workspaceId: string; cwd: string } {
+  if (input.workspaceId) {
+    const ws = getWorkspace(input.workspaceId);
+    if (!ws) throw new Error(`workspace not found: ${input.workspaceId}`);
+    return { workspaceId: ws.id, cwd: ws.path };
+  }
+  const cwd = input.cwd?.trim() || "";
+  if (!cwd) throw new Error("workspaceId or cwd required");
+  // Prefer matching existing workspace by path; else attach to default
+  const match = listWorkspaces().find((w) => w.path === cwd);
+  if (match) return { workspaceId: match.id, cwd: match.path };
+  return { workspaceId: getDefaultWorkspaceId(), cwd };
+}
+
 /** Create a draft — do not spawn. */
 export function createDraft(input: CreateTaskInput): Task {
   const id = nanoid(10);
+  const { workspaceId, cwd } = resolveCreateCwd(input);
   const title = input.title?.trim() || input.prompt.trim().slice(0, 48) || `${input.kind} task`;
   const task: Task = {
     id,
     title,
     kind: input.kind,
-    cwd: input.cwd,
+    workspaceId,
+    cwd,
     prompt: input.prompt,
     model: input.model?.trim() || resolveDefaultModel(input.kind),
     iteration: 1,
@@ -419,8 +438,12 @@ export function removeTasks(ids: string[]): {
   return { deleted, stopped, skipped };
 }
 
-export function boardSnapshot() {
-  return listTasks();
+export function boardSnapshot(workspaceId?: string): Task[] {
+  return listTasks(workspaceId);
+}
+
+export function workspaceSnapshot(): Workspace[] {
+  return listWorkspaces();
 }
 
 export function readLogTail(id: string, maxLines = 400): string[] {

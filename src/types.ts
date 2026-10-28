@@ -38,10 +38,21 @@ export type OutputTurn = {
 /** Board swimlane keys */
 export type BoardLane = "draft" | "todo" | "running" | "done";
 
+export type Workspace = {
+  id: string;
+  name: string;
+  /** Absolute path used as task cwd */
+  path: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Task = {
   id: string;
   title: string;
   kind: AgentKind;
+  /** Workspace this task belongs to */
+  workspaceId: string;
   cwd: string;
   prompt: string;
   model?: string;
@@ -70,9 +81,22 @@ export type Task = {
 export type CreateTaskInput = {
   title?: string;
   kind: AgentKind;
-  cwd: string;
+  /** Preferred: create under this workspace (cwd taken from workspace.path) */
+  workspaceId?: string;
+  /** Fallback when workspaceId omitted (webhook / legacy) */
+  cwd?: string;
   prompt: string;
   model?: string;
+};
+
+export type CreateWorkspaceInput = {
+  name: string;
+  path: string;
+};
+
+export type UpdateWorkspaceInput = {
+  name?: string;
+  path?: string;
 };
 
 export type ContinueTaskInput = {
@@ -83,4 +107,6 @@ export type BoardEvent =
   | { type: "task_upsert"; task: Task }
   | { type: "task_delete"; taskIds: string[] }
   | { type: "task_log"; taskId: string; line: string; at: string }
-  | { type: "hello"; tasks: Task[] };
+  | { type: "workspace_upsert"; workspace: Workspace }
+  | { type: "workspace_delete"; workspaceIds: string[] }
+  | { type: "hello"; tasks: Task[]; workspaces: Workspace[] };

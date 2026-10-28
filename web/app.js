@@ -26,18 +26,34 @@ const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
-const cwdInput = document.getElementById("cwd-input");
-const cwdPick = document.getElementById("cwd-pick");
 const bulkBar = document.getElementById("bulk-bar");
+const wsListEl = document.getElementById("ws-list");
+const wsEmptyEl = document.getElementById("ws-empty");
+const wsBannerName = document.getElementById("ws-banner-name");
+const wsBannerPath = document.getElementById("ws-banner-path");
+const wsModal = document.getElementById("ws-modal");
+const wsForm = document.getElementById("ws-form");
+const wsFormError = document.getElementById("ws-form-error");
+const wsNameInput = document.getElementById("ws-name");
+const wsPathInput = document.getElementById("ws-path");
+const createWsHint = document.getElementById("create-ws-hint");
 const bulkCount = document.getElementById("bulk-count");
 
 /** @type {Map<string, any>} */
 const tasks = new Map();
+/** @type {Map<string, any>} */
+const workspaces = new Map();
 /** @type {Set<string>} */
 const selected = new Set();
 let selectedId = null;
+/** @type {string|null} */
+let selectedWorkspaceId = localStorage.getItem("agent-board.workspaceId") || null;
 let query = "";
 let dragTaskId = null;
+/** @type {string|null} */
+let editingWorkspaceId = null;
+/** @type {(path: string) => void} */
+let folderPickTarget = null;
 /** @type {"draft"|"todo"} */
 let createMode = "draft";
 const createTitle = document.getElementById("create-title");
@@ -142,11 +158,11 @@ function timeRowsHtml(t) {
 }
 
 function visibleTaskIds() {
-  return [...tasks.values()].filter(matchesQuery).map((t) => t.id);
+  return tasksInCurrentWorkspace().filter(matchesQuery).map((t) => t.id);
 }
 
 function updateCounts() {
-  const all = [...tasks.values()].filter(matchesQuery);
+  const all = tasksInCurrentWorkspace().filter(matchesQuery);
   const c = { draft: 0, todo: 0, running: 0, done: 0 };
   for (const t of all) c[tabOf(t.status)]++;
   for (const key of LANES) {
@@ -241,7 +257,7 @@ function ensureLaneSelectButtons() {
     btn.title = "全选本泳道（当前筛选）";
     btn.onclick = (e) => {
       e.stopPropagation();
-      const ids = [...tasks.values()]
+      const ids = tasksInCurrentWorkspace()
         .filter((t) => matchesQuery(t) && tabOf(t.status) === key)
         .map((t) => t.id);
       for (const id of ids) selected.add(id);
@@ -308,12 +324,21 @@ async function moveToLane(id, lane) {
   }
 }
 
+function tasksInCurrentWorkspace() {
+  const out = [];
+  for (const t of tasks.values()) {
+    if (selectedWorkspaceId && t.workspaceId !== selectedWorkspaceId) continue;
+    out.push(t);
+  }
+  return out;
+}
+
 function renderList() {
   ensureLaneSelectButtons();
   bindLaneDropTargets();
   updateCounts();
   const buckets = { draft: [], todo: [], running: [], done: [] };
-  for (const t of tasks.values()) {
+  for (const t of tasksInCurrentWorkspace()) {
     if (!matchesQuery(t)) continue;
     buckets[tabOf(t.status)].push(t);
   }
@@ -330,15 +355,23 @@ function renderList() {
 }
 
 function openCreate(mode = "draft") {
+  if (!selectedWorkspaceId || !workspaces.get(selectedWorkspaceId)) {
+    window.alert("请先在左侧选择或新建一个工作区");
+    return;
+  }
   createMode = mode === "todo" ? "todo" : "draft";
   formError.hidden = true;
+  const ws = workspaces.get(selectedWorkspaceId);
+  if (createWsHint) {
+    createWsHint.textContent = `工作区：${ws.name} · ${ws.path}`;
+  }
   if (createMode === "todo") {
     createTitle.textContent = "新建 Todo";
-    createHint.textContent = "创建后直接进入 Todo 并开始执行。";
+    createHint.textContent = "创建后直接进入 Todo 并开始执行（使用当前工作区路径）。";
     createSubmit.textContent = "创建并开始";
   } else {
     createTitle.textContent = "新建草稿";
-    createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行。";
+    createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行（使用当前工作区路径）。";
     createSubmit.textContent = "保存草稿";
   }
   createModal.classList.remove("hidden");
@@ -494,6 +527,7 @@ function paintDetail(task, logLines) {
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),
     metaItem("退出码", task.exitCode != null ? String(task.exitCode) : "—"),
     metaItem("会话", task.sessionId || "—", true),
+    metaItem("工作区", (task.workspaceId && workspaces.get(task.workspaceId)?.name) || task.workspaceId || "—"),
     metaItem("工作目录", task.cwd, true),
     metaItem("任务内容", task.prompt, true),
   ].join("");
@@ -505,6 +539,7 @@ function paintDetail(task, logLines) {
       status: task.status,
       iteration: iter,
       sessionId: task.sessionId,
+      workspaceId: task.workspaceId,
       cwd: task.cwd,
       model: task.model,
       pid: task.pid,
@@ -567,11 +602,16 @@ searchEl.addEventListener("input", () => {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   formError.hidden = true;
+  if (!selectedWorkspaceId) {
+    formError.hidden = false;
+    formError.textContent = "未选择工作区";
+    return;
+  }
   const fd = new FormData(form);
   const body = {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
-    cwd: fd.get("cwd"),
+    workspaceId: selectedWorkspaceId,
     model: fd.get("model") || undefined,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
@@ -589,10 +629,10 @@ form.addEventListener("submit", async (e) => {
   }
   tasks.set(data.task.id, data.task);
   closeCreate();
+  renderWorkspaces();
   renderList();
   openDetail(data.task.id);
   form.reset();
-  cwdInput.value = "/home/menghongfei/projects/agent-board";
 });
 
 startBtn.addEventListener("click", async () => {
@@ -763,7 +803,9 @@ function ensureFolderModal() {
     if (parent) loadFolder(parent);
   };
   document.getElementById("folder-use").onclick = () => {
-    cwdInput.value = modal.dataset.path || cwdInput.value;
+    const path = modal.dataset.path || "";
+    if (folderPickTarget) folderPickTarget(path);
+    else if (wsPathInput) wsPathInput.value = path;
     closeFolderModal();
   };
   return modal;
@@ -801,19 +843,133 @@ async function loadFolder(path) {
   }
 }
 
-cwdPick?.addEventListener("click", async () => {
+document.getElementById("ws-path-pick")?.addEventListener("click", async () => {
+  folderPickTarget = (path) => { wsPathInput.value = path; };
   const modal = ensureFolderModal();
   modal.classList.remove("hidden");
-  await loadFolder(cwdInput.value.trim() || undefined);
+  await loadFolder(wsPathInput.value.trim() || undefined);
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!document.getElementById("folder-modal")?.classList.contains("hidden")) return closeFolderModal();
+  if (!wsModal.classList.contains("hidden")) return closeWsModal();
   if (!createModal.classList.contains("hidden")) return closeCreate();
   if (!detailModal.classList.contains("hidden")) return closeDetail();
 });
 
+
+
+function ensureSelectedWorkspace(fallbackId) {
+  if (selectedWorkspaceId && workspaces.has(selectedWorkspaceId)) return;
+  const prefer = fallbackId && workspaces.has(fallbackId) ? fallbackId : null;
+  selectedWorkspaceId = prefer || [...workspaces.keys()][0] || null;
+  if (selectedWorkspaceId) localStorage.setItem("agent-board.workspaceId", selectedWorkspaceId);
+}
+
+function selectWorkspace(id) {
+  if (!workspaces.has(id)) return;
+  selectedWorkspaceId = id;
+  localStorage.setItem("agent-board.workspaceId", id);
+  selected.clear();
+  if (selectedId) {
+    const t = tasks.get(selectedId);
+    if (t && t.workspaceId !== id) closeDetail();
+  }
+  renderWorkspaces();
+  renderList();
+}
+
+function renderWorkspaces() {
+  if (!wsListEl) return;
+  wsListEl.innerHTML = "";
+  const list = [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (wsEmptyEl) wsEmptyEl.hidden = list.length > 0;
+  for (const w of list) {
+    let count = 0;
+    for (const t of tasks.values()) if (t.workspaceId === w.id) count++;
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ws-item" + (w.id === selectedWorkspaceId ? " active" : "");
+    btn.innerHTML = `<span class="ws-item-name">${escapeHtml(w.name)}</span>
+      <span class="ws-item-path">${escapeHtml(w.path)}</span>
+      <span class="ws-item-count">${count} 个任务</span>`;
+    btn.onclick = () => selectWorkspace(w.id);
+    li.appendChild(btn);
+    wsListEl.appendChild(li);
+  }
+  const cur = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
+  if (wsBannerName) wsBannerName.textContent = cur ? cur.name : "未选择工作区";
+  if (wsBannerPath) wsBannerPath.textContent = cur ? cur.path : "请在左侧新建或选择工作区";
+  const canMutate = Boolean(cur);
+  document.getElementById("ws-edit").disabled = !canMutate;
+  document.getElementById("ws-delete").disabled = !canMutate;
+}
+
+function openWsModal(mode, ws) {
+  editingWorkspaceId = mode === "edit" && ws ? ws.id : null;
+  wsFormError.hidden = true;
+  document.getElementById("ws-modal-title").textContent = editingWorkspaceId ? "编辑工作区" : "新建工作区";
+  wsNameInput.value = ws?.name || "";
+  wsPathInput.value = ws?.path || "";
+  wsModal.classList.remove("hidden");
+  wsNameInput.focus();
+}
+
+function closeWsModal() {
+  wsModal.classList.add("hidden");
+  editingWorkspaceId = null;
+}
+
+document.getElementById("ws-add").onclick = () => openWsModal("create");
+document.getElementById("ws-edit").onclick = () => {
+  const ws = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
+  if (ws) openWsModal("edit", ws);
+};
+document.getElementById("ws-delete").onclick = async () => {
+  const ws = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
+  if (!ws) return;
+  if (!window.confirm(`删除工作区「${ws.name}」？\n若仍有任务将无法删除。`)) return;
+  const res = await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    window.alert(data.error || res.statusText);
+    return;
+  }
+  workspaces.delete(ws.id);
+  ensureSelectedWorkspace();
+  renderWorkspaces();
+  renderList();
+};
+document.getElementById("ws-modal-close").onclick = closeWsModal;
+document.getElementById("ws-modal-cancel").onclick = closeWsModal;
+wsModal.addEventListener("click", (e) => { if (e.target === wsModal) closeWsModal(); });
+
+wsForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  wsFormError.hidden = true;
+  const body = {
+    name: wsNameInput.value.trim(),
+    path: wsPathInput.value.trim(),
+  };
+  const url = editingWorkspaceId ? `/api/workspaces/${editingWorkspaceId}` : "/api/workspaces";
+  const method = editingWorkspaceId ? "PATCH" : "POST";
+  const res = await fetch(url, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    wsFormError.hidden = false;
+    wsFormError.textContent = data.error || res.statusText;
+    return;
+  }
+  workspaces.set(data.workspace.id, data.workspace);
+  selectWorkspace(data.workspace.id);
+  closeWsModal();
+});
 
 let renderListTimer = null;
 let paintDetailTimer = null;
@@ -842,6 +998,24 @@ function connectEvents() {
     const data = JSON.parse(ev.data);
     tasks.clear();
     for (const t of data.tasks || []) tasks.set(t.id, t);
+    workspaces.clear();
+    for (const w of data.workspaces || []) workspaces.set(w.id, w);
+    ensureSelectedWorkspace();
+    renderWorkspaces();
+    renderList();
+  });
+  es.addEventListener("workspace_upsert", (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.workspace) {
+      workspaces.set(data.workspace.id, data.workspace);
+      renderWorkspaces();
+    }
+  });
+  es.addEventListener("workspace_delete", (ev) => {
+    const data = JSON.parse(ev.data);
+    for (const id of data.workspaceIds || []) workspaces.delete(id);
+    ensureSelectedWorkspace();
+    renderWorkspaces();
     renderList();
   });
   es.addEventListener("task_upsert", (ev) => {
@@ -899,9 +1073,14 @@ function connectEvents() {
 }
 
 connectEvents();
-fetch("/api/tasks")
-  .then((r) => r.json())
-  .then((data) => {
-    for (const t of data.tasks || []) tasks.set(t.id, t);
-    renderList();
-  });
+Promise.all([
+  fetch("/api/workspaces").then((r) => r.json()),
+  fetch("/api/tasks").then((r) => r.json()),
+]).then(([wsData, taskData]) => {
+  workspaces.clear();
+  for (const w of wsData.workspaces || []) workspaces.set(w.id, w);
+  for (const t of taskData.tasks || []) tasks.set(t.id, t);
+  ensureSelectedWorkspace(wsData.defaultWorkspaceId);
+  renderWorkspaces();
+  renderList();
+});
