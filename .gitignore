@@ -1,5 +1,4 @@
-data/db.json
-data/logs/
+data/
 dist/
 .DS_Store
 .env
