@@ -351,6 +351,11 @@ function renderList() {
     for (const t of items) el.appendChild(makeCard(t));
   }
   emptyEl.hidden = total > 0;
+  if (!total) {
+    emptyEl.textContent = query.trim()
+      ? "没有匹配当前搜索的任务"
+      : "当前工作区暂无任务，点击右上角「新建草稿」或「新建 Todo」开始";
+  }
   updateBulkBar();
 }
 

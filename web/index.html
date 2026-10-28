@@ -9,13 +9,18 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div>
-        <h1>agent-board</h1>
-        <p class="muted">本机看板 · 工作区侧栏 · 草稿 / Todo · pi / Claude / Cursor</p>
+      <div class="topbar-brand">
+        <div class="brand-mark" aria-hidden="true">ab</div>
+        <div>
+          <h1>agent-board</h1>
+          <p class="muted">本机 Agent 看板 · 工作区 / 泳道 / SSE</p>
+        </div>
       </div>
       <div class="topbar-actions">
         <a class="btn-link secondary" href="/docs">接口文档</a>
-        <input id="search" type="search" placeholder="搜索标题 / prompt…" />
+        <div class="search-wrap">
+          <input id="search" type="search" placeholder="搜索标题 / prompt…" autocomplete="off" />
+        </div>
         <button type="button" id="btn-new" class="secondary">新建草稿</button>
         <button type="button" id="btn-new-todo" class="primary">新建 Todo</button>
       </div>
@@ -28,18 +33,19 @@
           <button type="button" class="icon-btn" id="ws-add" title="新建工作区" aria-label="新建工作区">+</button>
         </div>
         <ul class="ws-list" id="ws-list"></ul>
-        <p class="ws-empty muted" id="ws-empty" hidden>还没有工作区</p>
+        <p class="ws-empty muted" id="ws-empty" hidden>还没有工作区，点击右上角 + 创建</p>
       </aside>
 
       <div class="main-panel">
         <div class="ws-banner" id="ws-banner">
           <div class="ws-banner-text">
+            <span class="ws-banner-kicker">当前工作区</span>
             <strong id="ws-banner-name">—</strong>
-            <span class="muted" id="ws-banner-path"></span>
+            <span class="muted ws-banner-path" id="ws-banner-path"></span>
           </div>
           <div class="ws-banner-actions">
             <button type="button" class="secondary" id="ws-edit" title="编辑工作区">编辑</button>
-            <button type="button" class="danger secondary-danger" id="ws-delete" title="删除工作区">删除</button>
+            <button type="button" class="secondary-danger" id="ws-delete" title="删除工作区">删除</button>
           </div>
         </div>
 
@@ -177,7 +183,7 @@
         <div class="detail-footer-actions">
           <button type="button" id="start-btn" class="primary" hidden>开始任务</button>
           <button type="button" id="stop-btn" class="danger" hidden>停止</button>
-          <button type="button" id="delete-btn" class="danger secondary-danger" hidden>删除</button>
+          <button type="button" id="delete-btn" class="secondary-danger" hidden>删除</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
           <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」"></textarea>
