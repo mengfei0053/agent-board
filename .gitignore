@@ -1,6 +1,7 @@
-node_modules/
-dist/
 data/db.json
 data/logs/
-*.log
+dist/
 .DS_Store
+.env
+*.log
+node_modules/
