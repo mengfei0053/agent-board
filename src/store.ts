@@ -19,6 +19,23 @@ export { dataDir, logsDir };
 let tasks = new Map<string, Task>();
 let workspaces = new Map<string, Workspace>();
 let logs = new Map<string, string[]>();
+
+/** Cap a single log line — agent_end / tool dumps can be multi-MB JSON. */
+export const MAX_LOG_LINE_CHARS = 8_000;
+/** Soft cap for in-memory lines kept per task. */
+export const MAX_LOG_LINES_KEPT = 3_000;
+/** UI/API default: last N lines. */
+export const DEFAULT_LOG_TAIL_LINES = 400;
+/** UI/API default: total chars across returned lines. */
+export const DEFAULT_LOG_TAIL_CHARS = 240_000;
+
+export function truncateLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS): string {
+  if (line.length <= maxChars) return line;
+  const omitted = line.length - maxChars;
+  return `${line.slice(0, maxChars)}…[truncated ${omitted} chars]`;
+}
+
+
 let ready = false;
 let persistChain: Promise<void> = Promise.resolve();
 let defaultWorkspaceId: string | null = null;
@@ -320,7 +337,10 @@ async function loadAllFromPg(): Promise<void> {
   );
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
-    arr.push(r.line);
+    arr.push(truncateLogLine(r.line));
+    if (arr.length > MAX_LOG_LINES_KEPT) {
+      arr.splice(0, arr.length - MAX_LOG_LINES_KEPT);
+    }
     logs.set(r.task_id, arr);
   }
 }
@@ -536,16 +556,37 @@ export function logPath(id: string) {
 }
 
 export function appendLog(id: string, line: string): void {
-  const cleaned = line.endsWith("\n") ? line.slice(0, -1) : line;
+  const cleaned = truncateLogLine(line.endsWith("\n") ? line.slice(0, -1) : line);
   const arr = logs.get(id) || [];
   arr.push(cleaned);
+  if (arr.length > MAX_LOG_LINES_KEPT) {
+    arr.splice(0, arr.length - MAX_LOG_LINES_KEPT);
+  }
   logs.set(id, arr);
   enqueuePersist(() => persistLogLine(id, cleaned));
 }
 
-export function readLogTail(id: string, maxLines = 400): string[] {
+export function logLineCount(id: string): number {
+  return (logs.get(id) || []).length;
+}
+
+export function readLogTail(
+  id: string,
+  maxLines = DEFAULT_LOG_TAIL_LINES,
+  maxTotalChars = DEFAULT_LOG_TAIL_CHARS,
+): string[] {
   const arr = logs.get(id) || [];
-  return arr.slice(-maxLines);
+  const slice = arr.slice(-Math.max(1, maxLines)).map((l) => truncateLogLine(l));
+  let total = 0;
+  const out: string[] = [];
+  for (let i = slice.length - 1; i >= 0; i--) {
+    const line = slice[i];
+    if (out.length && total + line.length > maxTotalChars) break;
+    out.push(line);
+    total += line.length;
+  }
+  out.reverse();
+  return out;
 }
 
 export function removeLog(id: string): void {

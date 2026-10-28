@@ -8,7 +8,6 @@ const createModal = document.getElementById("create-modal");
 const detailModal = document.getElementById("detail-modal");
 const detailTitle = document.getElementById("detail-title");
 const detailSub = document.getElementById("detail-sub");
-const detailMeta = document.getElementById("detail-meta");
 const detailMetaGrid = document.getElementById("detail-meta-grid");
 const detailOutput = document.getElementById("detail-output");
 const detailError = document.getElementById("detail-error");
@@ -16,8 +15,12 @@ const outputHint = document.getElementById("output-hint");
 const detailSidejobsSection = document.getElementById("detail-sidejobs-section");
 const detailSidejobs = document.getElementById("detail-sidejobs");
 const sidejobsHint = document.getElementById("sidejobs-hint");
-const logEl = document.getElementById("log");
 const logCount = document.getElementById("log-count");
+const logViewerModal = document.getElementById("log-viewer-modal");
+const logViewerBody = document.getElementById("log-viewer-body");
+const logViewerHint = document.getElementById("log-viewer-hint");
+const metaViewerModal = document.getElementById("meta-viewer-modal");
+const metaViewerBody = document.getElementById("meta-viewer-body");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const deleteBtn = document.getElementById("delete-btn");
@@ -48,6 +51,13 @@ const selected = new Set();
 let selectedId = null;
 /** @type {string|null} */
 let selectedWorkspaceId = localStorage.getItem("agent-board.workspaceId") || null;
+/** In-memory log buffer for the open detail (not mounted in main detail DOM). */
+let selectedLogLines = [];
+let selectedLogCount = 0;
+/** Cache last painted output signature to avoid re-markdown on identical SSE ticks. */
+let lastOutputSig = "";
+let lastPaintedTaskId = null;
+
 let query = "";
 let dragTaskId = null;
 /** @type {string|null} */
@@ -373,7 +383,7 @@ async function moveToLane(id, lane) {
     tasks.set(data.task.id, data.task);
     renderList();
     if (selectedId === id && !detailModal.classList.contains("hidden")) {
-      paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
+      paintDetail(data.task);
     }
   }
 }
@@ -441,12 +451,18 @@ function closeCreate() {
 
 async function openDetail(id) {
   selectedId = id;
+  selectedLogLines = [];
+  selectedLogCount = 0;
+  lastOutputSig = "";
+  lastPaintedTaskId = null;
   detailModal.classList.remove("hidden");
   const res = await fetch(`/api/tasks/${id}`);
   if (!res.ok) return;
   const data = await res.json();
   tasks.set(id, data.task);
-  paintDetail(data.task, data.log || []);
+  selectedLogCount = Number(data.logLineCount) || 0;
+  // Intentionally ignore data.log — raw log stays out of the main detail DOM.
+  paintDetail(data.task);
   renderList();
 }
 
@@ -458,7 +474,20 @@ function metaItem(k, v, wide = false) {
   return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span><span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span></div>`;
 }
 
+function outputSignature(task) {
+  const turns = Array.isArray(task.outputs) ? task.outputs : [];
+  const parts = turns.map((o) => `${o.iteration}:${(o.text || "").length}:${o.at || ""}`);
+  return `${task.id}|${task.status}|${task.output?.length || 0}|${parts.join(";")}|${task.error || ""}|${task.exitCode ?? ""}`;
+}
+
 function paintOutput(task) {
+  const sig = outputSignature(task);
+  if (lastPaintedTaskId === task.id && lastOutputSig === sig && detailOutput.childNodes.length) {
+    return;
+  }
+  lastPaintedTaskId = task.id;
+  lastOutputSig = sig;
+
   const running = ["queued", "running", "blocked"].includes(task.status);
   const hasOutput = Boolean(task.output && task.output.trim()) ||
     (Array.isArray(task.outputs) && task.outputs.some((o) => o?.text?.trim()));
@@ -568,7 +597,40 @@ function paintSideJobs(task) {
   }).join("");
 }
 
-function paintDetail(task, logLines) {
+function buildMetaJson(task) {
+  const iter = iterationOf(task);
+  return {
+    id: task.id,
+    kind: task.kind,
+    status: task.status,
+    iteration: iter,
+    sessionId: task.sessionId,
+    workspaceId: task.workspaceId,
+    cwd: task.cwd,
+    model: task.model,
+    pid: task.pid,
+    lastEvent: task.lastEvent,
+    error: task.error,
+    exitCode: task.exitCode,
+    summary: task.summary,
+    createdAt: task.createdAt,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    sideJobs: task.sideJobs,
+    // Omit full output texts here if huge; keep turn lengths for debugging.
+    outputs: Array.isArray(task.outputs)
+      ? task.outputs.map((o) => ({
+          iteration: o.iteration,
+          at: o.at,
+          textLength: (o.text || "").length,
+          textPreview: String(o.text || "").slice(0, 500),
+        }))
+      : undefined,
+    outputLength: task.output ? task.output.length : 0,
+  };
+}
+
+function paintDetail(task) {
   const iter = iterationOf(task);
   const statusText = STATUS_LABEL[task.status] || task.status;
   detailTitle.textContent = task.title;
@@ -591,37 +653,12 @@ function paintDetail(task, logLines) {
     metaItem("任务内容", task.prompt, true),
   ].join("");
 
-  detailMeta.textContent = JSON.stringify(
-    {
-      id: task.id,
-      kind: task.kind,
-      status: task.status,
-      iteration: iter,
-      sessionId: task.sessionId,
-      workspaceId: task.workspaceId,
-      cwd: task.cwd,
-      model: task.model,
-      pid: task.pid,
-      lastEvent: task.lastEvent,
-      error: task.error,
-      exitCode: task.exitCode,
-      summary: task.summary,
-      createdAt: task.createdAt,
-      startedAt: task.startedAt,
-      endedAt: task.endedAt,
-      sideJobs: task.sideJobs,
-      outputs: task.outputs,
-    },
-    null,
-    2,
-  );
-
   paintOutput(task);
+  paintSideJobs(task);
 
-  const lines = Array.isArray(logLines) ? logLines : [];
-  logEl.textContent = lines.join("\n");
-  logEl.scrollTop = logEl.scrollHeight;
-  logCount.textContent = lines.length ? `（${lines.length} 行）` : "";
+  if (logCount) {
+    logCount.textContent = selectedLogCount ? `（${selectedLogCount} 行）` : "";
+  }
 
   startBtn.hidden = task.status !== "draft";
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
@@ -640,9 +677,62 @@ function paintDetail(task, logLines) {
   continueError.hidden = true;
 }
 
+function renderLogViewerFromCache() {
+  if (!logViewerBody) return;
+  const text = selectedLogLines.join("\n");
+  logViewerBody.textContent = text || "（暂无日志）";
+  logViewerBody.scrollTop = logViewerBody.scrollHeight;
+  if (logViewerHint) {
+    logViewerHint.textContent = selectedLogCount
+      ? `已加载最近 ${selectedLogLines.length} 行（任务共约 ${selectedLogCount} 行；超长行已截断）`
+      : `已加载 ${selectedLogLines.length} 行`;
+  }
+}
+
+function closeLogViewer() {
+  logViewerModal?.classList.add("hidden");
+}
+
+function closeMetaViewer() {
+  metaViewerModal?.classList.add("hidden");
+}
+
+async function openLogViewer() {
+  if (!selectedId) return;
+  logViewerModal.classList.remove("hidden");
+  if (logViewerHint) logViewerHint.textContent = "加载中…";
+  if (logViewerBody) logViewerBody.textContent = "加载中…";
+  try {
+    const res = await fetch(`/api/tasks/${selectedId}/log?lines=500`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    selectedLogLines = Array.isArray(data.log) ? data.log : [];
+    selectedLogCount = Number(data.logLineCount) || selectedLogLines.length;
+    if (logCount) logCount.textContent = selectedLogCount ? `（${selectedLogCount} 行）` : "";
+    renderLogViewerFromCache();
+  } catch (err) {
+    if (logViewerBody) logViewerBody.textContent = `加载失败：${err?.message || err}`;
+    if (logViewerHint) logViewerHint.textContent = "";
+  }
+}
+
+function openMetaViewer() {
+  if (!selectedId) return;
+  const task = tasks.get(selectedId);
+  if (!task) return;
+  metaViewerBody.textContent = JSON.stringify(buildMetaJson(task), null, 2);
+  metaViewerModal.classList.remove("hidden");
+}
+
 function closeDetail() {
+  closeLogViewer();
+  closeMetaViewer();
   detailModal.classList.add("hidden");
   selectedId = null;
+  selectedLogLines = [];
+  selectedLogCount = 0;
+  lastOutputSig = "";
+  lastPaintedTaskId = null;
 }
 
 document.getElementById("btn-new").onclick = () => openCreate("draft");
@@ -650,8 +740,14 @@ document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
+document.getElementById("btn-open-log").onclick = () => void openLogViewer();
+document.getElementById("btn-open-meta").onclick = openMetaViewer;
+document.getElementById("log-viewer-close").onclick = closeLogViewer;
+document.getElementById("meta-viewer-close").onclick = closeMetaViewer;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
 detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeDetail(); });
+logViewerModal?.addEventListener("click", (e) => { if (e.target === logViewerModal) closeLogViewer(); });
+metaViewerModal?.addEventListener("click", (e) => { if (e.target === metaViewerModal) closeMetaViewer(); });
 
 searchEl.addEventListener("input", () => {
   query = searchEl.value;
@@ -777,7 +873,7 @@ continueBtn.addEventListener("click", async () => {
   }
   if (data.task) {
     tasks.set(data.task.id, data.task);
-    paintDetail(data.task, logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : []);
+    paintDetail(data.task);
     renderList();
   }
 });
@@ -912,6 +1008,8 @@ document.getElementById("ws-path-pick")?.addEventListener("click", async () => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!document.getElementById("folder-modal")?.classList.contains("hidden")) return closeFolderModal();
+  if (logViewerModal && !logViewerModal.classList.contains("hidden")) return closeLogViewer();
+  if (metaViewerModal && !metaViewerModal.classList.contains("hidden")) return closeMetaViewer();
   if (!wsModal.classList.contains("hidden")) return closeWsModal();
   if (!createModal.classList.contains("hidden")) return closeCreate();
   if (!detailModal.classList.contains("hidden")) return closeDetail();
@@ -1046,8 +1144,7 @@ function schedulePaintDetail(task) {
   paintDetailTimer = setTimeout(() => {
     paintDetailTimer = null;
     if (task.id !== selectedId || detailModal.classList.contains("hidden")) return;
-    const lines = logEl.textContent ? logEl.textContent.split("\n").filter(Boolean) : [];
-    paintDetail(task, lines);
+    paintDetail(task);
   }, 120);
 }
 
@@ -1103,17 +1200,27 @@ function connectEvents() {
       logBuf = [];
       return;
     }
-    const chunk = logBuf.join("\n");
+    for (const line of logBuf) selectedLogLines.push(line);
     logBuf = [];
-    logEl.textContent += (logEl.textContent ? "\n" : "") + chunk;
-    // Cap DOM log size to keep UI responsive
-    const maxChars = 400_000;
-    if (logEl.textContent.length > maxChars) {
-      logEl.textContent = logEl.textContent.slice(-maxChars);
+    // Keep memory buffer bounded (raw log is not in main detail DOM).
+    const maxLines = 2_000;
+    const maxChars = 240_000;
+    if (selectedLogLines.length > maxLines) {
+      selectedLogLines = selectedLogLines.slice(-maxLines);
     }
-    logEl.scrollTop = logEl.scrollHeight;
-    const n = logEl.textContent.split("\n").filter(Boolean).length;
-    logCount.textContent = `（${n} 行）`;
+    let total = 0;
+    for (let i = selectedLogLines.length - 1; i >= 0; i--) {
+      total += selectedLogLines[i].length;
+      if (total > maxChars) {
+        selectedLogLines = selectedLogLines.slice(i + 1);
+        break;
+      }
+    }
+    selectedLogCount = Math.max(selectedLogCount, selectedLogLines.length);
+    if (logCount) logCount.textContent = selectedLogCount ? `（${selectedLogCount} 行）` : "";
+    if (logViewerModal && !logViewerModal.classList.contains("hidden")) {
+      renderLogViewerFromCache();
+    }
   };
   es.addEventListener("task_log", (ev) => {
     const data = JSON.parse(ev.data);

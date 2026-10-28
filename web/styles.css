@@ -1152,6 +1152,12 @@ textarea { resize: vertical; min-height: 96px; }
   min-height: 0;
 }
 
+/* Model output owns remaining height and scrolls inside the section */
+.detail-output-section {
+  flex: 1 1 auto;
+  min-height: 200px;
+}
+
 .detail-sidejobs-section { padding: 0; }
 
 .section-head {
@@ -1249,6 +1255,10 @@ textarea { resize: vertical; min-height: 96px; }
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
 }
 
 .output-turn {
@@ -1330,44 +1340,52 @@ textarea { resize: vertical; min-height: 96px; }
 .md-body a { color: var(--accent); }
 .md-body hr { border: none; border-top: 1px solid var(--border-soft); margin: 0.8em 0; }
 
-.detail-log-wrap,
-.detail-raw-meta {
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
-  background: var(--panel);
-  padding: 0 12px 10px;
+.detail-extra-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
 }
-.detail-log-wrap summary,
-.detail-raw-meta summary {
-  cursor: pointer;
-  padding: 10px 0;
-  font-weight: 600;
+.detail-extra-actions button {
+  width: auto;
+}
+.detail-extra-actions .muted {
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.modal-card.viewer-card {
+  width: min(960px, calc(100vw - 24px));
+  height: min(85vh, 820px);
+  max-height: min(85vh, 820px);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.viewer-card .modal-head {
+  flex: 0 0 auto;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.viewer-hint {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 16px;
   font-size: 12px;
-  color: var(--muted);
-  list-style: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-elevated);
 }
-.detail-log-wrap summary::-webkit-details-marker,
-.detail-raw-meta summary::-webkit-details-marker { display: none; }
-.detail-log-wrap summary::before,
-.detail-raw-meta summary::before {
-  content: "▸";
-  display: inline-block;
-  margin-right: 6px;
-  color: var(--faint);
-  transition: transform .12s;
-}
-.detail-log-wrap[open] summary::before,
-.detail-raw-meta[open] summary::before { transform: rotate(90deg); }
-.detail-log-wrap[open] summary,
-.detail-raw-meta[open] summary { color: var(--text-2); }
-.detail-log-wrap .log {
-  height: min(28vh, 260px);
-  margin: 0 0 4px;
-}
-.detail-raw-meta .meta {
-  max-height: 180px;
+.viewer-pre {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0;
+  border-radius: 0;
+  border: none;
   overflow: auto;
-  margin: 0 0 4px;
+  scrollbar-width: thin;
 }
 
 .detail-footer {

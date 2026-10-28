@@ -18,6 +18,7 @@ import {
   startTask,
   stopTask,
   taskWithOutput,
+  taskLogTail,
   workspaceSnapshot,
 } from "./manager.js";
 import {
@@ -231,6 +232,15 @@ app.get("/api/tasks", (c) => {
 
 app.get("/api/tasks/:id", (c) => {
   const data = taskWithOutput(c.req.param("id"));
+  if (!data) return c.json({ error: "not found" }, 404);
+  return c.json(data);
+});
+
+app.get("/api/tasks/:id/log", (c) => {
+  const raw = c.req.query("lines");
+  const lines = raw ? Number(raw) : 500;
+  const maxLines = Number.isFinite(lines) ? Math.min(Math.max(Math.trunc(lines), 50), 2000) : 500;
+  const data = taskLogTail(c.req.param("id"), maxLines);
   if (!data) return c.json({ error: "not found" }, 404);
   return c.json(data);
 });

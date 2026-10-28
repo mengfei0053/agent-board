@@ -7,8 +7,10 @@ import {
   getWorkspace,
   listTasks,
   listWorkspaces,
+  logLineCount,
   readLogTail as storeReadLogTail,
   removeLog,
+  truncateLogLine,
   upsertTask,
 } from "./store.js";
 import { publish } from "./bus.js";
@@ -70,7 +72,8 @@ function writeLog(id: string, line: string) {
   // After terminal status, keep logs in DB but do not flood SSE/UI with upserts.
   const terminal = cur && ["stopped", "succeeded", "failed"].includes(cur.status);
   if (!terminal) {
-    publish({ type: "task_log", taskId: id, line, at });
+    // Never push multi-MB agent_end dumps over SSE — UI freezes.
+    publish({ type: "task_log", taskId: id, line: truncateLogLine(line), at });
   }
   if (!cur || terminal) return;
 
@@ -153,7 +156,7 @@ function applyStatus(id: string, partial: Partial<Task>): Task {
 export function refreshOutputFromLogs(id: string): Task | undefined {
   const cur = getTask(id);
   if (!cur) return undefined;
-  const lines = readLogTail(id, 2500);
+  const lines = readLogTail(id, 2500, 1_500_000);
   const outputs = extractOutputsByIteration(lines);
   // Preserve wall-clock `at` from prior turns when text unchanged
   if (cur.outputs?.length) {
@@ -446,36 +449,54 @@ export function workspaceSnapshot(): Workspace[] {
   return listWorkspaces();
 }
 
-export function readLogTail(id: string, maxLines = 400): string[] {
-  return storeReadLogTail(id, maxLines);
+export function readLogTail(id: string, maxLines = 400, maxTotalChars?: number): string[] {
+  return storeReadLogTail(id, maxLines, maxTotalChars);
 }
 
-export function taskWithOutput(id: string): { task: Task; log: string[] } | undefined {
+export function taskWithOutput(id: string): {
+  task: Task;
+  log: string[];
+  logLineCount: number;
+} | undefined {
   const t = getTask(id);
   if (!t) return undefined;
-  const log = readLogTail(t.id, 2500);
+  const count = logLineCount(t.id);
+  // Keep open-detail payload small: do not embed multi-MB raw logs here.
+  // Callers that need logs use taskLogTail() / GET /api/tasks/:id/log.
+  const extractSource = readLogTail(t.id, 800, 1_000_000);
   if (t.outputs?.length || t.output) {
-    // Backfill outputs from logs if only legacy `output` exists
     if (!t.outputs?.length && t.output) {
-      const outputs = extractOutputsByIteration(log);
+      const outputs = extractOutputsByIteration(extractSource);
       if (outputs.length) {
         const task = patch(id, {
           outputs,
           output: latestOutputText(outputs) || t.output,
         });
-        return { task, log };
+        return { task, log: [], logLineCount: count };
       }
     }
-    return { task: t, log };
+    return { task: t, log: [], logLineCount: count };
   }
-  const outputs = extractOutputsByIteration(log);
+  const outputs = extractOutputsByIteration(extractSource);
   const out = latestOutputText(outputs);
-  if (!out) return { task: t, log };
+  if (!out) return { task: t, log: [], logLineCount: count };
   const summary = t.summary && t.summary !== "agent settled" && t.summary !== "starting"
     ? t.summary
     : summarizeOutput(out);
   const task = patch(id, { output: out, outputs, summary });
-  return { task, log };
+  return { task, log: [], logLineCount: count };
+}
+
+/** Capped log tail for the raw-log viewer popup (not the main detail modal). */
+export function taskLogTail(id: string, maxLines = 500): {
+  log: string[];
+  logLineCount: number;
+} | undefined {
+  if (!getTask(id)) return undefined;
+  return {
+    log: readLogTail(id, maxLines),
+    logLineCount: logLineCount(id),
+  };
 }
 
 /** Create draft then immediately start (queued → runner). */

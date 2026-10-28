@@ -196,15 +196,10 @@
           <div id="detail-error" class="detail-error" hidden></div>
         </section>
 
-        <details class="detail-log-wrap" id="log-wrap">
-          <summary>原始日志 <span class="muted" id="log-count"></span></summary>
-          <pre id="log" class="log"></pre>
-        </details>
-
-        <details class="detail-raw-meta" id="raw-meta-wrap">
-          <summary>原始元数据 JSON</summary>
-          <pre id="detail-meta" class="meta"></pre>
-        </details>
+        <div class="detail-extra-actions">
+          <button type="button" class="secondary" id="btn-open-log">原始日志 <span class="muted" id="log-count"></span></button>
+          <button type="button" class="secondary" id="btn-open-meta">原始元数据 JSON</button>
+        </div>
       </div>
 
       <div class="detail-footer" id="detail-footer">
@@ -222,6 +217,27 @@
           <p id="continue-error" class="error" hidden></p>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div id="log-viewer-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card viewer-card">
+      <div class="modal-head">
+        <h2>原始日志</h2>
+        <button type="button" class="icon-btn" id="log-viewer-close" aria-label="关闭">×</button>
+      </div>
+      <p class="viewer-hint muted" id="log-viewer-hint"></p>
+      <pre id="log-viewer-body" class="log viewer-pre"></pre>
+    </div>
+  </div>
+
+  <div id="meta-viewer-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card viewer-card">
+      <div class="modal-head">
+        <h2>原始元数据 JSON</h2>
+        <button type="button" class="icon-btn" id="meta-viewer-close" aria-label="关闭">×</button>
+      </div>
+      <pre id="meta-viewer-body" class="meta viewer-pre"></pre>
     </div>
   </div>
 
