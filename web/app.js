@@ -266,7 +266,10 @@ function makeCard(t) {
   btn.innerHTML = `
       <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
       <div class="card-top">
-        <p class="card-title">${escapeHtml(t.title)}</p>
+        <div class="card-heading">
+          <span class="card-id" title="任务号">${escapeHtml(t.id)}</span>
+          <p class="card-title">${escapeHtml(t.title)}</p>
+        </div>
         <span class="badge ${t.status}">${escapeHtml(statusText)}</span>
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
