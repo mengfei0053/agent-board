@@ -27,7 +27,8 @@
                         ├─ Runner 注册表
                         │    ├─ pi:    pi -p --mode json --no-session
                         │    ├─ claude: claude -p --output-format stream-json
-                        │    └─ cursor: agent -p --output-format stream-json
+                        │    ├─ cursor: agent -p --output-format stream-json
+                        │    └─ devin: devin -p --permission-mode accept-edits (plain stdout)
                         └─ 每任务：子进程 + data/logs/<id>.jsonl
 ```
 
@@ -39,6 +40,7 @@
 
 - **pi**：`agent_start`/`tool_execution_start` → running；`ask_user_question` → blocked；`agent_settled` / 进程退出 → 终态
 - **claude / cursor**：收到 stream-json 事件 → running；进程 exit 0 → succeeded，非 0 → failed；未知事件只记日志
+- **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；session 在结束后用 `devin list --format json` / sessions.db 尽力回填，继续任务用 `-r <sid>` 或回退 `-c`
 
 ## 后续扩展点
 
@@ -78,7 +80,7 @@
   | 字段 | 必填 | 说明 |
   |---|---|---|
   | `prompt` | ✅ | 任务内容 |
-  | `agent` | ✅ | `pi` \| `claude` \| `cursor`（也可用别名 `kind`） |
+  | `agent` | ✅ | `pi` \| `claude` \| `cursor` \| `devin`（也可用别名 `kind`） |
   | `cwd` | ✅ | 工作目录（须已存在） |
   | `model` | | 可选模型 |
   | `title` | | 可选标题 |

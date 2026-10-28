@@ -1,6 +1,6 @@
 # agent-board
 
-本机 Agent 看板：左侧**工作区** CRUD，右侧四列泳道（草稿 / Todo / 进行中 / 已完成）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
+本机 Agent 看板：左侧**工作区** CRUD，右侧四列泳道（草稿 / Todo / 进行中 / 已完成）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
 ## 界面预览
 
@@ -34,7 +34,7 @@
 ## 要求
 
 - Node 20+
-- 本机 PATH 中可找到：`pi`、`claude`、`agent`（按你实际使用的 Agent）
+- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`（按你实际使用的 Agent）
 - Postgres（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
 
 ## 启动

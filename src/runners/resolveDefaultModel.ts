@@ -28,6 +28,11 @@ export function resolveDefaultModel(kind: AgentKind): string | undefined {
       s?.model;
     if (typeof m === "string" && m.trim()) return m.trim();
   }
+  if (kind === "devin") {
+    const s = readJson(join(home, ".config/devin/config.json"));
+    const m = s?.agent?.model || s?.model;
+    if (typeof m === "string" && m.trim()) return m.trim();
+  }
   if (kind === "claude") {
     const s = readJson(join(home, ".claude/settings.json"));
     const m = s?.model || s?.defaultModel;

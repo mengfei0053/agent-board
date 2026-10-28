@@ -118,8 +118,8 @@ async function createTaskViaWebhook(c: Context) {
   if (!prompt) return c.json({ error: "prompt required" }, 400);
 
   const kindRaw = (body.agent || body.kind || "").toLowerCase();
-  if (!["pi", "claude", "cursor"].includes(kindRaw)) {
-    return c.json({ error: "agent must be pi|claude|cursor (alias: kind)" }, 400);
+  if (!["pi", "claude", "cursor", "devin"].includes(kindRaw)) {
+    return c.json({ error: "agent must be pi|claude|cursor|devin (alias: kind)" }, 400);
   }
   const kind = kindRaw as AgentKind;
 
@@ -248,8 +248,8 @@ app.get("/api/tasks/:id/log", (c) => {
 app.post("/api/tasks", async (c) => {
   const body = (await c.req.json()) as Partial<CreateTaskInput> & { start?: boolean };
   const kind = body.kind as AgentKind;
-  if (!kind || !["pi", "claude", "cursor"].includes(kind)) {
-    return c.json({ error: "kind must be pi|claude|cursor" }, 400);
+  if (!kind || !["pi", "claude", "cursor", "devin"].includes(kind)) {
+    return c.json({ error: "kind must be pi|claude|cursor|devin" }, 400);
   }
   if (!body.prompt?.trim()) {
     return c.json({ error: "prompt required" }, 400);
