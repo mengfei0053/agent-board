@@ -1122,6 +1122,63 @@ textarea { resize: vertical; min-height: 96px; }
   scrollbar-width: thin;
 }
 
+.detail-meta-fold {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.detail-meta-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  background: color-mix(in srgb, var(--panel-2) 70%, var(--panel));
+}
+.detail-meta-summary::-webkit-details-marker { display: none; }
+.detail-meta-summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+  width: 1em;
+  flex: 0 0 auto;
+  transition: transform .12s ease;
+}
+.detail-meta-fold[open] > .detail-meta-summary::before {
+  transform: rotate(90deg);
+}
+.detail-meta-summary-label {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.detail-task-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+}
+.detail-meta-summary-hint {
+  margin-left: auto;
+  font-size: 11px;
+}
+.detail-meta-fold[open] .detail-meta-summary-hint { display: none; }
+.detail-meta-fold .detail-meta-grid {
+  border: none;
+  border-radius: 0;
+  border-top: 1px solid var(--border-soft);
+}
+
 .detail-meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1176,7 +1233,7 @@ textarea { resize: vertical; min-height: 96px; }
   min-height: 200px;
 }
 
-.detail-sidejobs-section { padding: 0; }
+.detail-sidejobs-section { padding: 0; flex: 0 0 auto; }
 
 .section-head {
   display: flex;
@@ -1284,6 +1341,10 @@ textarea { resize: vertical; min-height: 96px; }
   border-radius: var(--radius-sm);
   background: var(--panel-2);
   overflow: hidden;
+  /* Keep natural height inside the flex column; otherwise shrink + clip
+     hides all but the first line of 模型输出. */
+  flex: 0 0 auto;
+  min-height: auto;
 }
 .output-turn-head {
   display: flex;

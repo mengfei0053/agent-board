@@ -458,6 +458,8 @@ async function openDetail(id) {
   selectedLogCount = 0;
   lastOutputSig = "";
   lastPaintedTaskId = null;
+  const metaFold = document.getElementById("detail-meta-fold");
+  if (metaFold) metaFold.open = false;
   detailModal.classList.remove("hidden");
   const res = await fetch(`/api/tasks/${id}`);
   if (!res.ok) return;
@@ -637,11 +639,14 @@ function paintDetail(task) {
   const iter = iterationOf(task);
   const statusText = STATUS_LABEL[task.status] || task.status;
   detailTitle.textContent = task.title;
-  detailSub.textContent = `${task.kind} · ${statusText} · 迭代 ${iter}`;
+  detailSub.textContent = `${task.id} · ${task.kind} · ${statusText} · 迭代 ${iter}`;
+  const taskIdEl = document.getElementById("detail-task-id");
+  if (taskIdEl) taskIdEl.textContent = task.id || "";
 
   const startLabel = formatLocal(task.startedAt) || "—";
   const endLabel = formatLocal(task.endedAt) || "—";
   detailMetaGrid.innerHTML = [
+    metaItem("任务 ID", task.id || "—"),
     metaItem("状态", statusText),
     metaItem("迭代", String(iter)),
     metaItem("开始时间", startLabel),

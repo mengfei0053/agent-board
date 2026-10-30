@@ -179,7 +179,14 @@
       </div>
 
       <div class="detail-body">
-        <section class="detail-meta-grid" id="detail-meta-grid" aria-label="任务信息"></section>
+        <details class="detail-meta-fold" id="detail-meta-fold">
+          <summary class="detail-meta-summary">
+            <span class="detail-meta-summary-label">任务信息</span>
+            <code class="detail-task-id" id="detail-task-id" title="任务 ID"></code>
+            <span class="detail-meta-summary-hint muted">点击展开</span>
+          </summary>
+          <section class="detail-meta-grid" id="detail-meta-grid" aria-label="任务信息"></section>
+        </details>
 
         <section class="detail-sidejobs-section" id="detail-sidejobs-section" hidden>
           <div class="section-head">
