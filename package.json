@@ -11,7 +11,7 @@
     "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts",
     "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts",
     "coverage": "pnpm test:coverage",
-    "test:e2e": "node test/e2e/workspace-settings.mjs",
+    "test:e2e": "node test/e2e/workspace-settings.mjs && node test/e2e/board-flows.mjs",
     "test:integration": "tsx --test --test-force-exit test/integration/*.integration.test.ts"
   },
   "dependencies": {
