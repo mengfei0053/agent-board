@@ -8,8 +8,8 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:unit && pnpm test:e2e",
-    "test:unit": "tsx --test src/**/*.test.ts",
-    "test:coverage": "c8 tsx --test src/**/*.test.ts",
+    "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts",
+    "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts",
     "coverage": "pnpm test:coverage",
     "test:e2e": "node test/e2e/workspace-settings.mjs"
   },

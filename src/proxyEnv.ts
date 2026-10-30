@@ -73,7 +73,8 @@ function isLegacyFlat(obj: Record<string, unknown>): boolean {
   return false;
 }
 
-function parseStored(raw: string | null | undefined): {
+/** Pure parse of meta.proxy_env JSON (exported for tests). */
+export function parseProxyEnvJson(raw: string | null | undefined): {
   byKind: ProxyEnvByKind;
   migratedFromLegacy: boolean;
 } {
@@ -131,7 +132,7 @@ export async function loadProxyEnvOverrides(): Promise<void> {
     `SELECT value FROM meta WHERE key = $1`,
     [META_KEY],
   );
-  const { byKind, migratedFromLegacy } = parseStored(res.rows[0]?.value);
+  const { byKind, migratedFromLegacy } = parseProxyEnvJson(res.rows[0]?.value);
   overrides = byKind;
   // One-shot rewrite so meta.proxy_env is always per-kind going forward.
   if (migratedFromLegacy) {
@@ -247,4 +248,11 @@ export async function clearProxyEnvOverrides(): Promise<
   overrides = {};
   await persist(overrides);
   return getProxyEnvSettings();
+}
+
+/** @internal test helper — does not persist. */
+export function _resetProxyEnvOverridesForTests(next: ProxyEnvByKind = {}): void {
+  overrides = { ...next };
+  lastInjectedProxyKeys = [];
+  lastInjectedProxyKind = null;
 }

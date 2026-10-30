@@ -37,7 +37,10 @@ function normalizeOverride(raw: unknown): string {
   return raw.trim();
 }
 
-function parseStored(raw: string | null | undefined): Partial<Record<CliCommandKey, string>> {
+/** Pure parse of meta.cli_paths JSON (exported for tests). */
+export function parseCliPathsJson(
+  raw: string | null | undefined,
+): Partial<Record<CliCommandKey, string>> {
   if (!raw?.trim()) return {};
   try {
     const obj = JSON.parse(raw) as Record<string, unknown>;
@@ -58,7 +61,7 @@ export async function loadCliPathOverrides(): Promise<void> {
     `SELECT value FROM meta WHERE key = $1`,
     [META_KEY],
   );
-  overrides = parseStored(res.rows[0]?.value);
+  overrides = parseCliPathsJson(res.rows[0]?.value);
 }
 
 /** Command string passed to spawn / spawnSync. */
@@ -149,4 +152,11 @@ export async function clearCliPathOverrides(): Promise<ReturnType<typeof getCliP
     [META_KEY, "{}"],
   );
   return getCliPathSettings();
+}
+
+/** @internal test helper — does not persist. */
+export function _resetCliPathOverridesForTests(
+  next: Partial<Record<CliCommandKey, string>> = {},
+): void {
+  overrides = { ...next };
 }

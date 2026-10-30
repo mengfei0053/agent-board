@@ -25,7 +25,8 @@ function normalizeEntry(raw: unknown): QuickPrompt | null {
   return { id, label: label.slice(0, 40), content };
 }
 
-function parseStored(raw: string | null | undefined): QuickPrompt[] {
+/** Pure parse of meta.quick_prompts JSON (exported for tests). */
+export function parseQuickPromptsJson(raw: string | null | undefined): QuickPrompt[] {
   if (!raw?.trim()) return [];
   try {
     const arr = JSON.parse(raw) as unknown;
@@ -52,7 +53,7 @@ export async function loadQuickPrompts(): Promise<void> {
     `SELECT value FROM meta WHERE key = $1`,
     [META_KEY],
   );
-  prompts = parseStored(res.rows[0]?.value);
+  prompts = parseQuickPromptsJson(res.rows[0]?.value);
 }
 
 export function getQuickPromptSettings(): { quickPrompts: QuickPrompt[] } {
@@ -97,4 +98,9 @@ export async function clearQuickPrompts(): Promise<
 > {
   await persist([]);
   return getQuickPromptSettings();
+}
+
+/** @internal test helper — does not persist. */
+export function _resetQuickPromptsForTests(next: QuickPrompt[] = []): void {
+  prompts = next.map((x) => ({ ...x }));
 }

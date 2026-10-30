@@ -6,7 +6,8 @@ const META_KEY = "codex_sandbox";
 /** true = use workspace-write sandbox (--approve-for-me); false = -s danger-full-access */
 let enabled = true;
 
-function parseStored(raw: string | null | undefined): boolean {
+/** Pure parse of meta.codex_sandbox value (exported for tests). */
+export function parseCodexSandboxValue(raw: string | null | undefined): boolean {
   if (raw == null || !String(raw).trim()) return true;
   const v = String(raw).trim().toLowerCase();
   if (v === "0" || v === "false" || v === "off" || v === "no") return false;
@@ -32,7 +33,7 @@ export async function loadCodexSandbox(): Promise<void> {
     `SELECT value FROM meta WHERE key = $1`,
     [META_KEY],
   );
-  enabled = parseStored(res.rows[0]?.value);
+  enabled = parseCodexSandboxValue(res.rows[0]?.value);
 }
 
 export function isCodexSandboxEnabled(): boolean {
@@ -71,4 +72,9 @@ export async function clearCodexSandbox(): Promise<
 > {
   await persist(true);
   return getCodexSandboxSettings();
+}
+
+/** @internal test helper — does not persist. */
+export function _resetCodexSandboxForTests(next = true): void {
+  enabled = next;
 }
