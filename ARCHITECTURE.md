@@ -155,3 +155,9 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - 进程内有内存镜像；写入先更新内存再异步落库（API/SSE 行为不变）
 - 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
 - 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`
+
+## 任务内容图片
+
+- 创建 / 续跑输入框支持粘贴截图或「插入图片」；上传到 `data/uploads/`，在 prompt 中写入 Markdown `![alt](/uploads/<id>.ext)`
+- `POST /api/uploads`（multipart 字段 `file`，仅 PNG/JPEG/GIF/WebP，≤8MB）；`GET /uploads/:name` 静态读取
+- 看板详情与卡片缩略图按 Markdown 渲染；派发 CLI 前会把 `/uploads/…` 展开为绝对路径，便于本机 Agent 读图

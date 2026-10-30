@@ -31,6 +31,7 @@ import {
   mergeSideJobs,
   sideJobsFromLogLine,
 } from "./sideJobs.js";
+import { expandUploadUrlsInPrompt, stripImageMarkdown } from "./uploads.js";
 
 const handles = new Map<string, RunnerHandle>();
 /** Coalesce rapid output/sideJob patches so stop/SSE stay responsive. */
@@ -190,7 +191,8 @@ export function isUndeletableStatus(status: TaskStatus): boolean {
 function spawnRunner(task: Task): Task {
   const id = task.id;
   const runner = runners[task.kind];
-  const handle = runner.start(task, {
+  const runnerTask: Task = { ...task, prompt: expandUploadUrlsInPrompt(task.prompt) };
+  const handle = runner.start(runnerTask, {
     onStatus: (p) => applyStatus(id, p),
     onLog: (line) => writeLog(id, line),
   });
@@ -217,7 +219,8 @@ function resolveCreateCwd(input: CreateTaskInput): { workspaceId: string; cwd: s
 export function createDraft(input: CreateTaskInput): Task {
   const id = nanoid(10);
   const { workspaceId, cwd } = resolveCreateCwd(input);
-  const title = input.title?.trim() || input.prompt.trim().slice(0, 48) || `${input.kind} task`;
+  const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
+  const title = input.title?.trim() || plainPrompt.slice(0, 48) || `${input.kind} task`;
   const task: Task = {
     id,
     title,
@@ -314,13 +317,14 @@ export function continueTask(id: string, prompt?: string): Task {
 
   const fresh = getTask(id)!;
   const runner = runners[fresh.kind];
+  const runnerTask: Task = { ...fresh, prompt: expandUploadUrlsInPrompt(fresh.prompt) };
   const handle = runner.start(
-    fresh,
+    runnerTask,
     {
       onStatus: (p) => applyStatus(id, p),
       onLog: (line) => writeLog(id, line),
     },
-    { continuePrompt },
+    { continuePrompt: expandUploadUrlsInPrompt(continuePrompt) },
   );
   handles.set(id, handle);
   if (handle.pid) patch(id, { pid: handle.pid });

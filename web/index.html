@@ -163,9 +163,15 @@
         <label>Model（可选）
           <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />
         </label>
-        <label>任务内容
-          <textarea name="prompt" required rows="6" placeholder="要 Agent 做的事"></textarea>
+        <label class="prompt-field">任务内容
+          <textarea name="prompt" id="create-prompt" required rows="6" placeholder="要 Agent 做的事（可粘贴或插入图片）"></textarea>
         </label>
+        <div class="prompt-toolbar" data-for="create-prompt">
+          <button type="button" class="secondary prompt-img-btn" data-for="create-prompt">插入图片</button>
+          <input type="file" class="prompt-img-file" data-for="create-prompt" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+          <span class="muted prompt-img-hint">支持粘贴截图 / 选图，上限 8MB</span>
+          <span class="prompt-img-status muted" data-for="create-prompt" hidden></span>
+        </div>
         <div class="modal-actions">
           <button type="button" class="secondary" id="create-cancel">取消</button>
           <button type="submit" class="primary" id="create-submit">保存草稿</button>
@@ -225,7 +231,13 @@
           <button type="button" id="delete-btn" class="secondary-danger" hidden>删除</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
-          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」"></textarea>
+          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）"></textarea>
+          <div class="prompt-toolbar prompt-toolbar-inline" data-for="continue-prompt">
+            <button type="button" class="secondary prompt-img-btn" data-for="continue-prompt">插入图片</button>
+            <input type="file" class="prompt-img-file" data-for="continue-prompt" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+            <span class="muted prompt-img-hint">可粘贴截图</span>
+            <span class="prompt-img-status muted" data-for="continue-prompt" hidden></span>
+          </div>
           <div class="continue-actions">
             <button type="button" id="continue-btn" class="primary">继续任务</button>
             <span id="continue-hint" class="muted continue-hint"></span>

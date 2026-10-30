@@ -12,7 +12,7 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY web ./web
 
-RUN mkdir -p /app/data/logs
+RUN mkdir -p /app/data/logs /app/data/uploads
 
 ENV NODE_ENV=production
 ENV PORT=8791

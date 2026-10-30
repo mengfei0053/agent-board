@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { subscribe } from "./bus.js";
@@ -55,6 +55,15 @@ import {
 } from "./proxyEnv.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
+import {
+  absoluteUploadPath,
+  ensureUploadsDir,
+  isAllowedImageMime,
+  isSafeUploadName,
+  MAX_UPLOAD_BYTES,
+  saveUploadFile,
+} from "./uploads.js";
+import { Readable } from "node:stream";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -487,6 +496,52 @@ app.put("/api/settings", async (c) => {
   return c.json(fullSettings());
 });
 
+app.post("/api/uploads", async (c) => {
+  try {
+    const body = await c.req.parseBody({ all: true });
+    const raw = body["file"] ?? body["image"];
+    const file = Array.isArray(raw) ? raw[0] : raw;
+    if (!(file instanceof File)) {
+      return c.json({ error: "请上传图片文件（字段名 file）" }, 400);
+    }
+    if (!isAllowedImageMime(file.type || "")) {
+      return c.json({ error: "仅支持 PNG / JPEG / GIF / WebP 图片" }, 400);
+    }
+    if (typeof file.size === "number" && file.size > MAX_UPLOAD_BYTES) {
+      return c.json({ error: `图片过大（上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB）` }, 400);
+    }
+    const saved = await saveUploadFile(file);
+    return c.json(saved, 201);
+  } catch (err) {
+    const status = typeof (err as { status?: number })?.status === "number"
+      ? (err as { status: number }).status
+      : 500;
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: msg }, status as 400 | 500);
+  }
+});
+
+app.get("/uploads/:name", async (c) => {
+  const name = c.req.param("name");
+  if (!isSafeUploadName(name)) return c.notFound();
+  const abs = absoluteUploadPath(name);
+  if (!abs || !existsSync(abs)) return c.notFound();
+  const st = statSync(abs);
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  const mime =
+    ext === "png" ? "image/png"
+    : ext === "gif" ? "image/gif"
+    : ext === "webp" ? "image/webp"
+    : "image/jpeg";
+  c.header("Content-Type", mime);
+  c.header("Content-Length", String(st.size));
+  c.header("Cache-Control", "public, max-age=31536000, immutable");
+  // Node Readable → Web ReadableStream for Hono
+  const nodeStream = createReadStream(abs);
+  const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
+  return c.body(webStream);
+});
+
 app.get("/settings", (c) => {
   const html = readFileSync(join(webRoot, "settings.html"), "utf8");
   return c.html(html);
@@ -502,6 +557,7 @@ app.get("/docs.html", (c) => c.redirect("/docs", 302));
 app.use("/*", serveStatic({ root: webRoot }));
 
 async function main() {
+  ensureUploadsDir();
   await initStore();
   serve({ fetch: app.fetch, port, hostname }, (info) => {
     console.log(`agent-board http://${hostname}:${info.port}`);

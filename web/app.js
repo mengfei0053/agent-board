@@ -147,6 +147,114 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
+const UPLOAD_IMG_RE = /!\[[^\]]*\]\((\/uploads\/[A-Za-z0-9._-]+)\)/g;
+
+function stripImageMarkdown(text) {
+  return String(text || "").replace(/!\[[^\]]*\]\([^)]+\)/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function collectPromptImages(prompt) {
+  const out = [];
+  const re = new RegExp(UPLOAD_IMG_RE.source, "g");
+  let m;
+  while ((m = re.exec(String(prompt || ""))) !== null) out.push(m[1]);
+  return out;
+}
+
+function promptCardHtml(prompt) {
+  const imgs = collectPromptImages(prompt).slice(0, 3);
+  const text = stripImageMarkdown(prompt);
+  const thumbs = imgs.length
+    ? `<div class="card-prompt-thumbs">${imgs.map((src) =>
+        `<img class="card-prompt-thumb" src="${escapeHtml(src)}" alt="" loading="lazy" />`
+      ).join("")}</div>`
+    : "";
+  const body = text ? `<div class="card-prompt">${escapeHtml(text)}</div>` : (imgs.length ? "" : `<div class="card-prompt"></div>`);
+  return thumbs + body;
+}
+
+async function uploadImageFile(file) {
+  if (!file || !String(file.type || "").startsWith("image/")) {
+    throw new Error("请选择图片文件");
+  }
+  const fd = new FormData();
+  fd.append("file", file, file.name || "paste.png");
+  const res = await fetch("/api/uploads", { method: "POST", body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText || "上传失败");
+  return data;
+}
+
+function insertAtCursor(textarea, snippet) {
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? start;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  const needsNL = before.length && !before.endsWith("\n");
+  const prefix = needsNL ? "\n" : "";
+  const inserted = prefix + snippet + "\n";
+  textarea.value = before + inserted + after;
+  const caret = (before + inserted).length;
+  textarea.focus();
+  textarea.setSelectionRange(caret, caret);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setPromptStatus(forId, msg, isError = false) {
+  const el = document.querySelector(`.prompt-img-status[data-for="${forId}"]`);
+  if (!el) return;
+  if (!msg) {
+    el.hidden = true;
+    el.textContent = "";
+    el.classList.remove("is-error");
+    return;
+  }
+  el.hidden = false;
+  el.textContent = msg;
+  el.classList.toggle("is-error", Boolean(isError));
+}
+
+async function handlePromptImageFile(forId, file) {
+  const ta = document.getElementById(forId);
+  if (!ta || !file) return;
+  setPromptStatus(forId, "上传中…");
+  try {
+    const saved = await uploadImageFile(file);
+    const alt = (file.name || "图片").replace(/\.[^.]+$/, "").slice(0, 40) || "图片";
+    insertAtCursor(ta, `![${alt}](${saved.url})`);
+    setPromptStatus(forId, "已插入图片");
+    setTimeout(() => setPromptStatus(forId, ""), 1800);
+  } catch (err) {
+    setPromptStatus(forId, err?.message || String(err), true);
+  }
+}
+
+function wirePromptImageSupport(forId) {
+  const ta = document.getElementById(forId);
+  if (!ta || ta.dataset.imgWired === "1") return;
+  ta.dataset.imgWired = "1";
+  ta.addEventListener("paste", (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === "file" && String(item.type || "").startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        void handlePromptImageFile(forId, file);
+        return;
+      }
+    }
+  });
+  const btn = document.querySelector(`.prompt-img-btn[data-for="${forId}"]`);
+  const fileInput = document.querySelector(`.prompt-img-file[data-for="${forId}"]`);
+  btn?.addEventListener("click", () => fileInput?.click());
+  fileInput?.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    void handlePromptImageFile(forId, file);
+  });
+}
+
 function displayTitleText(t) {
   const prompt = String(t?.prompt || "");
   const title = String(t?.title || "");
@@ -282,7 +390,7 @@ function makeCard(t) {
       </div>
       <div class="card-meta">${escapeHtml(t.cwd)}</div>
       ${timesHtml}
-      <div class="card-prompt">${escapeHtml(t.prompt)}</div>
+      ${promptCardHtml(t.prompt)}
       ${summaryHtml}
       <div class="card-footer">
         <span class="kind-pill">${escapeHtml(t.kind)}</span>
@@ -483,8 +591,11 @@ function canContinue(task) {
   return !["draft", "queued", "running"].includes(task.status);
 }
 
-function metaItem(k, v, wide = false) {
-  return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span><span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span></div>`;
+function metaItem(k, v, wide = false, opts = {}) {
+  const body = opts.markdown
+    ? `<div class="meta-v md-body prompt-md">${v ? renderMarkdown(v) : "—"}</div>`
+    : `<span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span>`;
+  return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span>${body}</div>`;
 }
 
 function outputSignature(task) {
@@ -667,7 +778,7 @@ function paintDetail(task) {
     metaItem("会话", task.sessionId || "—", true),
     metaItem("工作区", (task.workspaceId && workspaces.get(task.workspaceId)?.name) || task.workspaceId || "—"),
     metaItem("工作目录", task.cwd, true),
-    metaItem("任务内容", task.prompt, true),
+    metaItem("任务内容", task.prompt, true, { markdown: true }),
   ].join("");
 
   paintOutput(task);
@@ -762,6 +873,16 @@ document.getElementById("btn-open-meta").onclick = openMetaViewer;
 document.getElementById("log-viewer-close").onclick = closeLogViewer;
 document.getElementById("meta-viewer-close").onclick = closeMetaViewer;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
+wirePromptImageSupport("create-prompt");
+wirePromptImageSupport("continue-prompt");
+document.addEventListener("click", (e) => {
+  const img = e.target?.closest?.("img.md-img, img.card-prompt-thumb");
+  if (!img?.src) return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.open(img.src, "_blank", "noopener");
+});
+
 detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeDetail(); });
 logViewerModal?.addEventListener("click", (e) => { if (e.target === logViewerModal) closeLogViewer(); });
 metaViewerModal?.addEventListener("click", (e) => { if (e.target === metaViewerModal) closeMetaViewer(); });

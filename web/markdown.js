@@ -10,6 +10,12 @@ function inlineFormat(text) {
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
+  // Images first (so ![alt](url) is not eaten by the link rule).
+  // Allow https? and same-origin /uploads/… paths.
+  s = s.replace(
+    /!\[([^\]]*)\]\(((?:https?:\/\/[^)\s]+|\/uploads\/[A-Za-z0-9._-]+))\)/g,
+    '<img class="md-img" src="$2" alt="$1" loading="lazy" />',
+  );
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return s;
 }
