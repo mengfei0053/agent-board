@@ -30,7 +30,7 @@
         <div class="brand-mark" aria-hidden="true">ab</div>
         <div>
           <h1>设置</h1>
-          <p class="muted">覆盖各 Agent CLI 默认命令路径 · 空则走 PATH</p>
+          <p class="muted">CLI 路径覆盖 · 子进程代理环境变量</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -40,19 +40,26 @@
     </header>
 
     <main class="docs-main settings-main">
-      <section>
-        <h2>CLI 路径</h2>
-        <p>非空覆盖会用于后续新建 / 启动 / 继续任务的 spawn；清空后恢复默认命令名（由 PATH 解析）。修改立即写入 Postgres <code>meta.cli_paths</code>，重启后仍生效。</p>
-        <p class="muted" id="settings-status">加载中…</p>
+      <p class="muted" id="settings-status">加载中…</p>
 
-        <form id="settings-form" class="settings-form" autocomplete="off">
+      <form id="settings-form" class="settings-form" autocomplete="off">
+        <section>
+          <h2>CLI 路径</h2>
+          <p>非空覆盖用于后续 spawn；清空后恢复默认命令名（PATH）。写入 <code>meta.cli_paths</code>。</p>
           <div id="settings-fields" class="settings-fields"></div>
-          <div class="settings-actions">
-            <button type="submit" id="btn-save-settings">保存</button>
-            <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
-          </div>
-        </form>
-      </section>
+        </section>
+
+        <section class="settings-section">
+          <h2>进程代理</h2>
+          <p>注入到 Agent 子进程环境（<code>spawn</code> / <code>spawnSync</code>）。非空写入覆盖；空则不注入该项，子进程仍继承看板进程原有环境。同时会写入小写别名（如 <code>http_proxy</code>）。持久化 <code>meta.proxy_env</code>。</p>
+          <div id="proxy-fields" class="settings-fields"></div>
+        </section>
+
+        <div class="settings-actions">
+          <button type="submit" id="btn-save-settings">保存</button>
+          <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
+        </div>
+      </form>
     </main>
   </div>
   <script src="/settings.js" type="module"></script>

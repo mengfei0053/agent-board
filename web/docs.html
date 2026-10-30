@@ -188,15 +188,23 @@ npm start</code></pre>
       </section>
     
       <section id="settings">
-        <h2>设置（CLI 路径）</h2>
+        <h2>设置（CLI 路径 / 进程代理）</h2>
         <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。</p>
-        <p><code>GET /api/settings</code> — 返回各 CLI 的默认名、覆盖值、生效命令与尽力解析的绝对路径。</p>
+        <p><code>GET /api/settings</code> — 返回 <code>cliPaths</code> 与 <code>proxyEnv</code>（覆盖值、生效值；代理可显示是否继承看板进程环境）。</p>
         <pre><code>curl -sS http://127.0.0.1:8791/api/settings</code></pre>
-        <p><code>PUT /api/settings</code> body <code>{ "cliPaths": { "pi": "/path/to/pi", "claude": "", "agent": "", "devin": "", "codex": "" } }</code>。空字符串清除该项覆盖。</p>
+        <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code> 和/或 <code>proxyEnv</code>。空字符串清除该项覆盖。</p>
         <pre><code>curl -sS -X PUT http://127.0.0.1:8791/api/settings \
   -H 'content-type: application/json' \
-  -d '{"cliPaths":{"agent":"/home/menghongfei/.local/bin/agent"}}'</code></pre>
-        <p>全部恢复默认：<code>{ "clear": true }</code>。持久化在 Postgres <code>meta.cli_paths</code>；保存后对新 spawn 生效。</p>
+  -d '{
+    "cliPaths": {"agent":"/home/menghongfei/.local/bin/agent"},
+    "proxyEnv": {
+      "HTTP_PROXY": "http://127.0.0.1:7890",
+      "HTTPS_PROXY": "http://127.0.0.1:7890",
+      "NO_PROXY": "localhost,127.0.0.1",
+      "ALL_PROXY": ""
+    }
+  }'</code></pre>
+        <p>全部恢复默认：<code>{ "clear": true }</code>。持久化 <code>meta.cli_paths</code> / <code>meta.proxy_env</code>；保存后对新 spawn 生效。子进程日志仅记录注入的代理键名，不写具体值。</p>
       </section>
 
     </main>

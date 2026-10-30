@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import type { Runner, RunnerHooks } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
+import { childProcessEnv } from "../proxyEnv.js";
 
 /** Best-effort: newest session in cwd via `devin list --format json`. */
 function latestDevinSession(cwd: string, hooks: RunnerHooks): string | undefined {
@@ -12,7 +13,7 @@ function latestDevinSession(cwd: string, hooks: RunnerHooks): string | undefined
     const r = spawnSync(resolveCliCommand("devin"), ["list", "--format", "json"], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+      env: childProcessEnv({ NO_COLOR: "1", FORCE_COLOR: "0" }),
       timeout: 15000,
     });
     const raw = `${r.stdout || ""}\n${r.stderr || ""}`;
@@ -51,7 +52,7 @@ function latestSessionFromDb(cwd: string): string | undefined {
         dbPath,
         cwd,
       ],
-      { encoding: "utf8", timeout: 5000 },
+      { encoding: "utf8", timeout: 5000, env: childProcessEnv() },
     );
     const id = (r.stdout || "").trim();
     return id || undefined;

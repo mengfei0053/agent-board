@@ -4,13 +4,14 @@ import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
+import { childProcessEnv } from "../proxyEnv.js";
 
 function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p: { sessionId: string }) => void; onLog: (line: string) => void }): string | undefined {
   if (task.sessionId) return task.sessionId;
   try {
     const r = spawnSync(resolveCliCommand("agent"), ["create-chat"], {
       encoding: "utf8",
-      env: { ...process.env, NO_COLOR: "1" },
+      env: childProcessEnv({ NO_COLOR: "1" }),
       timeout: 20000,
     });
     const out = `${r.stdout || ""}\n${r.stderr || ""}`.trim();

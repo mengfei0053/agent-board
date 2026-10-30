@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { childProcessEnv, lastInjectedProxyKeys } from "../proxyEnv.js";
 import type { RunnerHandle, RunnerHooks } from "./types.js";
 import type { TaskStatus } from "../types.js";
 
@@ -105,15 +106,27 @@ export function spawnLogged(
   let stoppedByUser = false;
   let endedByWatchdog = false;
   let consecutive429 = 0;
+  const env = childProcessEnv({ NO_COLOR: "1", FORCE_COLOR: "0" });
   const child = spawn(cmd, args, {
     cwd,
-    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
 
   hooks.onStatus({ status: "running", pid: child.pid, startedAt: new Date().toISOString() });
-  hooks.onLog(JSON.stringify({ type: "spawn", cmd, args, cwd, pid: child.pid }));
+  hooks.onLog(
+    JSON.stringify({
+      type: "spawn",
+      cmd,
+      args,
+      cwd,
+      pid: child.pid,
+      ...(lastInjectedProxyKeys.length
+        ? { proxyEnvKeys: [...lastInjectedProxyKeys] }
+        : {}),
+    }),
+  );
 
   const signalGroup = (sig: NodeJS.Signals) => {
     if (!child.pid) return;

@@ -1743,3 +1743,5 @@ button.topbar-brand[aria-expanded="true"] {
 }
 #settings-status.ok { color: var(--ok); }
 #settings-status.bad { color: var(--bad); }
+
+.settings-section { margin-top: 28px; }

@@ -46,6 +46,13 @@ import {
   setCliPathOverrides,
   type CliCommandKey,
 } from "./cliPaths.js";
+import {
+  PROXY_ENV_KEYS,
+  clearProxyEnvOverrides,
+  getProxyEnvSettings,
+  setProxyEnvOverrides,
+  type ProxyEnvKey,
+} from "./proxyEnv.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
 
@@ -395,7 +402,11 @@ app.get("/api/events", (c) => {
 
 
 
-app.get("/api/settings", (c) => c.json(getCliPathSettings()));
+function fullSettings() {
+  return { ...getCliPathSettings(), ...getProxyEnvSettings() };
+}
+
+app.get("/api/settings", (c) => c.json(fullSettings()));
 
 app.put("/api/settings", async (c) => {
   let body: unknown;
@@ -407,24 +418,59 @@ app.put("/api/settings", async (c) => {
   if (!body || typeof body !== "object") {
     return c.json({ error: "body must be an object" }, 400);
   }
-  const raw = body as { cliPaths?: unknown; clear?: unknown };
+  const raw = body as {
+    cliPaths?: unknown;
+    proxyEnv?: unknown;
+    clear?: unknown;
+  };
+
   if (raw.clear === true) {
-    return c.json(await clearCliPathOverrides());
+    await clearCliPathOverrides();
+    await clearProxyEnvOverrides();
+    return c.json(fullSettings());
   }
-  if (raw.cliPaths == null || typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
-    return c.json({ error: "cliPaths object required (or clear: true)" }, 400);
+
+  const hasCli = raw.cliPaths != null;
+  const hasProxy = raw.proxyEnv != null;
+  if (!hasCli && !hasProxy) {
+    return c.json({ error: "cliPaths and/or proxyEnv required (or clear: true)" }, 400);
   }
-  const patch: Partial<Record<CliCommandKey, string>> = {};
-  for (const [k, v] of Object.entries(raw.cliPaths as Record<string, unknown>)) {
-    if (!(CLI_COMMAND_KEYS as readonly string[]).includes(k)) {
-      return c.json({ error: `unknown cliPaths key: ${k}` }, 400);
+
+  if (hasCli) {
+    if (typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
+      return c.json({ error: "cliPaths must be an object" }, 400);
     }
-    if (v != null && typeof v !== "string") {
-      return c.json({ error: `cliPaths.${k} must be a string` }, 400);
+    const patch: Partial<Record<CliCommandKey, string>> = {};
+    for (const [k, v] of Object.entries(raw.cliPaths as Record<string, unknown>)) {
+      if (!(CLI_COMMAND_KEYS as readonly string[]).includes(k)) {
+        return c.json({ error: `unknown cliPaths key: ${k}` }, 400);
+      }
+      if (v != null && typeof v !== "string") {
+        return c.json({ error: `cliPaths.${k} must be a string` }, 400);
+      }
+      patch[k as CliCommandKey] = typeof v === "string" ? v : "";
     }
-    patch[k as CliCommandKey] = typeof v === "string" ? v : "";
+    await setCliPathOverrides(patch);
   }
-  return c.json(await setCliPathOverrides(patch));
+
+  if (hasProxy) {
+    if (typeof raw.proxyEnv !== "object" || Array.isArray(raw.proxyEnv)) {
+      return c.json({ error: "proxyEnv must be an object" }, 400);
+    }
+    const patch: Partial<Record<ProxyEnvKey, string>> = {};
+    for (const [k, v] of Object.entries(raw.proxyEnv as Record<string, unknown>)) {
+      if (!(PROXY_ENV_KEYS as readonly string[]).includes(k)) {
+        return c.json({ error: `unknown proxyEnv key: ${k}` }, 400);
+      }
+      if (v != null && typeof v !== "string") {
+        return c.json({ error: `proxyEnv.${k} must be a string` }, 400);
+      }
+      patch[k as ProxyEnvKey] = typeof v === "string" ? v : "";
+    }
+    await setProxyEnvOverrides(patch);
+  }
+
+  return c.json(fullSettings());
 });
 
 app.get("/settings", (c) => {

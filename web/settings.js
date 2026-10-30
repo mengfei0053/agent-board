@@ -1,9 +1,11 @@
 const fieldsEl = document.getElementById("settings-fields");
+const proxyEl = document.getElementById("proxy-fields");
 const form = document.getElementById("settings-form");
 const statusEl = document.getElementById("settings-status");
 const btnClear = document.getElementById("btn-clear-settings");
 
-const ORDER = ["pi", "claude", "agent", "devin", "codex"];
+const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex"];
+const PROXY_ORDER = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
 
 function escapeHtml(s) {
   return String(s)
@@ -19,8 +21,8 @@ function setStatus(msg, ok) {
   statusEl.classList.toggle("bad", ok === false);
 }
 
-function render(cliPaths) {
-  fieldsEl.innerHTML = ORDER.map((key) => {
+function renderCli(cliPaths) {
+  fieldsEl.innerHTML = CLI_ORDER.map((key) => {
     const row = cliPaths[key];
     if (!row) return "";
     const resolved = row.resolved
@@ -34,8 +36,8 @@ function render(cliPaths) {
         </span>
         <input
           type="text"
-          name="${escapeHtml(key)}"
-          data-key="${escapeHtml(key)}"
+          name="cli-${escapeHtml(key)}"
+          data-cli-key="${escapeHtml(key)}"
           value="${escapeHtml(row.override || "")}"
           placeholder="${escapeHtml(row.default)}"
           spellcheck="false"
@@ -43,6 +45,39 @@ function render(cliPaths) {
         ${resolved}
       </label>`;
   }).join("");
+}
+
+function renderProxy(proxyEnv) {
+  proxyEl.innerHTML = PROXY_ORDER.map((key) => {
+    const row = proxyEnv[key] || { override: "", effective: "", inherited: false };
+    let hint = `<span class="settings-resolved muted">空 = 不注入，继承看板进程环境</span>`;
+    if (row.override) {
+      hint = `<span class="settings-resolved muted">将注入子进程（日志只记键名）</span>`;
+    } else if (row.inherited && row.effective) {
+      hint = `<span class="settings-resolved muted">继承中：<code>${escapeHtml(row.effective)}</code></span>`;
+    }
+    return `
+      <label class="settings-row">
+        <span class="settings-label">
+          <strong><code>${escapeHtml(key)}</code></strong>
+        </span>
+        <input
+          type="text"
+          name="proxy-${escapeHtml(key)}"
+          data-proxy-key="${escapeHtml(key)}"
+          value="${escapeHtml(row.override || "")}"
+          placeholder="${escapeHtml(key)}"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        ${hint}
+      </label>`;
+  }).join("");
+}
+
+function renderAll(data) {
+  renderCli(data.cliPaths || {});
+  renderProxy(data.proxyEnv || {});
 }
 
 async function load() {
@@ -53,29 +88,33 @@ async function load() {
     return;
   }
   const data = await res.json();
-  render(data.cliPaths || {});
+  renderAll(data);
   setStatus("已加载当前设置。保存后对新 spawn 生效。", true);
 }
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const cliPaths = {};
-  for (const input of fieldsEl.querySelectorAll("input[data-key]")) {
-    cliPaths[input.dataset.key] = input.value;
+  for (const input of fieldsEl.querySelectorAll("input[data-cli-key]")) {
+    cliPaths[input.dataset.cliKey] = input.value;
+  }
+  const proxyEnv = {};
+  for (const input of proxyEl.querySelectorAll("input[data-proxy-key]")) {
+    proxyEnv[input.dataset.proxyKey] = input.value;
   }
   setStatus("保存中…");
   try {
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cliPaths }),
+      body: JSON.stringify({ cliPaths, proxyEnv }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setStatus(data.error || `保存失败：HTTP ${res.status}`, false);
       return;
     }
-    render(data.cliPaths || {});
+    renderAll(data);
     setStatus("已保存。", true);
   } catch (err) {
     setStatus(`保存失败：${err}`, false);
@@ -83,7 +122,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 btnClear.addEventListener("click", async () => {
-  if (!confirm("确定清除全部 CLI 路径覆盖，恢复默认命令名？")) return;
+  if (!confirm("确定清除全部 CLI 路径与代理覆盖？")) return;
   setStatus("恢复中…");
   try {
     const res = await fetch("/api/settings", {
@@ -96,7 +135,7 @@ btnClear.addEventListener("click", async () => {
       setStatus(data.error || `恢复失败：HTTP ${res.status}`, false);
       return;
     }
-    render(data.cliPaths || {});
+    renderAll(data);
     setStatus("已恢复默认。", true);
   } catch (err) {
     setStatus(`恢复失败：${err}`, false);
