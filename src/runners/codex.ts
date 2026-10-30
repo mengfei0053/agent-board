@@ -6,7 +6,7 @@ import { spawnLogged } from "./common.js";
 /**
  * OpenAI Codex CLI (`codex` on PATH).
  * Non-interactive board: `codex exec --json` (JSONL thread events).
- * Approvals: workspace-write + --approve-for-me (analogous to Devin accept-edits).
+ * Approvals: `--approve-for-me` alone (implies workspace-write; mutually exclusive with `-s`).
  * Resume: `codex exec resume <thread_id| --last> --json …`
  */
 function baseExecFlags(taskModel?: string): string[] {
@@ -14,8 +14,6 @@ function baseExecFlags(taskModel?: string): string[] {
     "--json",
     "--color",
     "never",
-    "-s",
-    "workspace-write",
     "--approve-for-me",
     "--skip-git-repo-check",
   ];
