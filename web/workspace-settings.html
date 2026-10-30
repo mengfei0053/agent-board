@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>空间设置 · agent-board</title>
+  <script>
+    (function () {
+      try {
+        var KEY = "agent-board.theme";
+        var pref = localStorage.getItem(KEY) || "system";
+        if (pref !== "light" && pref !== "dark" && pref !== "system") pref = "system";
+        var resolved = pref === "system"
+          ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+          : pref;
+        document.documentElement.setAttribute("data-theme", resolved);
+        document.documentElement.setAttribute("data-theme-pref", pref);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-theme-pref", "system");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="docs-page settings-page">
+  <div class="app docs-app">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-mark" aria-hidden="true">ab</div>
+        <div>
+          <h1>空间设置</h1>
+          <p class="muted" id="ws-subtitle">加载中…</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="btn-link secondary" href="/">← 返回看板</a>
+        <a class="btn-link secondary" href="/settings">全局设置</a>
+      </div>
+    </header>
+
+    <main class="docs-main settings-main">
+      <form id="ws-settings-form" class="settings-form" autocomplete="off">
+        <section class="settings-card" aria-labelledby="ws-basic-title">
+          <header class="settings-block-head">
+            <h2 id="ws-basic-title">基本信息</h2>
+            <p class="settings-block-desc">名称与路径；任务 cwd 取自工作区路径。</p>
+          </header>
+          <label class="settings-row">
+            <span class="settings-label"><strong>名称</strong></span>
+            <input type="text" id="ws-name" name="name" required placeholder="工作区名称" />
+          </label>
+          <label class="settings-row">
+            <span class="settings-label"><strong>路径</strong></span>
+            <input type="text" id="ws-path" name="path" required placeholder="/绝对/路径" spellcheck="false" />
+          </label>
+        </section>
+
+        <section class="settings-card" aria-labelledby="ws-prompt-title">
+          <header class="settings-block-head">
+            <h2 id="ws-prompt-title">空间提示词</h2>
+            <p class="settings-block-desc">首次启动本空间任务时，会自动前置拼到用户 prompt（有 session 的续跑不再重复注入）。</p>
+          </header>
+          <label class="settings-label" for="ws-system-prompt"><strong>系统 / 空间指令</strong></label>
+          <textarea id="ws-system-prompt" name="systemPrompt" rows="8" placeholder="例如：本仓库用 pnpm；改完跑 typecheck；提交信息用中文……"></textarea>
+        </section>
+
+        <section class="settings-card" aria-labelledby="ws-skills-title">
+          <header class="settings-block-head">
+            <h2 id="ws-skills-title">Skills</h2>
+            <p class="settings-block-desc">每行一个 skill 名称或路径。启动任务时写入 prompt 提示；原生 skill 目录注入视各 Agent CLI 能力而定。</p>
+          </header>
+          <textarea id="ws-skills" name="skills" rows="6" placeholder="code-review&#10;docs/skills/deploy.md" spellcheck="false"></textarea>
+        </section>
+
+        <section class="settings-card" aria-labelledby="ws-mcp-title">
+          <header class="settings-block-head">
+            <h2 id="ws-mcp-title">MCP</h2>
+            <p class="settings-block-desc">JSON 或说明文本。当前会作为工作区 MCP 说明注入 prompt；各 CLI 原生 --mcp-config 接线后续可扩展。</p>
+          </header>
+          <textarea id="ws-mcp" name="mcp" rows="8" placeholder='{"mcpServers":{"example":{"command":"npx","args":["-y","…"]}}}' spellcheck="false"></textarea>
+        </section>
+
+        <div class="settings-sticky-bar" id="settings-sticky">
+          <p class="settings-status muted" id="ws-settings-status" role="status">加载中…</p>
+          <div class="settings-actions">
+            <button type="submit" id="btn-save-ws-settings">保存</button>
+            <button type="button" class="secondary" id="btn-clear-ws-settings">清空空间配置</button>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+  <script src="/workspace-settings.js" type="module"></script>
+</body>
+</html>

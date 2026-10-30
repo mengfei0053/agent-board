@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm test:unit && pnpm test:e2e",
+    "test:unit": "tsx --test src/**/*.test.ts",
+    "test:e2e": "node test/e2e/workspace-settings.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",

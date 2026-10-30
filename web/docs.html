@@ -220,11 +220,12 @@ npm start</code></pre>
   <h2>工作区</h2>
   <ul>
     <li><code>GET /api/workspaces</code> — 列表</li>
+    <li><code>GET /api/workspaces/:id</code> — 单个（含 <code>settings</code>）</li>
     <li><code>POST /api/workspaces</code> — <code>{ name, path }</code></li>
-    <li><code>PATCH /api/workspaces/:id</code> — <code>{ name?, path? }</code></li>
+    <li><code>PATCH /api/workspaces/:id</code> — <code>{ name?, path?, settings? }</code>；<code>settings</code> 为整对象替换：<code>{ systemPrompt?, skills?: string[], mcp? }</code></li>
     <li><code>DELETE /api/workspaces/:id</code> — 无任务时可删（默认工作区不可删）</li>
   </ul>
-  <p>新建任务优先传 <code>workspaceId</code>；cwd 取自工作区 path。看板左侧侧栏管理工区，右侧只显示当前工区任务。</p>
+  <p>新建任务优先传 <code>workspaceId</code>；cwd 取自工作区 path。看板左侧侧栏管理工区，右侧只显示当前工区任务。侧栏工作区可右键：设置 / 编辑 / 删除；设置页 <code>/workspaces/:id/settings</code>。空间 <code>systemPrompt</code> / skills / mcp 在任务首次启动时前置拼入 runner prompt（有 session 的续跑不重复注入）。</p>
 </section>
 </body>
 </html>

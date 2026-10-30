@@ -1518,10 +1518,16 @@ function renderWorkspaces() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "ws-item" + (w.id === selectedWorkspaceId ? " active" : "");
+    btn.dataset.workspaceId = w.id;
     btn.innerHTML = `<span class="ws-item-name">${escapeHtml(w.name)}</span>
       <span class="ws-item-path">${escapeHtml(w.path)}</span>
       <span class="ws-item-count">${count} 个任务</span>`;
     btn.onclick = () => selectWorkspace(w.id);
+    btn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openWsContextMenu(e.clientX, e.clientY, w.id);
+    });
     li.appendChild(btn);
     wsListEl.appendChild(li);
   }
@@ -1553,21 +1559,97 @@ document.getElementById("ws-edit").onclick = () => {
   const ws = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
   if (ws) openWsModal("edit", ws);
 };
-document.getElementById("ws-delete").onclick = async () => {
-  const ws = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
-  if (!ws) return;
-  if (!window.confirm(`删除工作区「${ws.name}」？\n若仍有任务将无法删除。`)) return;
+async function deleteWorkspaceById(id) {
+  const ws = workspaces.get(id);
+  if (!ws) return false;
+  if (!window.confirm(`删除工作区「${ws.name}」？\n若仍有任务将无法删除。`)) return false;
   const res = await fetch(`/api/workspaces/${ws.id}`, { method: "DELETE" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     window.alert(data.error || res.statusText);
-    return;
+    return false;
   }
   workspaces.delete(ws.id);
   ensureSelectedWorkspace();
   renderWorkspaces();
   renderList();
+  return true;
+}
+
+document.getElementById("ws-delete").onclick = async () => {
+  if (!selectedWorkspaceId) return;
+  await deleteWorkspaceById(selectedWorkspaceId);
 };
+
+/** @type {HTMLDivElement | null} */
+let wsCtxMenu = null;
+/** @type {string | null} */
+let wsCtxWorkspaceId = null;
+
+function ensureWsContextMenu() {
+  if (wsCtxMenu) return wsCtxMenu;
+  const el = document.createElement("div");
+  el.id = "ws-context-menu";
+  el.className = "ws-context-menu hidden";
+  el.setAttribute("role", "menu");
+  el.innerHTML = `
+    <button type="button" class="ws-ctx-item" data-action="settings" role="menuitem">设置</button>
+    <button type="button" class="ws-ctx-item" data-action="edit" role="menuitem">编辑</button>
+    <button type="button" class="ws-ctx-item ws-ctx-danger" data-action="delete" role="menuitem">删除</button>
+  `;
+  el.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn || !wsCtxWorkspaceId) return;
+    const action = btn.getAttribute("data-action");
+    const id = wsCtxWorkspaceId;
+    closeWsContextMenu();
+    const ws = workspaces.get(id);
+    if (!ws) return;
+    if (action === "settings") {
+      location.href = `/workspaces/${encodeURIComponent(id)}/settings`;
+      return;
+    }
+    if (action === "edit") {
+      selectWorkspace(id);
+      openWsModal("edit", ws);
+      return;
+    }
+    if (action === "delete") {
+      await deleteWorkspaceById(id);
+    }
+  });
+  document.body.appendChild(el);
+  wsCtxMenu = el;
+  return el;
+}
+
+function closeWsContextMenu() {
+  if (!wsCtxMenu) return;
+  wsCtxMenu.classList.add("hidden");
+  wsCtxWorkspaceId = null;
+}
+
+function openWsContextMenu(x, y, workspaceId) {
+  const el = ensureWsContextMenu();
+  wsCtxWorkspaceId = workspaceId;
+  el.classList.remove("hidden");
+  // Position then clamp into viewport
+  el.style.left = "0px";
+  el.style.top = "0px";
+  const rect = el.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  el.style.left = `${Math.max(8, left)}px`;
+  el.style.top = `${Math.max(8, top)}px`;
+}
+
+document.addEventListener("click", () => closeWsContextMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeWsContextMenu();
+});
+window.addEventListener("blur", () => closeWsContextMenu());
+window.addEventListener("resize", () => closeWsContextMenu());
+window.addEventListener("scroll", () => closeWsContextMenu(), true);
 document.getElementById("ws-modal-close").onclick = closeWsModal;
 document.getElementById("ws-modal-cancel").onclick = closeWsModal;
 wsModal.addEventListener("click", (e) => { if (e.target === wsModal) closeWsModal(); });

@@ -59,6 +59,20 @@ export type PromptTurn = {
 /** Board swimlane keys */
 export type BoardLane = "draft" | "todo" | "running" | "done" | "archived";
 
+/** Per-workspace overrides applied when starting tasks in this space */
+export type WorkspaceSettings = {
+  /** System / space prompt prepended on first run (and continue without session) */
+  systemPrompt?: string;
+  /** Skill names or paths (one entry each) */
+  skills?: string[];
+  /**
+   * MCP config for this workspace.
+   * Free-form JSON or prose; persisted and surfaced to the agent via prompt
+   * until native per-CLI MCP wiring exists.
+   */
+  mcp?: string;
+};
+
 export type Workspace = {
   id: string;
   name: string;
@@ -66,6 +80,8 @@ export type Workspace = {
   path: string;
   createdAt: string;
   updatedAt: string;
+  /** Optional space-level prompt / skills / mcp */
+  settings?: WorkspaceSettings;
 };
 
 export type Task = {
@@ -124,6 +140,7 @@ export type CreateWorkspaceInput = {
 export type UpdateWorkspaceInput = {
   name?: string;
   path?: string;
+  settings?: WorkspaceSettings;
 };
 
 export type ContinueTaskInput = {

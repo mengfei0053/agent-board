@@ -22,7 +22,7 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| 工作区 | 左侧增删改查；任务归属工作区；cwd = 工作区 path |
+| 工作区 | 左侧增删改查；右键菜单（设置 / 编辑 / 删除）；空间设置页可配提示词 / skills / MCP；cwd = 工作区 path |
 | 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态 |
 | 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
 | 继续任务 | 终态任务可按 CLI session 续跑，迭代次数 +1 |
@@ -121,7 +121,17 @@ pnpm dev
 
 首次启动若存在 `data/db.json`，会自动迁移到 Postgres，并将 JSON 改名为 `db.json.migrated-*`。
 
+## 测试
+
+```bash
+pnpm install
+pnpm test          # 单元 + e2e
+pnpm test:unit     # node:test（workspace 配置归一化 / prompt 拼接）
+pnpm test:e2e      # puppeteer-core：侧栏右键菜单 + 空间设置页保存（自带 mock API，无需 Postgres）
+```
+
 ## 重新截图（可选）
+
 
 服务需已在 `8791` 运行，本机有 Google Chrome：
 

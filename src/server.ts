@@ -38,6 +38,7 @@ import type {
   UpdateWorkspaceInput,
   Workspace,
 } from "./types.js";
+import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 import {
   CLI_COMMAND_KEYS,
@@ -229,20 +230,38 @@ app.post("/api/workspaces", async (c) => {
   return c.json({ workspace: ws }, 201);
 });
 
+app.get("/api/workspaces/:id", (c) => {
+  const id = c.req.param("id");
+  const ws = getWorkspace(id);
+  if (!ws) return c.json({ error: "not found" }, 404);
+  return c.json({
+    workspace: ws,
+    defaultWorkspaceId: getDefaultWorkspaceId(),
+  });
+});
+
 app.patch("/api/workspaces/:id", async (c) => {
   const id = c.req.param("id");
   const cur = getWorkspace(id);
   if (!cur) return c.json({ error: "not found" }, 404);
-  const body = (await c.req.json().catch(() => ({}))) as UpdateWorkspaceInput;
+  const body = (await c.req.json().catch(() => ({}))) as UpdateWorkspaceInput & {
+    settings?: unknown;
+  };
   const name =
     typeof body.name === "string" && body.name.trim() ? body.name.trim() : cur.name;
   const path =
     typeof body.path === "string" && body.path.trim() ? body.path.trim() : cur.path;
   if (!existsSync(path)) return c.json({ error: `path not found: ${path}` }, 400);
+  // When `settings` is present, replace the whole settings object (empty = clear).
+  const settings =
+    "settings" in body
+      ? normalizeWorkspaceSettings(body.settings ?? {})
+      : cur.settings;
   const ws: Workspace = {
     ...cur,
     name,
     path,
+    settings,
     updatedAt: new Date().toISOString(),
   };
   upsertWorkspace(ws);
@@ -613,6 +632,11 @@ app.get("/uploads/:name", async (c) => {
   const nodeStream = createReadStream(abs);
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
   return c.body(webStream);
+});
+
+app.get("/workspaces/:id/settings", (c) => {
+  const html = readFileSync(join(webRoot, "workspace-settings.html"), "utf8");
+  return c.html(html);
 });
 
 app.get("/settings", (c) => {

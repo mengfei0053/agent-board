@@ -18,6 +18,7 @@ import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
 import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus, Workspace } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
+import { applyWorkspaceToPrompt } from "./workspaceApply.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
   extractFinalOutput,
@@ -192,10 +193,22 @@ export function isUndeletableStatus(status: TaskStatus): boolean {
 function spawnRunner(task: Task): Task {
   const id = task.id;
   const runner = runners[task.kind];
-  const runnerPrompt = appendAttachmentsToPrompt(
+  const withUploads = appendAttachmentsToPrompt(
     expandUploadUrlsInPrompt(task.prompt),
     task.attachments,
   );
+  const wsSettings = getWorkspace(task.workspaceId)?.settings;
+  const runnerPrompt = applyWorkspaceToPrompt(wsSettings, withUploads);
+  if (runnerPrompt !== withUploads) {
+    writeLog(
+      id,
+      JSON.stringify({
+        type: "workspace_settings_applied",
+        workspaceId: task.workspaceId,
+        note: "prepended workspace systemPrompt/skills/mcp to runner prompt",
+      }),
+    );
+  }
   const runnerTask: Task = { ...task, prompt: runnerPrompt };
   const handle = runner.start(runnerTask, {
     onStatus: (p) => applyStatus(id, p),
@@ -333,9 +346,20 @@ export function continueTask(id: string, prompt?: string): Task {
 
   const fresh = getTask(id)!;
   const runner = runners[fresh.kind];
+  const basePrompt = appendAttachmentsToPrompt(
+    expandUploadUrlsInPrompt(fresh.prompt),
+    fresh.attachments,
+  );
+  const hasSession = Boolean(fresh.sessionId);
+  // Re-apply workspace prefix only when continuing without a session (fresh run).
+  const wsSettings = getWorkspace(fresh.workspaceId)?.settings;
+  const runnerPrompt = applyWorkspaceToPrompt(wsSettings, basePrompt, {
+    continueWithSession: hasSession,
+  });
+  const contPrompt = expandUploadUrlsInPrompt(continuePrompt);
   const runnerTask: Task = {
     ...fresh,
-    prompt: appendAttachmentsToPrompt(expandUploadUrlsInPrompt(fresh.prompt), fresh.attachments),
+    prompt: runnerPrompt,
   };
   const handle = runner.start(
     runnerTask,
@@ -343,7 +367,7 @@ export function continueTask(id: string, prompt?: string): Task {
       onStatus: (p) => applyStatus(id, p),
       onLog: (line) => writeLog(id, line),
     },
-    { continuePrompt: expandUploadUrlsInPrompt(continuePrompt) },
+    { continuePrompt: contPrompt },
   );
   handles.set(id, handle);
   if (handle.pid) patch(id, { pid: handle.pid });

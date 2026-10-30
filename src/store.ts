@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from "nod
 import { homedir } from "node:os";
 import { nanoid } from "nanoid";
 import type { OutputTurn, PromptTurn, SideJob, Task, Workspace } from "./types.js";
+import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import {
   archiveJsonDb,
   dataDir,
@@ -93,6 +94,7 @@ type WorkspaceRow = {
   path: string;
   created_at: Date | string;
   updated_at: Date | string;
+  settings?: unknown;
 };
 
 type TaskRow = {
@@ -126,6 +128,7 @@ function rowToWorkspace(row: WorkspaceRow): Workspace {
     path: row.path,
     createdAt: iso(row.created_at)!,
     updatedAt: iso(row.updated_at)!,
+    settings: normalizeWorkspaceSettings(row.settings),
   };
 }
 
@@ -185,14 +188,16 @@ function rowToTask(
 
 async function persistWorkspace(ws: Workspace): Promise<void> {
   const p = getPool();
+  const settingsJson = ws.settings ? JSON.stringify(ws.settings) : null;
   await p.query(
-    `INSERT INTO workspaces (id, name, path, created_at, updated_at)
-     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)
+    `INSERT INTO workspaces (id, name, path, created_at, updated_at, settings)
+     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz, $6::jsonb)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        path = EXCLUDED.path,
-       updated_at = EXCLUDED.updated_at`,
-    [ws.id, ws.name, ws.path, ws.createdAt, ws.updatedAt],
+       updated_at = EXCLUDED.updated_at,
+       settings = EXCLUDED.settings`,
+    [ws.id, ws.name, ws.path, ws.createdAt, ws.updatedAt, settingsJson],
   );
 }
 
