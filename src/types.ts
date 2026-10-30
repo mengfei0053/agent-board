@@ -28,6 +28,18 @@ export type SideJob = {
   endedAt?: string;
 };
 
+/** File attached when creating a task (stored under data/uploads) */
+export type TaskAttachment = {
+  /** Stored filename on disk (safe id + ext) */
+  name: string;
+  /** Original client filename for display / download */
+  originalName: string;
+  /** Public URL path, e.g. /uploads/xxx.pdf */
+  url: string;
+  mime: string;
+  size: number;
+};
+
 /** One assistant reply for a single start/continue iteration */
 export type OutputTurn = {
   iteration: number;
@@ -87,7 +99,10 @@ export type Task = {
   exitCode?: number | null;
   /** Sub-agents / background bash / monitors parsed from event stream */
   sideJobs?: SideJob[];
+  /** Files attached at create time */
+  attachments?: TaskAttachment[];
 };
+
 
 export type CreateTaskInput = {
   title?: string;
@@ -98,6 +113,7 @@ export type CreateTaskInput = {
   cwd?: string;
   prompt: string;
   model?: string;
+  attachments?: TaskAttachment[];
 };
 
 export type CreateWorkspaceInput = {

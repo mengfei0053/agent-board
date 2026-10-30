@@ -120,6 +120,7 @@ export async function ensureSchema(): Promise<void> {
   await p.query(
     `CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`,
   );
+  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attachments JSONB`);
 }
 
 export function jsonDbExists(): boolean {

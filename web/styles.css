@@ -2156,3 +2156,68 @@ button.topbar-brand[aria-expanded="true"] {
 .settings-proxy-panels { min-height: 12px; }
 .settings-proxy-panel.hidden,
 .settings-proxy-panel[hidden] { display: none !important; }
+
+
+/* Task attachments (create + detail) */
+.attach-field {
+  margin: 4px 0 12px;
+}
+.attach-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.attach-head .secondary {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.attach-hint {
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+.attach-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.attach-list[hidden] { display: none !important; }
+.attach-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-elevated, var(--panel));
+  font-size: 12px;
+}
+.attach-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-item-size {
+  color: var(--muted, #888);
+  flex: 0 0 auto;
+}
+.attach-item-remove,
+.attach-item-link {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+.attach-status { font-size: 12px; }
+.attach-status.is-error { color: var(--danger, #e35d6a); }
+.detail-attachments {
+  margin: 0 0 12px;
+}
+.detail-attachments .attach-list {
+  margin-top: 6px;
+}

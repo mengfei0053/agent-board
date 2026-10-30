@@ -36,7 +36,12 @@ import {
   mergeSideJobs,
   sideJobsFromLogLine,
 } from "./sideJobs.js";
-import { expandUploadUrlsInPrompt, stripImageMarkdown } from "./uploads.js";
+import {
+  appendAttachmentsToPrompt,
+  deleteAttachmentFiles,
+  expandUploadUrlsInPrompt,
+  stripImageMarkdown,
+} from "./uploads.js";
 
 const handles = new Map<string, RunnerHandle>();
 /** Coalesce rapid output/sideJob patches so stop/SSE stay responsive. */
@@ -187,7 +192,11 @@ export function isUndeletableStatus(status: TaskStatus): boolean {
 function spawnRunner(task: Task): Task {
   const id = task.id;
   const runner = runners[task.kind];
-  const runnerTask: Task = { ...task, prompt: expandUploadUrlsInPrompt(task.prompt) };
+  const runnerPrompt = appendAttachmentsToPrompt(
+    expandUploadUrlsInPrompt(task.prompt),
+    task.attachments,
+  );
+  const runnerTask: Task = { ...task, prompt: runnerPrompt };
   const handle = runner.start(runnerTask, {
     onStatus: (p) => applyStatus(id, p),
     onLog: (line) => writeLog(id, line),
@@ -218,6 +227,7 @@ export function createDraft(input: CreateTaskInput): Task {
   const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
   const title = input.title?.trim() || plainPrompt.slice(0, 48) || `${input.kind} task`;
   const createdAt = now();
+  const attachments = input.attachments?.length ? input.attachments : undefined;
   const task: Task = {
     id,
     title,
@@ -231,6 +241,7 @@ export function createDraft(input: CreateTaskInput): Task {
     createdAt,
     updatedAt: createdAt,
     prompts: [{ iteration: 1, prompt: input.prompt, at: createdAt }],
+    attachments,
   };
   upsertTask(task);
   publish({ type: "task_upsert", task });
@@ -322,7 +333,10 @@ export function continueTask(id: string, prompt?: string): Task {
 
   const fresh = getTask(id)!;
   const runner = runners[fresh.kind];
-  const runnerTask: Task = { ...fresh, prompt: expandUploadUrlsInPrompt(fresh.prompt) };
+  const runnerTask: Task = {
+    ...fresh,
+    prompt: appendAttachmentsToPrompt(expandUploadUrlsInPrompt(fresh.prompt), fresh.attachments),
+  };
   const handle = runner.start(
     runnerTask,
     {
@@ -477,8 +491,12 @@ export function removeTasks(ids: string[]): {
     deletable.push(id);
   }
 
+  const attachmentBags = deletable
+    .map((id) => getTask(id)?.attachments)
+    .filter((a): a is NonNullable<Task["attachments"]> => Boolean(a?.length));
   const deleted = deleteTasks(deletable);
   for (const id of deleted) removeLog(id);
+  for (const bag of attachmentBags) deleteAttachmentFiles(bag);
   if (deleted.length) publish({ type: "task_delete", taskIds: deleted });
   return { deleted, stopped, skipped };
 }

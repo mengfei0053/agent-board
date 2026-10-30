@@ -69,8 +69,13 @@ import {
   absoluteUploadPath,
   ensureUploadsDir,
   isAllowedImageMime,
+  isSafeStoredName,
   isSafeUploadName,
+  MAX_ATTACHMENT_BYTES,
   MAX_UPLOAD_BYTES,
+  mimeForStoredName,
+  normalizeAttachmentsInput,
+  saveAttachmentFile,
   saveUploadFile,
 } from "./uploads.js";
 import { Readable } from "node:stream";
@@ -301,6 +306,18 @@ app.post("/api/tasks", async (c) => {
   } else {
     return c.json({ error: "workspaceId or cwd required" }, 400);
   }
+  let attachments;
+  try {
+    attachments = normalizeAttachmentsInput(
+      (body as { attachments?: unknown }).attachments,
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const status = typeof (e as { status?: number })?.status === "number"
+      ? (e as { status: number }).status
+      : 400;
+    return c.json({ error: msg }, status as 400);
+  }
   const input: CreateTaskInput = {
     kind,
     workspaceId: workspaceId || undefined,
@@ -308,6 +325,7 @@ app.post("/api/tasks", async (c) => {
     prompt: body.prompt.trim(),
     title: body.title,
     model: body.model,
+    attachments: attachments.length ? attachments : undefined,
   };
   const start = Boolean(body.start);
   try {
@@ -538,13 +556,27 @@ app.put("/api/settings", async (c) => {
 app.post("/api/uploads", async (c) => {
   try {
     const body = await c.req.parseBody({ all: true });
-    const raw = body["file"] ?? body["image"];
+    const asAttachment =
+      c.req.query("as") === "attachment" ||
+      body["as"] === "attachment" ||
+      Boolean(body["attachment"]);
+    const raw = body["file"] ?? body["attachment"] ?? body["image"];
     const file = Array.isArray(raw) ? raw[0] : raw;
     if (!(file instanceof File)) {
-      return c.json({ error: "请上传图片文件（字段名 file）" }, 400);
+      return c.json({ error: "请上传文件（字段名 file）" }, 400);
+    }
+    if (asAttachment) {
+      if (typeof file.size === "number" && file.size > MAX_ATTACHMENT_BYTES) {
+        return c.json(
+          { error: `附件过大（上限 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB）` },
+          400,
+        );
+      }
+      const saved = await saveAttachmentFile(file);
+      return c.json(saved, 201);
     }
     if (!isAllowedImageMime(file.type || "")) {
-      return c.json({ error: "仅支持 PNG / JPEG / GIF / WebP 图片" }, 400);
+      return c.json({ error: "仅支持 PNG / JPEG / GIF / WebP 图片；通用附件请加 ?as=attachment" }, 400);
     }
     if (typeof file.size === "number" && file.size > MAX_UPLOAD_BYTES) {
       return c.json({ error: `图片过大（上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB）` }, 400);
@@ -562,20 +594,22 @@ app.post("/api/uploads", async (c) => {
 
 app.get("/uploads/:name", async (c) => {
   const name = c.req.param("name");
-  if (!isSafeUploadName(name)) return c.notFound();
+  if (!isSafeStoredName(name) && !isSafeUploadName(name)) return c.notFound();
   const abs = absoluteUploadPath(name);
   if (!abs || !existsSync(abs)) return c.notFound();
   const st = statSync(abs);
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  const mime =
-    ext === "png" ? "image/png"
-    : ext === "gif" ? "image/gif"
-    : ext === "webp" ? "image/webp"
-    : "image/jpeg";
+  const mime = mimeForStoredName(name);
+  const download = c.req.query("download") === "1" || c.req.query("download") === "true";
+  const filename = c.req.query("filename")?.trim() || name;
   c.header("Content-Type", mime);
   c.header("Content-Length", String(st.size));
-  c.header("Cache-Control", "public, max-age=31536000, immutable");
-  // Node Readable → Web ReadableStream for Hono
+  if (download) {
+    const safe = filename.replace(/["\r\n]/g, "_");
+    c.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
+    c.header("Cache-Control", "private, max-age=0, must-revalidate");
+  } else {
+    c.header("Cache-Control", "public, max-age=31536000, immutable");
+  }
   const nodeStream = createReadStream(abs);
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
   return c.body(webStream);

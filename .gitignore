@@ -4,3 +4,4 @@ dist/
 .env
 *.log
 node_modules/
+.tmp-review/

@@ -71,6 +71,8 @@ let editingWorkspaceId = null;
 let folderPickTarget = null;
 /** @type {"draft"|"todo"} */
 let createMode = "draft";
+/** @type {{name:string,originalName:string,url:string,mime:string,size:number}[]} */
+let pendingAttachments = [];
 const createTitle = document.getElementById("create-title");
 const createHint = document.getElementById("create-hint");
 const createSubmit = document.getElementById("create-submit");
@@ -646,6 +648,111 @@ function fillPromptFromQuick(targetId, content) {
   }
 }
 
+
+function formatBytes(n) {
+  const x = Number(n) || 0;
+  if (x < 1024) return `${x} B`;
+  if (x < 1024 * 1024) return `${(x / 1024).toFixed(1)} KB`;
+  return `${(x / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function setAttachStatus(msg, isError = false) {
+  const el = document.getElementById("create-attach-status");
+  if (!el) return;
+  if (!msg) {
+    el.hidden = true;
+    el.textContent = "";
+    el.classList.remove("is-error");
+    return;
+  }
+  el.hidden = false;
+  el.textContent = msg;
+  el.classList.toggle("is-error", Boolean(isError));
+}
+
+function renderCreateAttachments() {
+  const list = document.getElementById("create-attachments");
+  if (!list) return;
+  if (!pendingAttachments.length) {
+    list.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  list.hidden = false;
+  list.innerHTML = pendingAttachments.map((a, idx) => `
+    <li class="attach-item" data-idx="${idx}">
+      <span class="attach-item-name" title="${escapeHtml(a.originalName)}">${escapeHtml(a.originalName)}</span>
+      <span class="attach-item-size">${escapeHtml(formatBytes(a.size))}</span>
+      <button type="button" class="secondary attach-item-remove" data-idx="${idx}">移除</button>
+    </li>
+  `).join("");
+}
+
+function clearPendingAttachments() {
+  pendingAttachments = [];
+  renderCreateAttachments();
+  setAttachStatus("");
+  const input = document.getElementById("create-attach-file");
+  if (input) input.value = "";
+}
+
+async function uploadAttachmentFile(file) {
+  if (!file) throw new Error("未选择文件");
+  const fd = new FormData();
+  fd.append("file", file, file.name || "file");
+  const res = await fetch("/api/uploads?as=attachment", { method: "POST", body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText || "上传失败");
+  return data;
+}
+
+async function handleCreateAttachmentFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (!files.length) return;
+  setAttachStatus(`上传中（${files.length}）…`);
+  try {
+    for (const file of files) {
+      if (pendingAttachments.length >= 20) {
+        throw new Error("附件过多（上限 20 个）");
+      }
+      const saved = await uploadAttachmentFile(file);
+      pendingAttachments.push({
+        name: saved.name,
+        originalName: saved.originalName || file.name || saved.name,
+        url: saved.url,
+        mime: saved.mime || file.type || "application/octet-stream",
+        size: saved.size || file.size || 0,
+      });
+    }
+    renderCreateAttachments();
+    setAttachStatus(`已添加 ${files.length} 个附件`);
+    setTimeout(() => setAttachStatus(""), 1600);
+  } catch (err) {
+    setAttachStatus(err?.message || String(err), true);
+  }
+}
+
+function attachmentDownloadUrl(a) {
+  const name = encodeURIComponent(a.originalName || a.name || "file");
+  return `${a.url}?download=1&filename=${name}`;
+}
+
+function attachmentsMetaHtml(task) {
+  const list = Array.isArray(task.attachments) ? task.attachments : [];
+  if (!list.length) return "";
+  const items = list.map((a) => {
+    const href = attachmentDownloadUrl(a);
+    return `<li class="attach-item">
+      <a class="attach-item-link attach-item-name" href="${escapeHtml(href)}" download="${escapeHtml(a.originalName || a.name)}" title="${escapeHtml(a.originalName || "")}">${escapeHtml(a.originalName || a.name)}</a>
+      <span class="attach-item-size">${escapeHtml(formatBytes(a.size))}</span>
+    </li>`;
+  }).join("");
+  return `<div class="meta-item meta-wide detail-attachments">
+    <span class="meta-k">附件（${list.length}）</span>
+    <ul class="attach-list">${items}</ul>
+  </div>`;
+}
+
 function openCreate(mode = "draft") {
   if (!selectedWorkspaceId || !workspaces.get(selectedWorkspaceId)) {
     window.alert("请先在左侧选择或新建一个工作区");
@@ -653,6 +760,7 @@ function openCreate(mode = "draft") {
   }
   createMode = mode === "todo" ? "todo" : "draft";
   clearCreatePrompt();
+  clearPendingAttachments();
   applyQuickPromptsToUi();
   const ws = workspaces.get(selectedWorkspaceId);
   if (createWsHint) {
@@ -673,6 +781,7 @@ function openCreate(mode = "draft") {
 function closeCreate() {
   createModal.classList.add("hidden");
   clearCreatePrompt();
+  clearPendingAttachments();
   try { form.reset(); } catch { /* ignore */ }
 }
 
@@ -904,6 +1013,7 @@ function buildMetaJson(task) {
     startedAt: task.startedAt,
     endedAt: task.endedAt,
     sideJobs: task.sideJobs,
+    attachments: task.attachments,
     // Omit full output texts here if huge; keep turn lengths for debugging.
     outputs: Array.isArray(task.outputs)
       ? task.outputs.map((o) => ({
@@ -1056,6 +1166,27 @@ document.getElementById("meta-viewer-close").onclick = closeMetaViewer;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
 wirePromptImageSupport("create-prompt");
 wirePromptImageSupport("continue-prompt");
+
+(function wireCreateAttachments() {
+  const btn = document.getElementById("create-attach-btn");
+  const input = document.getElementById("create-attach-file");
+  const list = document.getElementById("create-attachments");
+  if (!btn || !input) return;
+  btn.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => {
+    void handleCreateAttachmentFiles(input.files);
+    input.value = "";
+  });
+  list?.addEventListener("click", (e) => {
+    const rm = e.target?.closest?.(".attach-item-remove");
+    if (!rm) return;
+    const idx = Number(rm.dataset.idx);
+    if (!Number.isFinite(idx)) return;
+    pendingAttachments.splice(idx, 1);
+    renderCreateAttachments();
+  });
+})();
+
 document.addEventListener("click", (e) => {
   const btn = e.target?.closest?.(".quick-prompt-btn");
   if (!btn) return;
@@ -1100,6 +1231,7 @@ form.addEventListener("submit", async (e) => {
     model: fd.get("model") || undefined,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
+    attachments: pendingAttachments.length ? pendingAttachments : undefined,
   };
   const res = await fetch("/api/tasks", {
     method: "POST",
@@ -1113,6 +1245,7 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   tasks.set(data.task.id, data.task);
+  clearPendingAttachments();
   closeCreate();
   renderWorkspaces();
   renderList();

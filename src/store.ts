@@ -116,6 +116,7 @@ type TaskRow = {
   last_event: string | null;
   error: string | null;
   exit_code: number | null;
+  attachments?: unknown;
 };
 
 function rowToWorkspace(row: WorkspaceRow): Workspace {
@@ -126,6 +127,26 @@ function rowToWorkspace(row: WorkspaceRow): Workspace {
     createdAt: iso(row.created_at)!,
     updatedAt: iso(row.updated_at)!,
   };
+}
+
+
+function parseAttachments(raw: unknown): Task["attachments"] {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<Task["attachments"]> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === "string" ? rec.name : "";
+    if (!name) continue;
+    out.push({
+      name,
+      originalName: typeof rec.originalName === "string" ? rec.originalName : name,
+      url: typeof rec.url === "string" ? rec.url : `/uploads/${name}`,
+      mime: typeof rec.mime === "string" ? rec.mime : "application/octet-stream",
+      size: typeof rec.size === "number" ? rec.size : 0,
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function rowToTask(
@@ -158,6 +179,7 @@ function rowToTask(
     outputs: outputs?.length ? outputs : undefined,
     prompts: prompts?.length ? prompts : undefined,
     sideJobs: sideJobs?.length ? sideJobs : undefined,
+    attachments: parseAttachments(row.attachments),
   });
 }
 
@@ -189,11 +211,11 @@ async function persistTask(task: Task): Promise<void> {
       `INSERT INTO tasks (
         id, title, kind, cwd, workspace_id, prompt, model, session_id, iteration, status,
         created_at, updated_at, started_at, ended_at, pid, summary, output,
-        last_event, error, exit_code
+        last_event, error, exit_code, attachments
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
         $11::timestamptz,$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,$16,$17,
-        $18,$19,$20
+        $18,$19,$20,$21::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
@@ -214,7 +236,8 @@ async function persistTask(task: Task): Promise<void> {
         output = EXCLUDED.output,
         last_event = EXCLUDED.last_event,
         error = EXCLUDED.error,
-        exit_code = EXCLUDED.exit_code`,
+        exit_code = EXCLUDED.exit_code,
+        attachments = EXCLUDED.attachments`,
       [
         task.id,
         task.title,
@@ -236,6 +259,7 @@ async function persistTask(task: Task): Promise<void> {
         task.lastEvent ?? null,
         task.error ?? null,
         task.exitCode ?? null,
+        JSON.stringify(task.attachments || []),
       ],
     );
 

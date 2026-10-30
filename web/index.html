@@ -178,6 +178,16 @@
           <span class="muted prompt-img-hint">支持粘贴截图 / 选图，上限 8MB</span>
           <span class="prompt-img-status muted" data-for="create-prompt" hidden></span>
         </div>
+        <div class="attach-field">
+          <div class="attach-head">
+            <span>附件（可选）</span>
+            <button type="button" class="secondary" id="create-attach-btn">添加文件</button>
+            <input type="file" id="create-attach-file" multiple hidden />
+          </div>
+          <p class="muted attach-hint">不限制格式，可多选；单文件上限 32MB</p>
+          <ul id="create-attachments" class="attach-list" hidden></ul>
+          <span id="create-attach-status" class="muted attach-status" hidden></span>
+        </div>
         <div class="modal-actions">
           <button type="button" class="secondary" id="create-cancel">取消</button>
           <button type="submit" class="primary" id="create-submit">保存草稿</button>
