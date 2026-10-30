@@ -41,7 +41,7 @@
 
       <section id="overview">
         <h2>概览</h2>
-        <p>看板泳道：<code>draft</code>（草稿）→ <code>todo</code>（queued）→ <code>running</code> → <code>done</code>（succeeded / failed / stopped）。</p>
+        <p>看板泳道：<code>draft</code>（草稿）→ <code>todo</code>（queued）→ <code>running</code> → <code>done</code>（succeeded / failed / stopped）→ <code>archived</code>（归档）。</p>
         <ul>
           <li><strong>新建草稿</strong>：只入库，不 spawn。</li>
           <li><strong>新建 Todo</strong>：创建后立刻 <code>start</code>（进入 Todo 并开跑）。</li>
@@ -138,7 +138,7 @@ npm start</code></pre>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/start</code></pre>
 
         <h3>移动泳道</h3>
-        <p><code>POST /api/tasks/:id/move</code> body <code>{ "lane": "draft"|"todo"|"running"|"done" }</code></p>
+        <p><code>POST /api/tasks/:id/move</code> body <code>{ "lane": "draft"|"todo"|"running"|"done"|"archived" }</code></p>
         <p>拖到 Todo 等价于 <code>lane: "todo"</code>（会 start）。</p>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/move \
   -H 'content-type: application/json' \

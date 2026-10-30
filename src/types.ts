@@ -7,7 +7,8 @@ export type TaskStatus =
   | "blocked"
   | "succeeded"
   | "failed"
-  | "stopped";
+  | "stopped"
+  | "archived";
 
 
 /** Background / sub-agent / monitor jobs observed in the agent event stream */
@@ -36,7 +37,7 @@ export type OutputTurn = {
 };
 
 /** Board swimlane keys */
-export type BoardLane = "draft" | "todo" | "running" | "done";
+export type BoardLane = "draft" | "todo" | "running" | "done" | "archived";
 
 export type Workspace = {
   id: string;

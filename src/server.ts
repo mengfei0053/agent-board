@@ -343,8 +343,8 @@ app.post("/api/tasks/:id/start", (c) => {
 app.post("/api/tasks/:id/move", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { lane?: string };
   const lane = body.lane as BoardLane;
-  if (!lane || !["draft", "todo", "running", "done"].includes(lane)) {
-    return c.json({ error: "lane must be draft|todo|running|done" }, 400);
+  if (!lane || !["draft", "todo", "running", "done", "archived"].includes(lane)) {
+    return c.json({ error: "lane must be draft|todo|running|done|archived" }, 400);
   }
   try {
     const task = moveTask(c.req.param("id"), lane);

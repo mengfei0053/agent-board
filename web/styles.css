@@ -34,6 +34,8 @@
   --run-soft: rgba(86, 196, 245, 0.14);
   --draft: #a78bfa;
   --draft-soft: rgba(167, 139, 250, 0.14);
+  --archived: #9aa3b5;
+  --archived-soft: rgba(154, 163, 181, 0.14);
   --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 28px rgba(0,0,0,0.28);
   --shadow-lg: 0 16px 48px rgba(0,0,0,0.45);
   --code-bg: #0a0c10;
@@ -68,6 +70,8 @@ html[data-theme="dark"] {
   --run-soft: rgba(86, 196, 245, 0.14);
   --draft: #a78bfa;
   --draft-soft: rgba(167, 139, 250, 0.14);
+  --archived: #9aa3b5;
+  --archived-soft: rgba(154, 163, 181, 0.14);
   --shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 28px rgba(0,0,0,0.28);
   --shadow-lg: 0 16px 48px rgba(0,0,0,0.45);
   --code-bg: #0a0c10;
@@ -102,6 +106,8 @@ html[data-theme="light"] {
   --run-soft: rgba(11, 158, 201, 0.12);
   --draft: #7c5cbf;
   --draft-soft: rgba(124, 92, 191, 0.12);
+  --archived: #6b778c;
+  --archived-soft: rgba(107, 119, 140, 0.12);
   --shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 8px 24px rgba(21,32,51,0.06);
   --shadow-lg: 0 16px 40px rgba(21,32,51,0.12);
   --code-bg: #1e2430;
@@ -552,7 +558,7 @@ a.btn-link.secondary { background: var(--panel-2); }
 /* —— Swimlanes —— */
 .swimlanes {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   align-items: stretch;
   flex: 1 1 auto;
@@ -618,6 +624,10 @@ a.btn-link.secondary { background: var(--panel-2); }
 .lane[data-tab="done"] .lane-head h2::before {
   background: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.lane[data-tab="archived"] .lane-head h2::before {
+  background: var(--archived);
+  box-shadow: 0 0 0 3px var(--archived-soft);
 }
 
 .lane-body {
@@ -839,6 +849,30 @@ a.btn-link.secondary { background: var(--panel-2); }
   color: var(--bad);
   background: var(--bad-soft);
   border-color: color-mix(in srgb, var(--bad) 25%, transparent);
+}
+.badge.archived {
+  color: var(--archived);
+  background: var(--archived-soft);
+  border-color: color-mix(in srgb, var(--archived) 25%, transparent);
+}
+
+.card-archive-btn {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.card-archive-btn:hover {
+  border-color: color-mix(in srgb, var(--archived) 45%, var(--border));
+  color: var(--archived);
+  background: var(--archived-soft);
 }
 
 .kind-pill,

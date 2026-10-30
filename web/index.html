@@ -101,6 +101,10 @@
             <div class="lane-head"><h2>已完成</h2><span class="count" id="count-done">0</span></div>
             <div class="lane-body cards" id="list-done"></div>
           </div>
+          <div class="lane" data-tab="archived">
+            <div class="lane-head"><h2>归档</h2><span class="count" id="count-archived">0</span></div>
+            <div class="lane-body cards" id="list-archived"></div>
+          </div>
         </section>
         <p id="empty" class="empty muted" hidden>当前工作区没有匹配的任务</p>
       </div>
@@ -229,6 +233,7 @@
           <button type="button" id="start-btn" class="primary" hidden>开始任务</button>
           <button type="button" id="stop-btn" class="danger" hidden>停止</button>
           <button type="button" id="delete-btn" class="secondary-danger" hidden>删除</button>
+          <button type="button" id="archive-btn" class="secondary" hidden>归档</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
           <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）"></textarea>

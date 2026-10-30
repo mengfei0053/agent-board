@@ -71,7 +71,7 @@ function writeLog(id: string, line: string) {
   const at = now();
   const cur = getTask(id);
   // After terminal status, keep logs in DB but do not flood SSE/UI with upserts.
-  const terminal = cur && ["stopped", "succeeded", "failed"].includes(cur.status);
+  const terminal = cur && ["stopped", "succeeded", "failed", "archived"].includes(cur.status);
   if (!terminal) {
     // Never push multi-MB agent_end dumps over SSE — UI freezes.
     publish({ type: "task_log", taskId: id, line: truncateLogLine(line), at });
@@ -359,13 +359,14 @@ export function stopTask(id: string): Task {
  * Move a card to a board lane.
  * draft → todo|running: start runner
  * * → draft: park as draft (stop if needed)
- * * → done: stop if active → stopped
+ * * → done: stop if active → stopped; archived → restore prior terminal status
+ * * → archived: park as archived (stop if needed)
  */
 export function moveTask(id: string, lane: BoardLane): Task {
   const t = getTask(id);
   if (!t) throw new Error("not found");
-  if (!["draft", "todo", "running", "done"].includes(lane)) {
-    throw new Error("lane must be draft|todo|running|done");
+  if (!["draft", "todo", "running", "done", "archived"].includes(lane)) {
+    throw new Error("lane must be draft|todo|running|done|archived");
   }
 
   if (lane === "todo" || lane === "running") {
@@ -391,8 +392,37 @@ export function moveTask(id: string, lane: BoardLane): Task {
     });
   }
 
+  if (lane === "archived") {
+    if (t.status === "archived") return t;
+    const h = handles.get(id);
+    if (h || ACTIVE.includes(t.status)) {
+      h?.stop();
+      handles.delete(id);
+    }
+    const prior =
+      t.status === "succeeded" || t.status === "failed" || t.status === "stopped"
+        ? t.status
+        : "stopped";
+    return patch(id, {
+      status: "archived",
+      pid: undefined,
+      endedAt: t.endedAt || now(),
+      summary: t.summary ?? "archived",
+      lastEvent: `archive:${prior}`,
+    });
+  }
+
   // done
   if (["succeeded", "failed", "stopped"].includes(t.status)) return t;
+  if (t.status === "archived") {
+    const m = /^archive:(succeeded|failed|stopped)$/.exec(t.lastEvent || "");
+    const restored = (m?.[1] as TaskStatus | undefined) || "stopped";
+    return patch(id, {
+      status: restored,
+      lastEvent: "move_done",
+      summary: t.summary ?? "restored from archive",
+    });
+  }
   if (t.status === "draft") {
     return patch(id, {
       status: "stopped",

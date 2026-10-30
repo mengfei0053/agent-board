@@ -1,6 +1,6 @@
 # agent-board
 
-本机 Agent 看板：左侧**工作区** CRUD，右侧四列泳道（草稿 / Todo / 进行中 / 已完成）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
+本机 Agent 看板：左侧**工作区** CRUD，右侧五列泳道（草稿 / Todo / 进行中 / 已完成 / 归档）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
 ## 界面预览
 
@@ -24,7 +24,7 @@
 | --- | --- |
 | 工作区 | 左侧增删改查；任务归属工作区；cwd = 工作区 path |
 | 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态 |
-| 进行中 / 已完成 | SSE 实时刷新卡片与日志；可停止进程 |
+| 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
 | 继续任务 | 终态任务可按 CLI session 续跑，迭代次数 +1 |
 | Webhook | `POST /api/hooks/tasks`（需 `AGENT_BOARD_WEBHOOK_SECRET`） |
 | 存储 | Postgres（`DATABASE_URL`） |

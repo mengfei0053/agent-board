@@ -24,6 +24,7 @@ const metaViewerBody = document.getElementById("meta-viewer-body");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const deleteBtn = document.getElementById("delete-btn");
+const archiveBtn = document.getElementById("archive-btn");
 const continueRow = document.getElementById("continue-row");
 const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
@@ -124,13 +125,14 @@ function initThemeToggle() {
 initThemeToggle();
 
 
-const LANES = ["draft", "todo", "running", "done"];
+const LANES = ["draft", "todo", "running", "done", "archived"];
 
 const TAB_STATUSES = {
   draft: ["draft"],
   todo: ["queued"],
   running: ["running", "blocked"],
   done: ["succeeded", "failed", "stopped"],
+  archived: ["archived"],
 };
 
 const STATUS_LABEL = {
@@ -141,6 +143,7 @@ const STATUS_LABEL = {
   succeeded: "成功",
   failed: "失败",
   stopped: "已停止",
+  archived: "已归档",
 };
 
 function escapeHtml(s) {
@@ -343,7 +346,7 @@ function visibleTaskIds() {
 
 function updateCounts() {
   const all = tasksInCurrentWorkspace().filter(matchesQuery);
-  const c = { draft: 0, todo: 0, running: 0, done: 0 };
+  const c = { draft: 0, todo: 0, running: 0, done: 0, archived: 0 };
   for (const t of all) c[tabOf(t.status)]++;
   for (const key of LANES) {
     const el = document.getElementById(`count-${key}`);
@@ -397,6 +400,9 @@ function makeCard(t) {
         <span class="iter-pill" title="迭代次数">迭代 ${iter}</span>
         ${(t.sideJobs && t.sideJobs.length) ? `<span class="sidejob-pill" title="后台 / Monitor / 子代理">${t.sideJobs.length} 后台</span>` : ""}
         <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
+        ${["succeeded", "failed", "stopped"].includes(t.status)
+          ? `<span class="card-archive-btn" role="button" tabindex="0" title="归档到归档列" data-archive="${escapeHtml(t.id)}">归档</span>`
+          : ""}
       </div>`;
   const check = btn.querySelector(".card-check");
   check.addEventListener("click", (e) => e.stopPropagation());
@@ -405,6 +411,18 @@ function makeCard(t) {
     setSelected(t.id, check.checked);
     btn.classList.toggle("selected", check.checked);
   });
+  const archiveBtn = btn.querySelector(".card-archive-btn");
+  if (archiveBtn) {
+    const doArchive = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void moveToLane(t.id, "archived");
+    };
+    archiveBtn.addEventListener("click", doArchive);
+    archiveBtn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") doArchive(e);
+    });
+  }
   btn.addEventListener("dragstart", (e) => {
     dragTaskId = t.id;
     btn.classList.add("dragging");
@@ -520,7 +538,7 @@ function renderList() {
   ensureLaneSelectButtons();
   bindLaneDropTargets();
   updateCounts();
-  const buckets = { draft: [], todo: [], running: [], done: [] };
+  const buckets = { draft: [], todo: [], running: [], done: [], archived: [] };
   for (const t of tasksInCurrentWorkspace()) {
     if (!matchesQuery(t)) continue;
     buckets[tabOf(t.status)].push(t);
@@ -791,6 +809,9 @@ function paintDetail(task) {
   startBtn.hidden = task.status !== "draft";
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
   deleteBtn.hidden = isUndeletable(task);
+  if (archiveBtn) {
+    archiveBtn.hidden = !["succeeded", "failed", "stopped"].includes(task.status);
+  }
 
   const showContinue = canContinue(task);
   continueRow.hidden = task.status === "draft";
@@ -962,6 +983,11 @@ stopBtn.addEventListener("click", async () => {
     clearTimeout(timer);
     stopBtn.disabled = false;
   }
+});
+
+archiveBtn?.addEventListener("click", async () => {
+  if (!selectedId) return;
+  await moveToLane(selectedId, "archived");
 });
 
 deleteBtn.addEventListener("click", async () => {
