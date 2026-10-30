@@ -74,6 +74,30 @@ let createMode = "draft";
 const createTitle = document.getElementById("create-title");
 const createHint = document.getElementById("create-hint");
 const createSubmit = document.getElementById("create-submit");
+const modelSuggestions = document.getElementById("model-suggestions");
+const createKindSelect = form?.elements?.namedItem?.("kind") || form?.querySelector?.('select[name="kind"]');
+
+/** 常用模型：按 Agent kind 过滤；未知 kind 用全局列表。 */
+const COMMON_MODELS_BY_KIND = {
+  pi: ["cn:deepseek-v4.1-flash", "cn:glm-5.3"],
+  claude: ["sonnet", "opus", "haiku"],
+  cursor: ["gpt-5.2", "sonnet-4.5", "composer-1"],
+  devin: ["swe-2-high"],
+  codex: ["gpt-6.1-terra"],
+};
+const COMMON_MODELS_ALL = [
+  ...new Set(Object.values(COMMON_MODELS_BY_KIND).flat()),
+];
+
+function refreshModelSuggestions(kind) {
+  if (!modelSuggestions) return;
+  const k = String(kind || "").trim();
+  const list = (k && COMMON_MODELS_BY_KIND[k]) ? COMMON_MODELS_BY_KIND[k] : COMMON_MODELS_ALL;
+  modelSuggestions.innerHTML = list
+    .map((m) => `<option value="${String(m).replace(/"/g, "&quot;")}"></option>`)
+    .join("");
+}
+
 
 
 const THEME_KEY = "agent-board.theme";
@@ -643,6 +667,7 @@ function openCreate(mode = "draft") {
     createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行（使用当前工作区路径）。";
     createSubmit.textContent = "保存草稿";
   }
+  refreshModelSuggestions(createKindSelect?.value);
   createModal.classList.remove("hidden");
 }
 function closeCreate() {
@@ -1015,6 +1040,12 @@ function closeDetail() {
 
 document.getElementById("btn-new").onclick = () => openCreate("draft");
 document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
+if (createKindSelect) {
+  createKindSelect.addEventListener("change", () => {
+    refreshModelSuggestions(createKindSelect.value);
+  });
+}
+refreshModelSuggestions(createKindSelect?.value);
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;

@@ -165,7 +165,8 @@
           <input name="title" placeholder="简短标题" />
         </label>
         <label>Model（可选）
-          <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />
+          <input name="model" id="create-model" list="model-suggestions" autocomplete="off" placeholder="手输或点选常用模型，如 cn:deepseek-v4.1-flash" />
+          <datalist id="model-suggestions"></datalist>
         </label>
         <label class="prompt-field">任务内容
           <div id="create-quick-prompts" class="quick-prompts" hidden></div>
