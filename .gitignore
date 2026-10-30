@@ -5,3 +5,4 @@ dist/
 *.log
 node_modules/
 .tmp-review/
+coverage/

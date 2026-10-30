@@ -5,6 +5,7 @@ import {
   buildWorkspacePromptPrefix,
   mergeWorkspaceSettings,
   normalizeWorkspaceSettings,
+  workspaceSettingsSummary,
 } from "./workspaceApply.js";
 
 describe("normalizeWorkspaceSettings", () => {
@@ -99,5 +100,44 @@ describe("applyWorkspaceToPrompt", () => {
     assert.ok(out.includes("- foo"));
     assert.ok(out.endsWith("实现右键菜单"));
     assert.match(out, /\n---\n/);
+  });
+
+  it("returns prefix alone when user prompt empty", () => {
+    const out = applyWorkspaceToPrompt(settings, "   ");
+    assert.ok(out.startsWith("[工作区指令]"));
+    assert.ok(!out.includes("---"));
+  });
+});
+
+describe("workspaceSettingsSummary", () => {
+  it("returns empty without settings", () => {
+    assert.equal(workspaceSettingsSummary(undefined), "");
+    assert.equal(workspaceSettingsSummary({} as never), "");
+    assert.equal(
+      workspaceSettingsSummary({ id: "1", name: "n", path: "/tmp", createdAt: 0 } as never),
+      "",
+    );
+  });
+
+  it("joins configured bits", () => {
+    const ws = {
+      id: "1",
+      name: "n",
+      path: "/tmp",
+      createdAt: 0,
+      settings: {
+        systemPrompt: "x",
+        skills: ["a", "b"],
+        mcp: "{}",
+      },
+    };
+    assert.equal(workspaceSettingsSummary(ws as never), "提示词 · skills×2 · MCP");
+    assert.equal(
+      workspaceSettingsSummary({
+        ...ws,
+        settings: { skills: ["only"] },
+      } as never),
+      "skills×1",
+    );
   });
 });

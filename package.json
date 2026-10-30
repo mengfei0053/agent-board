@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:unit && pnpm test:e2e",
     "test:unit": "tsx --test src/**/*.test.ts",
+    "test:coverage": "c8 tsx --test src/**/*.test.ts",
+    "coverage": "pnpm test:coverage",
     "test:e2e": "node test/e2e/workspace-settings.mjs"
   },
   "dependencies": {
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/pg": "^8.23.1",
+    "c8": "^12.0.0",
     "puppeteer-core": "^24.43.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"

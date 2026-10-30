@@ -1,0 +1,8 @@
+{
+  "include": ["src/**/*.ts"],
+  "exclude": ["**/*.test.ts", "src/runners/**"],
+  "reporter": ["text", "text-summary", "html", "lcov"],
+  "reports-dir": "coverage",
+  "all": false,
+  "check-coverage": false
+}
