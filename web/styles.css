@@ -1693,8 +1693,13 @@ button.topbar-brand[aria-expanded="true"] {
 }
 
 /* —— Settings page —— */
+/* One column: topbar + main + sticky bar share the same width */
+.settings-page .docs-app {
+  width: min(820px, 100%);
+}
 .settings-page .settings-main {
-  max-width: 820px;
+  max-width: none;
+  width: 100%;
   padding-bottom: 96px;
 }
 
