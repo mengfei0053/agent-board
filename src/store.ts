@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { nanoid } from "nanoid";
 import type { OutputTurn, PromptTurn, SideJob, Task, Workspace } from "./types.js";
@@ -289,7 +289,20 @@ async function persistTask(task: Task): Promise<void> {
 async function persistDelete(ids: string[]): Promise<void> {
   if (!ids.length) return;
   const p = getPool();
+  // Explicit child deletes (FK also has ON DELETE CASCADE — belt and suspenders).
+  await p.query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [ids]);
+  await p.query(`DELETE FROM task_outputs WHERE task_id = ANY($1::text[])`, [ids]);
+  await p.query(`DELETE FROM task_prompts WHERE task_id = ANY($1::text[])`, [ids]);
+  await p.query(`DELETE FROM task_side_jobs WHERE task_id = ANY($1::text[])`, [ids]);
   await p.query(`DELETE FROM tasks WHERE id = ANY($1::text[])`, [ids]);
+  for (const id of ids) {
+    try {
+      const path = `${logsDir}/${id}.jsonl`;
+      if (existsSync(path)) unlinkSync(path);
+    } catch (err) {
+      console.warn(`[db] could not remove log file for ${id}:`, err);
+    }
+  }
 }
 
 /** How often to prune Postgres rows for a task after append (amortize DELETE cost). */
@@ -558,6 +571,19 @@ export async function initStore(): Promise<void> {
       enqueuePersist(() => persistTask(next));
     }
   }
+  const purged = await purgeOrphanLogs();
+  if (purged.pgRows || purged.jsonlFiles) {
+    console.log(
+      `[db] purged orphan logs: pgRows=${purged.pgRows} jsonlFiles=${purged.jsonlFiles} jsonlBytes=${purged.jsonlBytes}`,
+    );
+  }
+  const archivedLogs = await purgeArchivedTaskLogs();
+  if (archivedLogs.rows) {
+    console.log(
+      `[db] purged archived task_logs: tasks=${archivedLogs.tasks} rows=${archivedLogs.rows}`,
+    );
+  }
+
   ready = true;
   console.log(
     `[db] ready · ${workspaces.size} workspaces · ${tasks.size} tasks · ${databaseUrlRedacted()}`,
@@ -681,7 +707,89 @@ export function removeLog(id: string): void {
   logs.delete(id);
   enqueuePersist(async () => {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [id]);
+    try {
+      const path = `${logsDir}/${id}.jsonl`;
+      if (existsSync(path)) unlinkSync(path);
+    } catch (err) {
+      console.warn(`[db] could not remove log file for ${id}:`, err);
+    }
   });
+}
+
+/** Drop task_logs only (memory + PG + jsonl). Keeps prompts/outputs/sideJobs. */
+export function clearTaskLogs(ids: string[]): void {
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return;
+  for (const id of uniq) logs.delete(id);
+  enqueuePersist(async () => {
+    await getPool().query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [uniq]);
+    for (const id of uniq) {
+      try {
+        const path = `${logsDir}/${id}.jsonl`;
+        if (existsSync(path)) unlinkSync(path);
+      } catch (err) {
+        console.warn(`[db] could not remove log file for ${id}:`, err);
+      }
+    }
+  });
+}
+
+/** Clear task_logs for every archived task (prompts/outputs retained). */
+export async function purgeArchivedTaskLogs(): Promise<{ tasks: number; rows: number }> {
+  const p = getPool();
+  const ids = [...tasks.values()].filter((t) => t.status === "archived").map((t) => t.id);
+  if (!ids.length) return { tasks: 0, rows: 0 };
+  for (const id of ids) logs.delete(id);
+  const del = await p.query(
+    `DELETE FROM task_logs WHERE task_id = ANY($1::text[]) RETURNING id`,
+    [ids],
+  );
+  for (const id of ids) {
+    try {
+      const path = `${logsDir}/${id}.jsonl`;
+      if (existsSync(path)) unlinkSync(path);
+    } catch (err) {
+      console.warn(`[db] could not remove log file for ${id}:`, err);
+    }
+  }
+  return { tasks: ids.length, rows: del.rowCount ?? del.rows.length };
+}
+
+/** Drop PG + jsonl logs whose task row is already gone (legacy leftovers). */
+export async function purgeOrphanLogs(): Promise<{
+  pgRows: number;
+  jsonlFiles: number;
+  jsonlBytes: number;
+}> {
+  const p = getPool();
+  const del = await p.query(
+    `WITH doomed AS (
+       SELECT id FROM task_logs l
+       WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = l.task_id)
+     )
+     DELETE FROM task_logs WHERE id IN (SELECT id FROM doomed)
+     RETURNING id`,
+  );
+  const pgRows = del.rowCount ?? del.rows.length;
+
+  let jsonlFiles = 0;
+  let jsonlBytes = 0;
+  if (existsSync(logsDir)) {
+    for (const f of readdirSync(logsDir)) {
+      if (!f.endsWith(".jsonl")) continue;
+      const id = f.replace(/\.jsonl$/, "");
+      if (tasks.has(id)) continue;
+      const path = `${logsDir}/${f}`;
+      try {
+        jsonlBytes += statSync(path).size;
+        unlinkSync(path);
+        jsonlFiles += 1;
+      } catch (err) {
+        console.warn(`[db] could not purge orphan log ${f}:`, err);
+      }
+    }
+  }
+  return { pgRows, jsonlFiles, jsonlBytes };
 }
 
 export function isStoreReady(): boolean {

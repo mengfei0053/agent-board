@@ -10,6 +10,7 @@ import {
   logLineCount,
   readLogTail as storeReadLogTail,
   removeLog,
+  clearTaskLogs,
   truncateLogLine,
   upsertTask,
 } from "./store.js";
@@ -407,13 +408,16 @@ export function moveTask(id: string, lane: BoardLane): Task {
       t.status === "succeeded" || t.status === "failed" || t.status === "stopped"
         ? t.status
         : "stopped";
-    return patch(id, {
+    const archived = patch(id, {
       status: "archived",
       pid: undefined,
       endedAt: t.endedAt || now(),
       summary: t.summary ?? "archived",
       lastEvent: `archive:${prior}`,
     });
+    // Archived cards keep prompts + per-round replies; drop raw task_logs to save space.
+    clearTaskLogs([id]);
+    return archived;
   }
 
   // done
