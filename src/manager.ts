@@ -11,6 +11,7 @@ import {
   readLogTail as storeReadLogTail,
   removeLog,
   clearTaskLogs,
+  setTasksDeletedListener,
   truncateLogLine,
   upsertTask,
 } from "./store.js";
@@ -49,13 +50,32 @@ const handles = new Map<string, RunnerHandle>();
 const pendingPatch = new Map<string, Partial<Task>>();
 const patchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function flushPendingPatch(id: string) {
+/** Take and disarm any deferred output/sideJob patch for this task. */
+function takePendingPatch(id: string): Partial<Task> | undefined {
   const timer = patchTimers.get(id);
   if (timer) clearTimeout(timer);
   patchTimers.delete(id);
   const partial = pendingPatch.get(id);
   pendingPatch.delete(id);
-  if (partial && Object.keys(partial).length) patch(id, partial);
+  return partial;
+}
+
+/**
+ * Drop a deferred patch without writing. Used when the task is leaving the store
+ * so a later timer cannot patch() a missing id or overwrite a reused one.
+ */
+function cancelPendingPatch(id: string): void {
+  takePendingPatch(id);
+}
+
+function flushPendingPatch(id: string) {
+  const partial = takePendingPatch(id);
+  if (!partial || Object.keys(partial).length === 0) return;
+  // This runs from a timer, outside the request that deleted the task.
+  // Missing ids are a no-op here. patch() itself still throws, so start/stop/move
+  // do not swallow a real "task missing" bug.
+  if (!getTask(id)) return;
+  patch(id, partial);
 }
 
 function schedulePatch(id: string, partial: Partial<Task>, immediate = false) {
@@ -515,6 +535,11 @@ export function removeTasks(ids: string[]): {
     deletable.push(id);
   }
 
+  // After stop(), which may have logged and armed a new timer. Discard — do not
+  // flush — because the row is about to disappear. deleteTasks repeats this for
+  // any other caller that removes rows from the store.
+  for (const id of deletable) cancelPendingPatch(id);
+
   const attachmentBags = deletable
     .map((id) => getTask(id)?.attachments)
     .filter((a): a is NonNullable<Task["attachments"]> => Boolean(a?.length));
@@ -618,6 +643,11 @@ export function createAndStart(input: CreateTaskInput): Task {
 }
 
 
+/** True when a deferred output/sideJob patch is still queued for this task. */
+export function hasPendingPatchForTests(id: string): boolean {
+  return patchTimers.has(id) || pendingPatch.has(id);
+}
+
 /** Integration tests: drop live runner handles and pending patches. */
 export function clearHandlesForTests(): void {
   for (const id of [...handles.keys()]) {
@@ -634,3 +664,7 @@ export function clearHandlesForTests(): void {
   }
   pendingPatch.clear();
 }
+
+setTasksDeletedListener((ids) => {
+  for (const id of ids) cancelPendingPatch(id);
+});
