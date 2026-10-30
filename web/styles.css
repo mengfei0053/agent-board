@@ -1623,3 +1623,123 @@ body.docs-page {
   .main-panel { padding: 10px; }
   #search { width: min(100%, 100vw - 32px); }
 }
+
+
+/* —— Brand dropdown —— */
+.topbar-brand-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+button.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.topbar-brand:hover {
+  background: var(--panel-2);
+  border-color: var(--border-soft);
+}
+button.topbar-brand[aria-expanded="true"] {
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+.topbar-brand-text {
+  min-width: 0;
+}
+.brand-caret {
+  color: var(--faint);
+  font-size: 11px;
+  margin-left: 2px;
+  flex: 0 0 auto;
+}
+.brand-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 168px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.brand-menu.hidden { display: none; }
+.brand-menu-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+}
+.brand-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
+/* —— Settings page —— */
+.settings-main { max-width: 720px; }
+.settings-form { margin-top: 12px; }
+.settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.settings-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  font-size: 13px;
+}
+.settings-row input[type="text"] {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+}
+.settings-row input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.settings-resolved {
+  font-size: 12px;
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+#settings-status.ok { color: var(--ok); }
+#settings-status.bad { color: var(--bad); }

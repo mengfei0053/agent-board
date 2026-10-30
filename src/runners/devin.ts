@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import type { Runner, RunnerHooks } from "./types.js";
 import { spawnLogged } from "./common.js";
+import { resolveCliCommand } from "../cliPaths.js";
 
 /** Best-effort: newest session in cwd via `devin list --format json`. */
 function latestDevinSession(cwd: string, hooks: RunnerHooks): string | undefined {
   try {
-    const r = spawnSync("devin", ["list", "--format", "json"], {
+    const r = spawnSync(resolveCliCommand("devin"), ["list", "--format", "json"], {
       cwd,
       encoding: "utf8",
       env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
@@ -109,7 +110,7 @@ export const devinRunner: Runner = {
     let sawAgentError = false;
 
     return spawnLogged(
-      "devin",
+      resolveCliCommand("devin"),
       args,
       task.cwd,
       {

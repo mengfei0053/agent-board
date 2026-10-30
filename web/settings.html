@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>设置 · agent-board</title>
+  <script>
+    (function () {
+      try {
+        var KEY = "agent-board.theme";
+        var pref = localStorage.getItem(KEY) || "system";
+        if (pref !== "light" && pref !== "dark" && pref !== "system") pref = "system";
+        var resolved = pref === "system"
+          ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+          : pref;
+        document.documentElement.setAttribute("data-theme", resolved);
+        document.documentElement.setAttribute("data-theme-pref", pref);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-theme-pref", "system");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="docs-page settings-page">
+  <div class="app docs-app">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-mark" aria-hidden="true">ab</div>
+        <div>
+          <h1>设置</h1>
+          <p class="muted">覆盖各 Agent CLI 默认命令路径 · 空则走 PATH</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="btn-link secondary" href="/">← 返回看板</a>
+        <a class="btn-link secondary" href="/docs">接口文档</a>
+      </div>
+    </header>
+
+    <main class="docs-main settings-main">
+      <section>
+        <h2>CLI 路径</h2>
+        <p>非空覆盖会用于后续新建 / 启动 / 继续任务的 spawn；清空后恢复默认命令名（由 PATH 解析）。修改立即写入 Postgres <code>meta.cli_paths</code>，重启后仍生效。</p>
+        <p class="muted" id="settings-status">加载中…</p>
+
+        <form id="settings-form" class="settings-form" autocomplete="off">
+          <div id="settings-fields" class="settings-fields"></div>
+          <div class="settings-actions">
+            <button type="submit" id="btn-save-settings">保存</button>
+            <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+  <script src="/settings.js" type="module"></script>
+</body>
+</html>

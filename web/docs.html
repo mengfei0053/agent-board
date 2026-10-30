@@ -27,6 +27,7 @@
       <a href="#batch">批量删除</a>
       <a href="#query">查询</a>
       <a href="#sse">SSE 事件</a>
+      <a href="#settings">设置</a>
     </nav>
 
     <main class="docs-main">
@@ -185,6 +186,19 @@ npm start</code></pre>
         </ul>
         <pre><code>curl -sSN http://127.0.0.1:8791/api/events</code></pre>
       </section>
+    
+      <section id="settings">
+        <h2>设置（CLI 路径）</h2>
+        <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。</p>
+        <p><code>GET /api/settings</code> — 返回各 CLI 的默认名、覆盖值、生效命令与尽力解析的绝对路径。</p>
+        <pre><code>curl -sS http://127.0.0.1:8791/api/settings</code></pre>
+        <p><code>PUT /api/settings</code> body <code>{ "cliPaths": { "pi": "/path/to/pi", "claude": "", "agent": "", "devin": "", "codex": "" } }</code>。空字符串清除该项覆盖。</p>
+        <pre><code>curl -sS -X PUT http://127.0.0.1:8791/api/settings \
+  -H 'content-type: application/json' \
+  -d '{"cliPaths":{"agent":"/home/menghongfei/.local/bin/agent"}}'</code></pre>
+        <p>全部恢复默认：<code>{ "clear": true }</code>。持久化在 Postgres <code>meta.cli_paths</code>；保存后对新 spawn 生效。</p>
+      </section>
+
     </main>
   </div>
 

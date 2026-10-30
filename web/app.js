@@ -1267,3 +1267,32 @@ Promise.all([
   renderWorkspaces();
   renderList();
 });
+
+/* —— Brand menu (设置 / 文档) —— */
+(function setupBrandMenu() {
+  const btn = document.getElementById("brand-menu-btn");
+  const menu = document.getElementById("brand-menu");
+  if (!btn || !menu) return;
+  const close = () => {
+    menu.classList.add("hidden");
+    btn.setAttribute("aria-expanded", "false");
+  };
+  const open = () => {
+    menu.classList.remove("hidden");
+    btn.setAttribute("aria-expanded", "true");
+  };
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menu.classList.contains("hidden")) open();
+    else close();
+  });
+  document.addEventListener("click", (e) => {
+    if (!menu.classList.contains("hidden") && !menu.contains(e.target) && e.target !== btn) {
+      close();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+})();
+

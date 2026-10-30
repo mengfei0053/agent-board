@@ -3,6 +3,7 @@ import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
+import { resolveCliCommand } from "../cliPaths.js";
 
 export const claudeRunner: Runner = {
   start(task, hooks, opts) {
@@ -40,7 +41,7 @@ export const claudeRunner: Runner = {
     args.push(prompt);
 
     let status = task.status;
-    return spawnLogged("claude", args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("claude"), args, task.cwd, hooks, {
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

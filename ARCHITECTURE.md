@@ -24,12 +24,12 @@
                         │
                         ├─ TaskStore（Postgres · DATABASE_URL）
                         │     workspaces + tasks.workspace_id
-                        ├─ Runner 注册表
-                        │    ├─ pi:    pi -p --mode json --no-session
+                        ├─ Runner 注册表（命令名可被设置页覆盖，见 meta.cli_paths）
+                        │    ├─ pi:    pi -p --mode json --session-id
                         │    ├─ claude: claude -p --output-format stream-json
                         │    ├─ cursor: agent -p --output-format stream-json
                         │    ├─ devin:  devin -p --permission-mode accept-edits (plain stdout)
-                        │    └─ codex:  codex exec --json -s workspace-write --approve-for-me
+                        │    └─ codex:  codex exec --json --approve-for-me
                         └─ 每任务：子进程 + data/logs/<id>.jsonl
 ```
 
@@ -134,10 +134,18 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - Claude/Cursor stream-json：`assistant`/`user` 的 `tool_use` / `tool_result`；`system`+task/monitor subtype
 - 详情「后台 / Monitor」；卡片角标「N 后台」；解析失败不影响主流程
 
+
+## CLI 路径设置
+
+- UI：左上角 **agent-board** 菜单 → **设置**（`/settings`）
+- API：`GET /api/settings` · `PUT /api/settings` body `{ "cliPaths": { "pi"|"claude"|"agent"|"devin"|"codex": "<path或空>" } }`；`{ "clear": true }` 清除全部覆盖
+- 持久化：Postgres `meta` 键 `cli_paths`（JSON）；空字符串 / 缺省 → 默认命令名走 PATH
+- Runner 通过 `resolveCliCommand(...)` 取生效路径；仅影响之后的 spawn
+
 ## 存储（Postgres）
 
 - 连接串：环境变量 `DATABASE_URL`（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
-- 表：`tasks`、`task_logs`、`task_outputs`、`task_side_jobs`、`meta`
+- 表：`tasks`、`task_logs`、`task_outputs`、`task_side_jobs`、`meta`（含 `default_workspace_id`、`cli_paths` 等）
 - 进程内有内存镜像；写入先更新内存再异步落库（API/SSE 行为不变）
 - 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
 - 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`

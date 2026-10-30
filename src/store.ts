@@ -12,6 +12,7 @@ import {
   logsDir,
   readJsonDbRaw,
 } from "./db.js";
+import { loadCliPathOverrides } from "./cliPaths.js";
 
 export { dataDir, logsDir };
 
@@ -460,6 +461,7 @@ export async function initStore(): Promise<void> {
   // Re-ensure after JSON migration in case new tasks lacked workspace
   await ensureDefaultWorkspace();
   await loadAllFromPg();
+  await loadCliPathOverrides();
   // Patch in-memory tasks missing workspaceId
   for (const [id, t] of tasks) {
     if (!t.workspaceId && defaultWorkspaceId) {

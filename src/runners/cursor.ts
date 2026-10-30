@@ -3,11 +3,12 @@ import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
+import { resolveCliCommand } from "../cliPaths.js";
 
 function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p: { sessionId: string }) => void; onLog: (line: string) => void }): string | undefined {
   if (task.sessionId) return task.sessionId;
   try {
-    const r = spawnSync("agent", ["create-chat"], {
+    const r = spawnSync(resolveCliCommand("agent"), ["create-chat"], {
       encoding: "utf8",
       env: { ...process.env, NO_COLOR: "1" },
       timeout: 20000,
@@ -68,7 +69,7 @@ export const cursorRunner: Runner = {
     args.push(prompt);
 
     let status = task.status;
-    return spawnLogged("agent", args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("agent"), args, task.cwd, hooks, {
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

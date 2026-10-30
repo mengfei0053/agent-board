@@ -39,6 +39,13 @@ import type {
   Workspace,
 } from "./types.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
+import {
+  CLI_COMMAND_KEYS,
+  clearCliPathOverrides,
+  getCliPathSettings,
+  setCliPathOverrides,
+  type CliCommandKey,
+} from "./cliPaths.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
 
@@ -386,6 +393,45 @@ app.get("/api/events", (c) => {
   });
 });
 
+
+
+app.get("/api/settings", (c) => c.json(getCliPathSettings()));
+
+app.put("/api/settings", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid JSON" }, 400);
+  }
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "body must be an object" }, 400);
+  }
+  const raw = body as { cliPaths?: unknown; clear?: unknown };
+  if (raw.clear === true) {
+    return c.json(await clearCliPathOverrides());
+  }
+  if (raw.cliPaths == null || typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
+    return c.json({ error: "cliPaths object required (or clear: true)" }, 400);
+  }
+  const patch: Partial<Record<CliCommandKey, string>> = {};
+  for (const [k, v] of Object.entries(raw.cliPaths as Record<string, unknown>)) {
+    if (!(CLI_COMMAND_KEYS as readonly string[]).includes(k)) {
+      return c.json({ error: `unknown cliPaths key: ${k}` }, 400);
+    }
+    if (v != null && typeof v !== "string") {
+      return c.json({ error: `cliPaths.${k} must be a string` }, 400);
+    }
+    patch[k as CliCommandKey] = typeof v === "string" ? v : "";
+  }
+  return c.json(await setCliPathOverrides(patch));
+});
+
+app.get("/settings", (c) => {
+  const html = readFileSync(join(webRoot, "settings.html"), "utf8");
+  return c.html(html);
+});
+app.get("/settings.html", (c) => c.redirect("/settings", 302));
 
 app.get("/docs", (c) => {
   const html = readFileSync(join(webRoot, "docs.html"), "utf8");

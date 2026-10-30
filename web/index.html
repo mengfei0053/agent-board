@@ -26,11 +26,18 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="topbar-brand">
-        <div class="brand-mark" aria-hidden="true">ab</div>
-        <div>
-          <h1>agent-board</h1>
-          <p class="muted">本机 Agent 看板 · 工作区 / 泳道 / SSE</p>
+      <div class="topbar-brand-wrap">
+        <button type="button" class="topbar-brand" id="brand-menu-btn" aria-haspopup="menu" aria-expanded="false" title="菜单">
+          <div class="brand-mark" aria-hidden="true">ab</div>
+          <div class="topbar-brand-text">
+            <h1>agent-board</h1>
+            <p class="muted">本机 Agent 看板 · 工作区 / 泳道 / SSE</p>
+          </div>
+          <span class="brand-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="brand-menu hidden" id="brand-menu" role="menu">
+          <a class="brand-menu-item" role="menuitem" href="/settings">设置</a>
+          <a class="brand-menu-item" role="menuitem" href="/docs">接口文档</a>
         </div>
       </div>
       <div class="topbar-actions">

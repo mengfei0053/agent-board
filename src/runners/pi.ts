@@ -2,6 +2,7 @@ import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
+import { resolveCliCommand } from "../cliPaths.js";
 
 export const piRunner: Runner = {
   start(task, hooks, opts) {
@@ -15,7 +16,7 @@ export const piRunner: Runner = {
     if (!task.sessionId) hooks.onStatus({ sessionId });
 
     let status = task.status;
-    return spawnLogged("pi", args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("pi"), args, task.cwd, hooks, {
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);
