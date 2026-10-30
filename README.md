@@ -127,10 +127,10 @@ pnpm dev
 pnpm install
 pnpm test              # 单元 + 集成 + e2e
 pnpm test:unit         # node:test 纯函数 / 解析（src/**/*.test.ts）
-pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I7）
+pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I11）
 pnpm test:coverage     # 单元 + c8 覆盖率（text / html / lcov）
 pnpm coverage          # test:coverage 别名
-pnpm test:e2e          # puppeteer-core：侧栏右键 + 空间设置页（mock API，无需 Postgres）
+pnpm test:e2e          # puppeteer-core：空间设置 + 看板 E1–E4 + 中优先 E5–E7（mock API）
 ```
 
 集成测试会临时拉起 `embedded-postgres`（不碰生产 `DATABASE_URL`），用 Hono `app.request` 打真实路由，runner 换成内存 fake（不 spawn 本机 CLI）。首次需允许原生依赖构建：`pnpm` 的 `onlyBuiltDependencies` 已包含 `@embedded-postgres/linux-x64`。

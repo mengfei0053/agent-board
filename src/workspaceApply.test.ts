@@ -141,3 +141,48 @@ describe("workspaceSettingsSummary", () => {
     );
   });
 });
+
+describe("workspaceApply remaining branches (U15)", () => {
+  it("normalize ignores non-string skill entries and non-object raw", () => {
+    assert.equal(normalizeWorkspaceSettings("nope"), undefined);
+    assert.equal(normalizeWorkspaceSettings(42), undefined);
+    const s = normalizeWorkspaceSettings({
+      skills: ["ok", 1 as never, null as never, "  dual  "],
+      systemPrompt: 9 as never,
+      mcp: 3 as never,
+    });
+    assert.deepEqual(s, { skills: ["ok", "dual"] });
+  });
+
+  it("merge returns prev when patch undefined; clears mcp only", () => {
+    const prev = { systemPrompt: "a", skills: ["s"], mcp: "m" };
+    assert.deepEqual(mergeWorkspaceSettings(prev, undefined), prev);
+    const next = mergeWorkspaceSettings(prev, { mcp: "   " });
+    assert.deepEqual(next, { systemPrompt: "a", skills: ["s"] });
+  });
+
+  it("prefix/summary edge bits", () => {
+    assert.equal(buildWorkspacePromptPrefix({ systemPrompt: "  " }), "");
+    assert.match(buildWorkspacePromptPrefix({ mcp: "cfg" }), /\[工作区 MCP\]/);
+    assert.equal(
+      workspaceSettingsSummary({
+        id: "1",
+        name: "n",
+        path: "/t",
+        createdAt: "0",
+        settings: { systemPrompt: "only" },
+      } as never),
+      "提示词",
+    );
+    assert.equal(
+      workspaceSettingsSummary({
+        id: "1",
+        name: "n",
+        path: "/t",
+        createdAt: "0",
+        settings: { mcp: "x" },
+      } as never),
+      "MCP",
+    );
+  });
+});

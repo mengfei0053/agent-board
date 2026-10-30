@@ -19,13 +19,27 @@ export type RunnerCall = {
   workspaceId: string;
 };
 
+export type RunnerProtocolEvent =
+  | { kind: "start"; taskId: string; continuePrompt?: string }
+  | { kind: "status"; taskId: string; status: string; sessionId?: string; exitCode?: number }
+  | { kind: "log"; taskId: string; line: string }
+  | { kind: "stop"; taskId: string };
+
 let pg: EmbeddedPostgres | null = null;
 let pgDir = "";
 let databaseUrl = "";
 export const runnerCalls: RunnerCall[] = [];
+export const runnerProtocol: RunnerProtocolEvent[] = [];
+
+/** When true, fake runner stays "running" until stop() is called. */
+let holdRunning = false;
 
 export function getDatabaseUrl(): string {
   return databaseUrl;
+}
+
+export function setFakeRunnerHold(hold: boolean): void {
+  holdRunning = hold;
 }
 
 async function freePort(): Promise<number> {
@@ -93,6 +107,11 @@ function makeFakeRunner(): Runner {
         sessionId: task.sessionId,
         workspaceId: task.workspaceId,
       });
+      runnerProtocol.push({
+        kind: "start",
+        taskId: task.id,
+        continuePrompt: opts?.continuePrompt,
+      });
       const sessionId = task.sessionId || `fake-sess-${task.id}`;
       hooks.onStatus({
         status: "running",
@@ -100,23 +119,58 @@ function makeFakeRunner(): Runner {
         startedAt: new Date().toISOString(),
         pid: 4242,
       });
-      // Settle quickly without real CLI
-      queueMicrotask(() => {
-        hooks.onLog(JSON.stringify({ type: "agent_end", message: { content: [{ type: "text", text: "fake done" }] } }));
+      runnerProtocol.push({
+        kind: "status",
+        taskId: task.id,
+        status: "running",
+        sessionId,
+      });
+
+      let settled = false;
+      const settleOk = () => {
+        if (settled) return;
+        settled = true;
+        const line = JSON.stringify({
+          type: "agent_end",
+          message: { content: [{ type: "text", text: "fake done" }] },
+        });
+        hooks.onLog(line);
+        runnerProtocol.push({ kind: "log", taskId: task.id, line });
         hooks.onStatus({
           status: "succeeded",
           exitCode: 0,
           endedAt: new Date().toISOString(),
           pid: undefined,
         });
-      });
+        runnerProtocol.push({
+          kind: "status",
+          taskId: task.id,
+          status: "succeeded",
+          exitCode: 0,
+          sessionId,
+        });
+      };
+
+      if (!holdRunning) {
+        queueMicrotask(settleOk);
+      }
+
       return {
         pid: 4242,
         stop() {
+          runnerProtocol.push({ kind: "stop", taskId: task.id });
+          if (settled) return;
+          settled = true;
           hooks.onStatus({
             status: "stopped",
             endedAt: new Date().toISOString(),
             pid: undefined,
+          });
+          runnerProtocol.push({
+            kind: "status",
+            taskId: task.id,
+            status: "stopped",
+            sessionId,
           });
         },
       };
@@ -126,6 +180,8 @@ function makeFakeRunner(): Runner {
 
 export function installFakeRunners(runners: Record<string, Runner>): void {
   runnerCalls.length = 0;
+  runnerProtocol.length = 0;
+  holdRunning = false;
   const fake = makeFakeRunner();
   for (const k of Object.keys(runners)) {
     runners[k] = fake;

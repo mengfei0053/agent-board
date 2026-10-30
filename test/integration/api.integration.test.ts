@@ -1,18 +1,24 @@
 /**
- * High-priority API integration tests (I1–I7) against embedded Postgres + fake runners.
+ * API integration tests (I1–I7 high + I8–I11 medium) against embedded Postgres + fake runners.
  */
-import { after, before, beforeEach, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   startTestDb,
   stopTestDb,
   installFakeRunners,
   runnerCalls,
+  runnerProtocol,
+  setFakeRunnerHold,
   freshWorkspacePath,
   readSseHello,
   jsonOf,
   ensureDir,
 } from "./harness.js";
+import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { browseHome } from "../../src/fsbrowse.js";
+import { jsonDbPath, logsDir } from "../../src/db.js";
 
 await startTestDb();
 
@@ -23,6 +29,10 @@ const {
   flushPersist,
   closePool,
   getPool,
+  appendLog,
+  purgeArchivedTaskLogs,
+  logLineCount,
+  getTask,
 } = await import("../../src/store.js");
 const { clearHandlesForTests } = await import("../../src/manager.js");
 const { runners } = await import("../../src/runners/index.js");
@@ -44,7 +54,7 @@ async function waitSettled(taskId: string, timeoutMs = 3000): Promise<any> {
   throw new Error(`task ${taskId} did not settle`);
 }
 
-describe("integration I1–I7", () => {
+describe("integration I1–I11", () => {
   beforeEach(async () => {
     clearHandlesForTests();
     installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
@@ -396,4 +406,212 @@ describe("integration I1–I7", () => {
     assert.ok(Array.isArray(hello.workspaces));
     assert.ok(hello.workspaces.some((w) => w.name === "SSE空间"));
   });
+  it("I8 JSON → PG migration imports tasks/logs and archives db.json", async () => {
+    const migId = "mig_task_json_1";
+    const payload = {
+      tasks: [
+        {
+          id: migId,
+          title: "migrated",
+          kind: "pi",
+          cwd: "/tmp/mig",
+          prompt: "from-json-db",
+          iteration: 1,
+          status: "stopped",
+          createdAt: "2026-01-02T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          endedAt: "2026-01-02T00:01:00.000Z",
+          summary: "migrated task",
+        },
+      ],
+    };
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(jsonDbPath, JSON.stringify(payload), "utf8");
+    writeFileSync(
+      join(logsDir, `${migId}.jsonl`),
+      `${JSON.stringify({ type: "start" })}\nmigrated-log-line\n`,
+      "utf8",
+    );
+
+    clearHandlesForTests();
+    installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
+    await resetStoreForTests();
+
+    const got = await jsonOf(await app.request(`/api/tasks/${migId}`));
+    assert.equal(got.task?.prompt, "from-json-db");
+    assert.equal(got.task?.title, "migrated");
+    assert.ok(got.logLineCount >= 1);
+    const logBody = await jsonOf(await app.request(`/api/tasks/${migId}/log?lines=100`));
+    assert.ok(
+      (logBody.log || []).some(
+        (l: string) => l.includes("migrated-log-line") || l.includes('"start"'),
+      ),
+    );
+
+    assert.equal(existsSync(jsonDbPath), false);
+    const archived = readdirSync(join(jsonDbPath, "..")).filter((f) =>
+      f.startsWith("db.json.migrated-"),
+    );
+    assert.ok(archived.length >= 1);
+    for (const f of archived) {
+      try {
+        unlinkSync(join(jsonDbPath, "..", f));
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("I9 archive purge clears task_logs but keeps task row", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "归档日志空间", path }),
+      }),
+    );
+    const { task } = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "keep-me",
+          title: "archive-log",
+          start: false,
+        }),
+      }),
+    );
+    appendLog(task.id, "line-before-archive-1");
+    appendLog(task.id, "line-before-archive-2");
+    await flushPersist();
+    assert.ok(logLineCount(task.id) >= 2);
+
+    const move = await app.request(`/api/tasks/${task.id}/move`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ lane: "archived" }),
+    });
+    assert.equal(move.status, 200);
+    assert.equal((await jsonOf(move)).task.status, "archived");
+
+    const purged = await purgeArchivedTaskLogs();
+    assert.ok(purged.tasks >= 1);
+    assert.equal(logLineCount(task.id), 0);
+
+    const still = getTask(task.id);
+    assert.ok(still);
+    assert.equal(still!.prompt, "keep-me");
+    assert.equal(still!.status, "archived");
+
+    const api = await jsonOf(await app.request(`/api/tasks/${task.id}`));
+    assert.equal(api.task.prompt, "keep-me");
+    assert.equal(api.logLineCount, 0);
+  });
+
+  it("I10 browse rejects paths outside home", async () => {
+    const bad = await app.request("/api/browse?path=/tmp");
+    assert.equal(bad.status, 400);
+    const badBody = await jsonOf(bad);
+    assert.match(String(badBody.error), /outside home/i);
+
+    const ok = await app.request(`/api/browse?path=${encodeURIComponent(browseHome)}`);
+    assert.equal(ok.status, 200);
+    const body = await jsonOf(ok);
+    assert.equal(body.path, browseHome);
+    assert.equal(body.parent, null);
+    assert.ok(Array.isArray(body.entries));
+  });
+
+  it("I11 fake runner protocol: status/log order, continuePrompt, stop while held", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "协议空间", path }),
+      }),
+    );
+
+    // happy path protocol
+    runnerProtocol.length = 0;
+    const { task } = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "proto-run",
+          start: true,
+        }),
+      }),
+    );
+    const settled = await waitSettled(task.id);
+    assert.equal(settled.status, "succeeded");
+    const kinds = runnerProtocol.filter((e) => e.taskId === task.id).map((e) => e.kind);
+    assert.deepEqual(
+      kinds.slice(0, 4),
+      ["start", "status", "log", "status"],
+    );
+    const statuses = runnerProtocol
+      .filter((e) => e.taskId === task.id && e.kind === "status")
+      .map((e) => (e as { status: string }).status);
+    assert.deepEqual(statuses, ["running", "succeeded"]);
+
+    // continuePrompt plumbing
+    runnerCalls.length = 0;
+    runnerProtocol.length = 0;
+    const cont = await app.request(`/api/tasks/${task.id}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "MORE_PLEASE" }),
+    });
+    assert.equal(cont.status, 200);
+    await waitSettled(task.id);
+    assert.equal(runnerCalls[0]?.continuePrompt, "MORE_PLEASE");
+    assert.equal(
+      runnerProtocol.find((e) => e.kind === "start" && e.taskId === task.id)?.continuePrompt,
+      "MORE_PLEASE",
+    );
+
+    // stop while held running
+    setFakeRunnerHold(true);
+    runnerProtocol.length = 0;
+    const held = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "hold-me",
+          start: true,
+        }),
+      }),
+    );
+    // wait until running
+    const startWait = Date.now();
+    let running = false;
+    while (Date.now() - startWait < 2000) {
+      const t = (await jsonOf(await app.request(`/api/tasks/${held.task.id}`))).task;
+      if (t.status === "running") {
+        running = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(running, "expected running while held");
+    const stopRes = await app.request(`/api/tasks/${held.task.id}/stop`, { method: "POST" });
+    assert.equal(stopRes.status, 200);
+    const stopped = await waitSettled(held.task.id);
+    assert.equal(stopped.status, "stopped");
+    assert.ok(runnerProtocol.some((e) => e.kind === "stop" && e.taskId === held.task.id));
+    setFakeRunnerHold(false);
+  });
 });
+

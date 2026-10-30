@@ -93,11 +93,35 @@ export function createState(seed = {}) {
   /** @type {Map<string, Task>} */
   const tasks = new Map();
   for (const t of seed.tasks || []) tasks.set(t.id, { ...t });
+  const settings = seed.settings || {
+    cliPaths: {
+      pi: { default: "pi", override: "", resolved: "/usr/bin/pi", label: "pi" },
+      claude: { default: "claude", override: "", resolved: "", label: "Claude" },
+      agent: { default: "agent", override: "", resolved: "", label: "Cursor" },
+      devin: { default: "devin", override: "", resolved: "", label: "Devin" },
+      codex: { default: "codex", override: "", resolved: "", label: "Codex" },
+    },
+    proxyEnv: {
+      pi: {},
+      claude: {},
+      agent: {},
+      devin: {},
+      codex: {},
+    },
+    quickPrompts: seed.quickPrompts || [
+      { id: "qp_demo", label: "总结一下", content: "请用三句话总结当前进度" },
+    ],
+    codexSandbox: true,
+  };
+  /** @type {{ name: string, url: string, originalName?: string }[]} */
+  const uploads = [];
   return {
     workspaces,
     tasks,
     defaultWorkspaceId: seed.defaultWorkspaceId || wsDefault.id,
     taskSeq: seed.taskSeq || 1,
+    settings,
+    uploads,
   };
 }
 
@@ -347,6 +371,88 @@ export function createMockServer(state, extra) {
       return json(res, 200, { deleted, skipped, stopped: [] });
     }
 
+    if (pathname === "/api/settings" && req.method === "GET") {
+      return json(res, 200, state.settings);
+    }
+
+    if (pathname === "/api/settings" && req.method === "PUT") {
+      const body = await readBody(req);
+      if (body.clear) {
+        for (const k of Object.keys(state.settings.cliPaths || {})) {
+          state.settings.cliPaths[k].override = "";
+        }
+        state.settings.proxyEnv = {
+          pi: {},
+          claude: {},
+          agent: {},
+          devin: {},
+          codex: {},
+        };
+        state.settings.quickPrompts = [];
+        state.settings.codexSandbox = true;
+        return json(res, 200, state.settings);
+      }
+      if (body.cliPaths && typeof body.cliPaths === "object") {
+        for (const [k, v] of Object.entries(body.cliPaths)) {
+          if (!state.settings.cliPaths[k]) {
+            state.settings.cliPaths[k] = { default: k, override: "", resolved: "", label: k };
+          }
+          state.settings.cliPaths[k].override = String(v || "").trim();
+        }
+      }
+      if (body.proxyEnv && typeof body.proxyEnv === "object") {
+        state.settings.proxyEnv = body.proxyEnv;
+      }
+      if (Array.isArray(body.quickPrompts)) {
+        state.settings.quickPrompts = body.quickPrompts
+          .filter((x) => x && typeof x === "object")
+          .map((x, i) => ({
+            id: String(x.id || `qp_${i}`),
+            label: String(x.label || "").trim(),
+            content: String(x.content || ""),
+          }))
+          .filter((x) => x.label && x.content.trim());
+      }
+      if (typeof body.codexSandbox === "boolean") {
+        state.settings.codexSandbox = body.codexSandbox;
+      }
+      return json(res, 200, state.settings);
+    }
+
+    if (pathname === "/api/uploads" && req.method === "POST") {
+      const name = `e2e_${Date.now()}.png`;
+      const url = `/uploads/${name}`;
+      state.uploads.push({ name, url, originalName: "paste.png" });
+      // Drain body
+      await readBody(req);
+      return json(res, 201, { name, url, size: 12, contentType: "image/png" });
+    }
+
+    const taskContinue = pathname.match(/^\/api\/tasks\/([^/]+)\/continue$/);
+    if (taskContinue && req.method === "POST") {
+      const id = decodeURIComponent(taskContinue[1]);
+      const t = state.tasks.get(id);
+      if (!t) return json(res, 404, { error: "not found" });
+      const body = await readBody(req);
+      const prompt =
+        typeof body.prompt === "string" && body.prompt.trim()
+          ? body.prompt.trim()
+          : "请基于当前上下文继续完成任务";
+      const now = new Date().toISOString();
+      const iter = (t.iteration || 1) + 1;
+      Object.assign(t, {
+        status: "succeeded",
+        iteration: iter,
+        sessionId: t.sessionId || `sess_${id}`,
+        updatedAt: now,
+        endedAt: now,
+        lastEvent: "continue",
+        summary: "continued (mock)",
+        prompts: [...(t.prompts || []), { iteration: iter, prompt, at: now }],
+      });
+      return json(res, 200, { task: t });
+    }
+
     if (pathname.startsWith("/api/")) {
       return json(res, 404, { error: `mock missing ${pathname}` });
     }
@@ -429,5 +535,7 @@ export function makeTask(partial) {
     summary: partial.summary,
     lastEvent: partial.lastEvent,
     endedAt: partial.endedAt,
+    sessionId: partial.sessionId,
+    outputs: partial.outputs,
   };
 }
