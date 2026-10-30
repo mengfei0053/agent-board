@@ -13,7 +13,9 @@ import { isCodexSandboxEnabled } from "../codexSandbox.js";
  *   OFF → `-s danger-full-access` (allows company GitLab; safer than
  *         `--dangerously-bypass-approvals-and-sandbox` which drops all sandboxing)
  * Always pass `--dangerously-bypass-hook-trust` so PreToolUse delete-guards run headlessly.
- * Resume: `codex exec resume <thread_id> --json …` (CLI does not take -s/--approve-for-me)
+ * Resume: sandbox flags are exec-level options, so place them BEFORE `resume`:
+ *   `codex exec [-s danger-full-access|--approve-for-me] resume <thread_id> --json …`
+ *   (`codex exec resume` itself does not accept -s/--approve-for-me.)
  * Continue without sessionId: fresh `codex exec` with the original task.prompt (never `--last`).
  */
 function approvalFlags(): string[] {
@@ -39,7 +41,10 @@ function baseExecFlags(taskModel?: string): string[] {
   return flags;
 }
 
-/** resume subcommand does not take -s/--approve-for-me; keep --json + optional model. */
+/**
+ * Flags after `resume <id>`: resume does not accept -s/--approve-for-me.
+ * Sandbox/approval flags must be passed as exec-level options before `resume`.
+ */
 function resumeFlags(taskModel?: string): string[] {
   const flags = [
     "--json",
@@ -58,7 +63,15 @@ export const codexRunner: Runner = {
 
     if (isContinue && task.sessionId) {
       prompt = opts?.continuePrompt?.trim() || task.prompt;
-      args = ["exec", "resume", task.sessionId, ...resumeFlags(task.model), prompt];
+      // -s / --approve-for-me are options of `codex exec`, not of `resume`.
+      args = [
+        "exec",
+        ...approvalFlags(),
+        "resume",
+        task.sessionId,
+        ...resumeFlags(task.model),
+        prompt,
+      ];
     } else if (isContinue && !task.sessionId) {
       // First round failed before thread.started — do NOT resume --last (wrong session).
       prompt = task.prompt;
