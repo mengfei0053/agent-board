@@ -161,7 +161,7 @@ function renderCodexSandboxBlock() {
     <section class="settings-block" aria-labelledby="codex-sandbox-title">
       <header class="settings-block-head">
         <h2 id="codex-sandbox-title">Codex 沙箱</h2>
-        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。</p>
+        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。关沙箱时仍建议保留本机 <code>~/.codex/hooks</code> 里的危险删除拦截（<code>rm -rf</code> / <code>git clean -fdx</code> 等会被 PreToolUse hook 拒绝）。</p>
       </header>
       <label class="settings-row settings-row-toggle">
         <span class="settings-label">
@@ -179,7 +179,7 @@ function renderCodexSandboxBlock() {
           <span class="settings-toggle-hint muted" id="codex-sandbox-hint">${
             on
               ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
-              : "关：-s danger-full-access（可访问内网；比完全绕过沙箱更稳妥）"
+              : "关：-s danger-full-access（可访问内网；危险删除仍由 Codex hook 拦截）"
           }</span>
         </span>
       </label>
@@ -333,7 +333,7 @@ panelsEl.addEventListener("change", (e) => {
   if (hint) {
     hint.textContent = t.checked
       ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
-      : "关：-s danger-full-access（可访问内网；比完全绕过沙箱更稳妥）";
+      : "关：-s danger-full-access（可访问内网；危险删除仍由 Codex hook 拦截）";
   }
   setStatus(t.checked ? "已勾选启用沙箱（尚未保存）。" : "已取消沙箱（尚未保存）。");
 });

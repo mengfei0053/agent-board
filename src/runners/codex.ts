@@ -12,6 +12,7 @@ import { isCodexSandboxEnabled } from "../codexSandbox.js";
  *   ON  → `--approve-for-me` (workspace-write; blocks LAN like 192.168.x)
  *   OFF → `-s danger-full-access` (allows company GitLab; safer than
  *         `--dangerously-bypass-approvals-and-sandbox` which drops all sandboxing)
+ * Always pass `--dangerously-bypass-hook-trust` so PreToolUse delete-guards run headlessly.
  * Resume: `codex exec resume <thread_id> --json …` (CLI does not take -s/--approve-for-me)
  * Continue without sessionId: fresh `codex exec` with the original task.prompt (never `--last`).
  */
@@ -29,6 +30,9 @@ function baseExecFlags(taskModel?: string): string[] {
     "--color",
     "never",
     ...approvalFlags(),
+    // Board-managed machine: run ~/.codex hooks (e.g. block-dangerous-deletes)
+    // without requiring an interactive /hooks trust prompt.
+    "--dangerously-bypass-hook-trust",
     "--skip-git-repo-check",
   ];
   if (taskModel) flags.push("-m", taskModel);
@@ -37,7 +41,11 @@ function baseExecFlags(taskModel?: string): string[] {
 
 /** resume subcommand does not take -s/--approve-for-me; keep --json + optional model. */
 function resumeFlags(taskModel?: string): string[] {
-  const flags = ["--json", "--skip-git-repo-check"];
+  const flags = [
+    "--json",
+    "--dangerously-bypass-hook-trust",
+    "--skip-git-repo-check",
+  ];
   if (taskModel) flags.push("-m", taskModel);
   return flags;
 }
