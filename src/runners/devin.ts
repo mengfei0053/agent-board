@@ -74,45 +74,71 @@ function captureSession(
   }
 }
 
+export type DevinArgInput = {
+  prompt: string;
+  sessionId?: string;
+  model?: string;
+};
+
+export type DevinBuildResult = {
+  args: string[];
+  prompt: string;
+  continueNewSession: boolean;
+};
+
+/** Pure CLI argv for Devin (no spawn / session lookup). */
+export function buildDevinArgs(
+  task: DevinArgInput,
+  opts?: { continuePrompt?: string },
+): DevinBuildResult {
+  const prompt = opts?.continuePrompt?.trim() || task.prompt;
+  const isContinue = Boolean(opts?.continuePrompt);
+  // Non-interactive board: auto-approve workspace edits; skip trust prompt.
+  const args = [
+    "-p",
+    "--permission-mode",
+    "accept-edits",
+    "--respect-workspace-trust",
+    "false",
+  ];
+
+  let promptForRun = prompt;
+  let continueNewSession = false;
+  if (isContinue) {
+    if (task.sessionId) {
+      args.push("-r", task.sessionId);
+    } else {
+      // First round failed before session — do NOT -c (wrong cwd session).
+      promptForRun = task.prompt;
+      continueNewSession = true;
+    }
+  }
+
+  if (task.model) args.push("--model", task.model);
+  args.push("--", promptForRun);
+
+  return { args, prompt: promptForRun, continueNewSession };
+}
+
 export const devinRunner: Runner = {
   start(task, hooks, opts) {
-    const prompt = opts?.continuePrompt?.trim() || task.prompt;
-    const isContinue = Boolean(opts?.continuePrompt);
-    // Non-interactive board: auto-approve workspace edits; skip trust prompt.
-    const args = [
-      "-p",
-      "--permission-mode",
-      "accept-edits",
-      "--respect-workspace-trust",
-      "false",
-    ];
-
-    let promptForRun = prompt;
-    if (isContinue) {
-      if (task.sessionId) {
-        args.push("-r", task.sessionId);
-      } else {
-        // First round failed before session — do NOT -c (wrong cwd session).
-        promptForRun = task.prompt;
-        hooks.onLog(
-          JSON.stringify({
-            type: "continue_new_session",
-            kind: "devin",
-            note: "no sessionId; starting fresh run with task.prompt (not -c)",
-          }),
-        );
-      }
+    const built = buildDevinArgs(task, opts);
+    if (built.continueNewSession) {
+      hooks.onLog(
+        JSON.stringify({
+          type: "continue_new_session",
+          kind: "devin",
+          note: "no sessionId; starting fresh run with task.prompt (not -c)",
+        }),
+      );
     }
-
-    if (task.model) args.push("--model", task.model);
-    args.push("--", promptForRun);
 
     let status = task.status;
     let sawAgentError = false;
 
     return spawnLogged(
       resolveCliCommand("devin"),
-      args,
+      built.args,
       task.cwd,
       {
         onStatus: (p) => {

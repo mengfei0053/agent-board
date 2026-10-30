@@ -13,6 +13,7 @@ import {
   listJsonlLogFiles,
   logsDir,
   readJsonDbRaw,
+  redactDatabaseUrl,
 } from "./db.js";
 import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
@@ -616,21 +617,10 @@ export async function initStore(): Promise<void> {
 
   ready = true;
   console.log(
-    `[db] ready · ${workspaces.size} workspaces · ${tasks.size} tasks · ${databaseUrlRedacted()}`,
+    `[db] ready · ${workspaces.size} workspaces · ${tasks.size} tasks · ${redactDatabaseUrl()}`,
   );
 }
 
-function databaseUrlRedacted(): string {
-  try {
-    const u = new URL(
-      process.env.DATABASE_URL || "postgresql://postgres@127.0.0.1:5432/agent_board",
-    );
-    if (u.password) u.password = "***";
-    return u.toString();
-  } catch {
-    return "(DATABASE_URL)";
-  }
-}
 
 export function listWorkspaces(): Workspace[] {
   return [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));

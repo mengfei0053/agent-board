@@ -20,6 +20,17 @@ export function databaseUrl(): string {
   return (process.env.DATABASE_URL || DEFAULT_DATABASE_URL).trim();
 }
 
+/** Hide password in DATABASE_URL for logs. */
+export function redactDatabaseUrl(url?: string): string {
+  try {
+    const u = new URL((url ?? databaseUrl()).trim());
+    if (u.password) u.password = "***";
+    return u.toString();
+  } catch {
+    return "(DATABASE_URL)";
+  }
+}
+
 let pool: pg.Pool | null = null;
 
 export function getPool(): pg.Pool {

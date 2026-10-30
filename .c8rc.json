@@ -4,17 +4,10 @@
   ],
   "exclude": [
     "**/*.test.ts",
-    "src/runners/claude.ts",
-    "src/runners/codex.ts",
-    "src/runners/cursor.ts",
-    "src/runners/devin.ts",
-    "src/runners/pi.ts",
-    "src/runners/index.ts",
-    "src/runners/types.ts",
     "src/server.ts",
     "src/store.ts",
-    "src/db.ts",
-    "src/manager.ts"
+    "src/manager.ts",
+    "src/runners/types.ts"
   ],
   "reporter": [
     "text",

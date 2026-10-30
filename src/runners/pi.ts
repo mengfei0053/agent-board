@@ -4,19 +4,38 @@ import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
 
+export type PiArgInput = {
+  id: string;
+  prompt: string;
+  sessionId?: string;
+  model?: string;
+};
+
+/** Pure CLI argv for pi (no spawn). */
+export function buildPiArgs(
+  task: PiArgInput,
+  opts?: { continuePrompt?: string },
+): { args: string[]; prompt: string; sessionId: string; assignSession: boolean } {
+  const prompt = opts?.continuePrompt?.trim() || task.prompt;
+  const sessionId = task.sessionId || task.id;
+  const args = ["-p", "--mode", "json", "--session-id", sessionId];
+  if (task.model) args.push("--model", task.model);
+  args.push(prompt);
+  return {
+    args,
+    prompt,
+    sessionId,
+    assignSession: !task.sessionId,
+  };
+}
+
 export const piRunner: Runner = {
   start(task, hooks, opts) {
-    const prompt = opts?.continuePrompt?.trim() || task.prompt;
-    const sessionId = task.sessionId || task.id;
-    // Persist session so later "继续任务" can resume the same context.
-    const args = ["-p", "--mode", "json", "--session-id", sessionId];
-    if (task.model) args.push("--model", task.model);
-    args.push(prompt);
-
-    if (!task.sessionId) hooks.onStatus({ sessionId });
+    const built = buildPiArgs(task, opts);
+    if (built.assignSession) hooks.onStatus({ sessionId: built.sessionId });
 
     let status = task.status;
-    return spawnLogged(resolveCliCommand("pi"), args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("pi"), built.args, task.cwd, hooks, {
       cliKind: "pi",
       getStatus: () => status,
       classifyLine: (line, h) => {

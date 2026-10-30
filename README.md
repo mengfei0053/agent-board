@@ -127,18 +127,19 @@ pnpm dev
 pnpm install
 pnpm test              # 单元 + 集成 + e2e
 pnpm test:unit         # node:test 纯函数 / 解析（src/**/*.test.ts）
-pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I11）
-pnpm test:coverage     # 单元 + c8 覆盖率（text / html / lcov）
+pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I12）
+pnpm test:coverage     # 单元 + c8（含 runners buildArgs / db；不含 server/store/manager）
+pnpm test:coverage:full # 同上但 all=true，报告写入 coverage-full/（全仓诚实视图）
 pnpm coverage          # test:coverage 别名
-pnpm test:e2e          # puppeteer-core：空间设置 + 看板 E1–E4 + 中优先 E5–E7（mock API）
+pnpm test:e2e          # puppeteer-core：空间设置 + E1–E4 + E5–E7 + E8–E9（mock API）
 ```
 
 集成测试会临时拉起 `embedded-postgres`（不碰生产 `DATABASE_URL`），用 Hono `app.request` 打真实路由，runner 换成内存 fake（不 spawn 本机 CLI）。首次需允许原生依赖构建：`pnpm` 的 `onlyBuiltDependencies` 已包含 `@embedded-postgres/linux-x64`。
 
 覆盖率报告（仅单元；集成/e2e 不并进同一报告）：
 
-- 终端：`pnpm test:coverage` 结束后打印各文件 %
-- HTML：打开 `coverage/index.html`
+- 默认：`pnpm test:coverage` → `coverage/index.html`（已纳入各 runner 的 `buildArgs` 与 `db` 脱敏；仍排除难单测的 `server`/`store`/`manager`）
+- 全仓：`pnpm test:coverage:full` → `coverage-full/`（`all: true`，含未跑到的 spawn 路径，便于看缺口；不设门槛）
 - LCOV：`coverage/lcov.info`（可给 IDE / CI 用）
 
 ## 重新截图（可选）

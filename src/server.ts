@@ -29,7 +29,7 @@ import {
   flushPersist,
   upsertWorkspace,
 } from "./store.js";
-import { databaseUrl } from "./db.js";
+import { redactDatabaseUrl } from "./db.js";
 import type {
   AgentKind,
   BoardLane,
@@ -658,7 +658,7 @@ async function main() {
   await initStore();
   serve({ fetch: app.fetch, port, hostname }, (info) => {
     console.log(`agent-board http://${hostname}:${info.port}`);
-    console.log(`database ${databaseUrl().replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@")}`);
+    console.log(`database ${redactDatabaseUrl()}`);
   });
   const shutdown = async () => {
     await flushPersist();

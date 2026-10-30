@@ -18,20 +18,23 @@ import { isCodexSandboxEnabled } from "../codexSandbox.js";
  *   (`codex exec resume` itself does not accept -s/--approve-for-me.)
  * Continue without sessionId: fresh `codex exec` with the original task.prompt (never `--last`).
  */
-function approvalFlags(): string[] {
-  if (isCodexSandboxEnabled()) {
+export function approvalFlags(sandboxEnabled = isCodexSandboxEnabled()): string[] {
+  if (sandboxEnabled) {
     return ["--approve-for-me"];
   }
   // Safer of the two “no workspace-write” options that can reach 192.168.3.11.
   return ["-s", "danger-full-access"];
 }
 
-function baseExecFlags(taskModel?: string): string[] {
+export function baseExecFlags(
+  taskModel?: string,
+  sandboxEnabled = isCodexSandboxEnabled(),
+): string[] {
   const flags = [
     "--json",
     "--color",
     "never",
-    ...approvalFlags(),
+    ...approvalFlags(sandboxEnabled),
     // Board-managed machine: run ~/.codex hooks (e.g. block-dangerous-deletes)
     // without requiring an interactive /hooks trust prompt.
     "--dangerously-bypass-hook-trust",
@@ -45,7 +48,7 @@ function baseExecFlags(taskModel?: string): string[] {
  * Flags after `resume <id>`: resume does not accept -s/--approve-for-me.
  * Sandbox/approval flags must be passed as exec-level options before `resume`.
  */
-function resumeFlags(taskModel?: string): string[] {
+export function resumeFlags(taskModel?: string): string[] {
   const flags = [
     "--json",
     "--dangerously-bypass-hook-trust",
@@ -55,42 +58,70 @@ function resumeFlags(taskModel?: string): string[] {
   return flags;
 }
 
+export type CodexArgInput = {
+  prompt: string;
+  sessionId?: string;
+  model?: string;
+};
+
+export type CodexBuildResult = {
+  args: string[];
+  prompt: string;
+  continueNewSession: boolean;
+  sandbox: boolean;
+};
+
+/** Pure CLI argv for Codex (no spawn). */
+export function buildCodexArgs(
+  task: CodexArgInput,
+  opts?: { continuePrompt?: string },
+  sandboxEnabled = isCodexSandboxEnabled(),
+): CodexBuildResult {
+  const isContinue = Boolean(opts?.continuePrompt);
+  let args: string[];
+  let prompt: string;
+  let continueNewSession = false;
+
+  if (isContinue && task.sessionId) {
+    prompt = opts?.continuePrompt?.trim() || task.prompt;
+    // -s / --approve-for-me are options of `codex exec`, not of `resume`.
+    args = [
+      "exec",
+      ...approvalFlags(sandboxEnabled),
+      "resume",
+      task.sessionId,
+      ...resumeFlags(task.model),
+      prompt,
+    ];
+  } else if (isContinue && !task.sessionId) {
+    // First round failed before thread.started — do NOT resume --last (wrong session).
+    prompt = task.prompt;
+    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled), prompt];
+    continueNewSession = true;
+  } else {
+    prompt = opts?.continuePrompt?.trim() || task.prompt;
+    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled), prompt];
+  }
+
+  return { args, prompt, continueNewSession, sandbox: sandboxEnabled };
+}
+
 export const codexRunner: Runner = {
   start(task, hooks, opts) {
-    const isContinue = Boolean(opts?.continuePrompt);
-    let args: string[];
-    let prompt: string;
-
-    if (isContinue && task.sessionId) {
-      prompt = opts?.continuePrompt?.trim() || task.prompt;
-      // -s / --approve-for-me are options of `codex exec`, not of `resume`.
-      args = [
-        "exec",
-        ...approvalFlags(),
-        "resume",
-        task.sessionId,
-        ...resumeFlags(task.model),
-        prompt,
-      ];
-    } else if (isContinue && !task.sessionId) {
-      // First round failed before thread.started — do NOT resume --last (wrong session).
-      prompt = task.prompt;
-      args = ["exec", ...baseExecFlags(task.model), prompt];
+    const built = buildCodexArgs(task, opts);
+    if (built.continueNewSession) {
       hooks.onLog(
         JSON.stringify({
           type: "continue_new_session",
           kind: "codex",
           note: "no sessionId; starting fresh exec with task.prompt (not resume --last)",
-          sandbox: isCodexSandboxEnabled(),
+          sandbox: built.sandbox,
         }),
       );
-    } else {
-      prompt = opts?.continuePrompt?.trim() || task.prompt;
-      args = ["exec", ...baseExecFlags(task.model), prompt];
     }
 
     let status = task.status;
-    return spawnLogged(resolveCliCommand("codex"), args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("codex"), built.args, task.cwd, hooks, {
       cliKind: "codex",
       getStatus: () => status,
       classifyLine: (line, h) => {

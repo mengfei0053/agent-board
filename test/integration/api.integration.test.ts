@@ -1,5 +1,5 @@
 /**
- * API integration tests (I1–I7 high + I8–I11 medium) against embedded Postgres + fake runners.
+ * API integration tests (I1–I7 high + I8–I11 medium + I12 low) against embedded Postgres + fake runners.
  */
 import { after, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -54,7 +54,7 @@ async function waitSettled(taskId: string, timeoutMs = 3000): Promise<any> {
   throw new Error(`task ${taskId} did not settle`);
 }
 
-describe("integration I1–I11", () => {
+describe("integration I1–I12", () => {
   beforeEach(async () => {
     clearHandlesForTests();
     installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
@@ -612,6 +612,13 @@ describe("integration I1–I11", () => {
     assert.equal(stopped.status, "stopped");
     assert.ok(runnerProtocol.some((e) => e.kind === "stop" && e.taskId === held.task.id));
     setFakeRunnerHold(false);
+  });
+
+  it("I12 GET /api/health smoke", async () => {
+    const res = await app.request("/api/health");
+    assert.equal(res.status, 200);
+    const body = await jsonOf(res);
+    assert.equal(body.ok, true);
   });
 });
 

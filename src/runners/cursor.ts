@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
-import type { Runner } from "./types.js";
+import type { Runner, RunnerHooks } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
 import { childProcessEnv } from "../proxyEnv.js";
 
-function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p: { sessionId: string }) => void; onLog: (line: string) => void }): string | undefined {
+function ensureCursorChatId(task: { sessionId?: string }, hooks: RunnerHooks): string | undefined {
   if (task.sessionId) return task.sessionId;
   try {
     const r = spawnSync(resolveCliCommand("agent"), ["create-chat"], {
@@ -29,48 +29,87 @@ function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p:
   return undefined;
 }
 
+export type CursorArgInput = {
+  prompt: string;
+  /** Session id known *before* create-chat / ensure */
+  sessionId?: string;
+  model?: string;
+};
+
+export type CursorBuildResult = {
+  args: string[];
+  prompt: string;
+  resumeSessionId?: string;
+  continueNewSession: boolean;
+};
+
+/**
+ * Pure CLI argv for Cursor agent (no spawn / create-chat).
+ * Branching uses `task.sessionId` (prior). Pass `resolvedSessionId` when
+ * create-chat produced a fresh id for a run that had no prior session.
+ */
+export function buildCursorArgs(
+  task: CursorArgInput,
+  opts?: { continuePrompt?: string },
+  resolvedSessionId?: string,
+): CursorBuildResult {
+  const isContinue = Boolean(opts?.continuePrompt);
+  const args = ["-p", "--output-format", "stream-json", "--trust"];
+
+  let prompt: string;
+  let resumeSessionId: string | undefined;
+  let continueNewSession = false;
+
+  if (isContinue && task.sessionId) {
+    prompt = opts?.continuePrompt?.trim() || task.prompt;
+    resumeSessionId = task.sessionId;
+    args.push("--resume", task.sessionId);
+  } else if (isContinue && !task.sessionId) {
+    // First round failed before session — do NOT --continue (wrong cwd session).
+    prompt = task.prompt;
+    continueNewSession = true;
+    resumeSessionId = resolvedSessionId;
+    if (resumeSessionId) args.push("--resume", resumeSessionId);
+  } else {
+    prompt = opts?.continuePrompt?.trim() || task.prompt;
+    resumeSessionId = task.sessionId || resolvedSessionId;
+    if (resumeSessionId) args.push("--resume", resumeSessionId);
+  }
+
+  if (task.model) args.push("--model", task.model);
+  args.push(prompt);
+
+  return { args, prompt, resumeSessionId, continueNewSession };
+}
+
 export const cursorRunner: Runner = {
   start(task, hooks, opts) {
-    const isContinue = Boolean(opts?.continuePrompt);
-    // --trust: non-interactive board must not hang on workspace trust prompt
-    const args = ["-p", "--output-format", "stream-json", "--trust"];
+    const priorSessionId = task.sessionId;
+    let resolved: string | undefined;
+    if (!priorSessionId) {
+      resolved = ensureCursorChatId(task, hooks);
+      if (resolved) task.sessionId = resolved;
+    }
 
-    let sessionId = task.sessionId;
-    let prompt: string;
+    const built = buildCursorArgs(
+      { prompt: task.prompt, sessionId: priorSessionId, model: task.model },
+      opts,
+      resolved,
+    );
 
-    if (isContinue && sessionId) {
-      prompt = opts?.continuePrompt?.trim() || task.prompt;
-      args.push("--resume", sessionId);
-    } else if (isContinue && !sessionId) {
-      // First round failed before session — do NOT --continue (wrong cwd session).
-      prompt = task.prompt;
-      sessionId = ensureCursorChatId(task, hooks) || sessionId;
-      if (sessionId) {
-        task.sessionId = sessionId;
-        args.push("--resume", sessionId);
-      }
+    if (built.continueNewSession) {
       hooks.onLog(
         JSON.stringify({
           type: "continue_new_session",
           kind: "cursor",
           note: "no sessionId; starting fresh chat with task.prompt (not --continue)",
-          sessionId: sessionId || null,
+          sessionId: built.resumeSessionId || null,
         }),
       );
-    } else {
-      prompt = opts?.continuePrompt?.trim() || task.prompt;
-      sessionId = ensureCursorChatId(task, hooks) || sessionId;
-      if (sessionId) {
-        task.sessionId = sessionId;
-        args.push("--resume", sessionId);
-      }
     }
 
-    if (task.model) args.push("--model", task.model);
-    args.push(prompt);
-
     let status = task.status;
-    return spawnLogged(resolveCliCommand("agent"), args, task.cwd, hooks, {
+    return spawnLogged(resolveCliCommand("agent"), built.args, task.cwd, hooks, {
       cliKind: "agent",
       getStatus: () => status,
       classifyLine: (line, h) => {
