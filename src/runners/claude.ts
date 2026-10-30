@@ -6,25 +6,30 @@ import { spawnLogged } from "./common.js";
 
 export const claudeRunner: Runner = {
   start(task, hooks, opts) {
-    const prompt = opts?.continuePrompt?.trim() || task.prompt;
     const isContinue = Boolean(opts?.continuePrompt);
     const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    let prompt: string;
 
-    if (isContinue) {
-      if (task.sessionId) {
-        args.push("--resume", task.sessionId);
-      } else {
-        // Fallback: most recent conversation in cwd (fragile if multiple tasks share cwd)
-        args.push("--continue");
-        hooks.onLog(
-          JSON.stringify({
-            type: "continue_fallback",
-            kind: "claude",
-            note: "no sessionId; using --continue (cwd most-recent)",
-          }),
-        );
-      }
+    if (isContinue && task.sessionId) {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
+      args.push("--resume", task.sessionId);
+    } else if (isContinue && !task.sessionId) {
+      // First round failed before session — do NOT --continue (wrong cwd session).
+      prompt = task.prompt;
+      const sid = randomUUID();
+      task.sessionId = sid;
+      hooks.onStatus({ sessionId: sid });
+      args.push("--session-id", sid);
+      hooks.onLog(
+        JSON.stringify({
+          type: "continue_new_session",
+          kind: "claude",
+          note: "no sessionId; starting fresh session with task.prompt (not --continue)",
+          sessionId: sid,
+        }),
+      );
     } else {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
       const sid = task.sessionId || randomUUID();
       if (!task.sessionId) hooks.onStatus({ sessionId: sid });
       task.sessionId = sid;

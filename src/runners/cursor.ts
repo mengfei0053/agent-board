@@ -29,26 +29,34 @@ function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p:
 
 export const cursorRunner: Runner = {
   start(task, hooks, opts) {
-    const prompt = opts?.continuePrompt?.trim() || task.prompt;
     const isContinue = Boolean(opts?.continuePrompt);
     // --trust: non-interactive board must not hang on workspace trust prompt
     const args = ["-p", "--output-format", "stream-json", "--trust"];
 
     let sessionId = task.sessionId;
-    if (isContinue) {
+    let prompt: string;
+
+    if (isContinue && sessionId) {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
+      args.push("--resume", sessionId);
+    } else if (isContinue && !sessionId) {
+      // First round failed before session — do NOT --continue (wrong cwd session).
+      prompt = task.prompt;
+      sessionId = ensureCursorChatId(task, hooks) || sessionId;
       if (sessionId) {
+        task.sessionId = sessionId;
         args.push("--resume", sessionId);
-      } else {
-        args.push("--continue");
-        hooks.onLog(
-          JSON.stringify({
-            type: "continue_fallback",
-            kind: "cursor",
-            note: "no sessionId; using --continue (cwd most-recent)",
-          }),
-        );
       }
+      hooks.onLog(
+        JSON.stringify({
+          type: "continue_new_session",
+          kind: "cursor",
+          note: "no sessionId; starting fresh chat with task.prompt (not --continue)",
+          sessionId: sessionId || null,
+        }),
+      );
     } else {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
       sessionId = ensureCursorChatId(task, hooks) || sessionId;
       if (sessionId) {
         task.sessionId = sessionId;

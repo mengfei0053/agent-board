@@ -85,23 +85,25 @@ export const devinRunner: Runner = {
       "false",
     ];
 
+    let promptForRun = prompt;
     if (isContinue) {
       if (task.sessionId) {
         args.push("-r", task.sessionId);
       } else {
-        args.push("-c");
+        // First round failed before session — do NOT -c (wrong cwd session).
+        promptForRun = task.prompt;
         hooks.onLog(
           JSON.stringify({
-            type: "continue_fallback",
+            type: "continue_new_session",
             kind: "devin",
-            note: "no sessionId; using -c (cwd most-recent)",
+            note: "no sessionId; starting fresh run with task.prompt (not -c)",
           }),
         );
       }
     }
 
     if (task.model) args.push("--model", task.model);
-    args.push("--", prompt);
+    args.push("--", promptForRun);
 
     let status = task.status;
     let sawAgentError = false;

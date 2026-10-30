@@ -7,7 +7,8 @@ import { spawnLogged } from "./common.js";
  * OpenAI Codex CLI (`codex` on PATH).
  * Non-interactive board: `codex exec --json` (JSONL thread events).
  * Approvals: `--approve-for-me` alone (implies workspace-write; mutually exclusive with `-s`).
- * Resume: `codex exec resume <thread_id| --last> --json …`
+ * Resume: `codex exec resume <thread_id> --json …`
+ * Continue without sessionId: fresh `codex exec` with the original task.prompt (never `--last`).
  */
 function baseExecFlags(taskModel?: string): string[] {
   const flags = [
@@ -30,26 +31,26 @@ function resumeFlags(taskModel?: string): string[] {
 
 export const codexRunner: Runner = {
   start(task, hooks, opts) {
-    const prompt = opts?.continuePrompt?.trim() || task.prompt;
     const isContinue = Boolean(opts?.continuePrompt);
     let args: string[];
+    let prompt: string;
 
-    if (isContinue) {
-      args = ["exec", "resume"];
-      if (task.sessionId) {
-        args.push(task.sessionId);
-      } else {
-        args.push("--last");
-        hooks.onLog(
-          JSON.stringify({
-            type: "continue_fallback",
-            kind: "codex",
-            note: "no sessionId; using exec resume --last",
-          }),
-        );
-      }
-      args.push(...resumeFlags(task.model), prompt);
+    if (isContinue && task.sessionId) {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
+      args = ["exec", "resume", task.sessionId, ...resumeFlags(task.model), prompt];
+    } else if (isContinue && !task.sessionId) {
+      // First round failed before thread.started — do NOT resume --last (wrong session).
+      prompt = task.prompt;
+      args = ["exec", ...baseExecFlags(task.model), prompt];
+      hooks.onLog(
+        JSON.stringify({
+          type: "continue_new_session",
+          kind: "codex",
+          note: "no sessionId; starting fresh exec with task.prompt (not resume --last)",
+        }),
+      );
     } else {
+      prompt = opts?.continuePrompt?.trim() || task.prompt;
       args = ["exec", ...baseExecFlags(task.model), prompt];
     }
 

@@ -41,8 +41,8 @@
 
 - **pi**：`agent_start`/`tool_execution_start` → running；`ask_user_question` → blocked；`agent_settled` / 进程退出 → 终态
 - **claude / cursor**：收到 stream-json 事件 → running；进程 exit 0 → succeeded，非 0 → failed；未知事件只记日志
-- **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；session 在结束后用 `devin list --format json` / sessions.db 尽力回填，继续任务用 `-r <sid>` 或回退 `-c`
-- **codex**：`codex exec --json`（thread JSONL：`thread.started` / `turn.*` / `item.*`）→ running；exit 0 → succeeded；`thread_id` 写入 sessionId；继续任务用 `codex exec resume <id>`（无 id 时 `--last`）；非交互审批用 `-s workspace-write --approve-for-me`
+- **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；session 在结束后用 `devin list --format json` / sessions.db 尽力回填，继续任务用 `-r <sid>`（无 id 时新开跑 + 原 `task.prompt`，不用 `-c`）
+- **codex**：`codex exec --json`（thread JSONL：`thread.started` / `turn.*` / `item.*`）→ running；exit 0 → succeeded；`thread_id` 写入 sessionId；继续任务用 `codex exec resume <id>`（无 id 时新开 `codex exec` + 原 `task.prompt`，不用 `--last`）；非交互审批用 `--approve-for-me`
 
 ## 后续扩展点
 
@@ -55,9 +55,9 @@
 - `Task.iteration`：创建为 1，每次 `POST /api/tasks/:id/continue` 成功后 +1
 - `Task.sessionId`：各 runner 持久化会话 id，供续跑
 - pi：`--session-id`（不再 `--no-session`）
-- Claude：首跑 `--session-id <uuid>`，续跑 `--resume <id>`（无 id 时回退 `-c`）
-- Cursor：首跑 `agent create-chat` + `--resume` + `--trust`，续跑 `--resume`（无 id 时回退 `--continue`）
-- Codex：首跑 `codex exec --json …`，从 `thread.started.thread_id` 记 session；续跑 `codex exec resume <thread_id> --json …`（无 id 时 `--last`）
+- Claude：首跑 `--session-id <uuid>`，续跑 `--resume <id>`（无 id 时新开 `--session-id` + 原 `task.prompt`，不用 `--continue`）
+- Cursor：首跑 `agent create-chat` + `--resume` + `--trust`，续跑 `--resume`（无 id 时新开 chat + 原 `task.prompt`，不用 `--continue`）
+- Codex：首跑 `codex exec --json …`，从 `thread.started.thread_id` 记 session；续跑 `codex exec resume <thread_id> --json …`（无 id 时新开 `exec` + 原 `task.prompt`，不用 `--last`）
 
 ## 批量删除
 
