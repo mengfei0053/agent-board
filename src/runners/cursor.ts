@@ -11,7 +11,7 @@ function ensureCursorChatId(task: { sessionId?: string }, hooks: { onStatus: (p:
   try {
     const r = spawnSync(resolveCliCommand("agent"), ["create-chat"], {
       encoding: "utf8",
-      env: childProcessEnv({ NO_COLOR: "1" }),
+      env: childProcessEnv("agent", { NO_COLOR: "1" }),
       timeout: 20000,
     });
     const out = `${r.stdout || ""}\n${r.stderr || ""}`.trim();
@@ -71,6 +71,7 @@ export const cursorRunner: Runner = {
 
     let status = task.status;
     return spawnLogged(resolveCliCommand("agent"), args, task.cwd, hooks, {
+      cliKind: "agent",
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

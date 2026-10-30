@@ -1,5 +1,9 @@
-/** Process-level proxy overrides for agent child processes (meta.proxy_env). */
+/** Per-agent proxy overrides for child processes (meta.proxy_env). */
 import { getPool } from "./db.js";
+import {
+  CLI_COMMAND_KEYS,
+  type CliCommandKey,
+} from "./cliPaths.js";
 
 export const PROXY_ENV_KEYS = [
   "HTTP_PROXY",
@@ -10,13 +14,22 @@ export const PROXY_ENV_KEYS = [
 
 export type ProxyEnvKey = (typeof PROXY_ENV_KEYS)[number];
 
+/** Per-kind map of non-empty proxy overrides. */
+export type ProxyEnvByKind = Partial<
+  Record<CliCommandKey, Partial<Record<ProxyEnvKey, string>>>
+>;
+
 const META_KEY = "proxy_env";
 
-/** In-memory overrides (only non-empty values). */
-let overrides: Partial<Record<ProxyEnvKey, string>> = {};
+/** In-memory overrides (only non-empty values), keyed by agent kind. */
+let overrides: ProxyEnvByKind = {};
 
-function isKey(k: string): k is ProxyEnvKey {
+function isProxyKey(k: string): k is ProxyEnvKey {
   return (PROXY_ENV_KEYS as readonly string[]).includes(k);
+}
+
+function isKind(k: string): k is CliCommandKey {
+  return (CLI_COMMAND_KEYS as readonly string[]).includes(k);
 }
 
 function normalize(raw: unknown): string {
@@ -24,19 +37,92 @@ function normalize(raw: unknown): string {
   return raw.trim();
 }
 
-function parseStored(raw: string | null | undefined): Partial<Record<ProxyEnvKey, string>> {
-  if (!raw?.trim()) return {};
+function emptyKindMap(): Partial<Record<ProxyEnvKey, string>> {
+  return {};
+}
+
+/** Parse one kind's flat proxy object into non-empty overrides. */
+function parseKindFlat(raw: unknown): Partial<Record<ProxyEnvKey, string>> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return emptyKindMap();
+  const out: Partial<Record<ProxyEnvKey, string>> = {};
+  for (const k of PROXY_ENV_KEYS) {
+    const v = normalize((raw as Record<string, unknown>)[k]);
+    if (v) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Detect legacy global shape `{ HTTP_PROXY: "..." }` vs per-kind
+ * `{ pi: { HTTP_PROXY: "..." }, ... }`.
+ */
+function isLegacyFlat(obj: Record<string, unknown>): boolean {
+  for (const k of CLI_COMMAND_KEYS) {
+    if (
+      k in obj &&
+      obj[k] != null &&
+      typeof obj[k] === "object" &&
+      !Array.isArray(obj[k])
+    ) {
+      return false;
+    }
+  }
+  for (const k of PROXY_ENV_KEYS) {
+    if (k in obj && typeof obj[k] === "string") return true;
+  }
+  return false;
+}
+
+function parseStored(raw: string | null | undefined): {
+  byKind: ProxyEnvByKind;
+  migratedFromLegacy: boolean;
+} {
+  if (!raw?.trim()) return { byKind: {}, migratedFromLegacy: false };
   try {
     const obj = JSON.parse(raw) as Record<string, unknown>;
-    const out: Partial<Record<ProxyEnvKey, string>> = {};
-    for (const k of PROXY_ENV_KEYS) {
-      const v = normalize(obj[k]);
-      if (v) out[k] = v;
+    if (isLegacyFlat(obj)) {
+      const flat = parseKindFlat(obj);
+      const byKind: ProxyEnvByKind = {};
+      if (Object.keys(flat).length) {
+        for (const kind of CLI_COMMAND_KEYS) {
+          byKind[kind] = { ...flat };
+        }
+      }
+      return { byKind, migratedFromLegacy: true };
     }
-    return out;
+    const byKind: ProxyEnvByKind = {};
+    for (const kind of CLI_COMMAND_KEYS) {
+      if (!(kind in obj)) continue;
+      const parsed = parseKindFlat(obj[kind]);
+      if (Object.keys(parsed).length) byKind[kind] = parsed;
+    }
+    return { byKind, migratedFromLegacy: false };
   } catch {
-    return {};
+    return { byKind: {}, migratedFromLegacy: false };
   }
+}
+
+function serialize(byKind: ProxyEnvByKind): string {
+  const out: Record<string, Record<string, string>> = {};
+  for (const kind of CLI_COMMAND_KEYS) {
+    const m = byKind[kind];
+    if (!m) continue;
+    const flat: Record<string, string> = {};
+    for (const k of PROXY_ENV_KEYS) {
+      if (m[k]) flat[k] = m[k]!;
+    }
+    if (Object.keys(flat).length) out[kind] = flat;
+  }
+  return JSON.stringify(out);
+}
+
+async function persist(byKind: ProxyEnvByKind): Promise<void> {
+  const p = getPool();
+  await p.query(
+    `INSERT INTO meta (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [META_KEY, serialize(byKind)],
+  );
 }
 
 export async function loadProxyEnvOverrides(): Promise<void> {
@@ -45,16 +131,21 @@ export async function loadProxyEnvOverrides(): Promise<void> {
     `SELECT value FROM meta WHERE key = $1`,
     [META_KEY],
   );
-  overrides = parseStored(res.rows[0]?.value);
+  const { byKind, migratedFromLegacy } = parseStored(res.rows[0]?.value);
+  overrides = byKind;
+  // One-shot rewrite so meta.proxy_env is always per-kind going forward.
+  if (migratedFromLegacy) {
+    await persist(overrides);
+  }
 }
 
 /**
  * Env for agent child processes: board `process.env` + optional extras,
- * then non-empty proxy overrides. Empty override → leave process.env as-is
- * (do not strip parent proxies). Also mirrors lowercase keys when injecting
- * (http_proxy / https_proxy / no_proxy / all_proxy) for CLI compatibility.
+ * then non-empty proxy overrides **for that kind**. Empty override → leave
+ * process.env as-is. Also mirrors lowercase keys when injecting.
  */
 export function childProcessEnv(
+  kind: CliCommandKey,
   extra: Record<string, string | undefined> = {},
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -62,20 +153,23 @@ export function childProcessEnv(
     if (v !== undefined) env[k] = v;
   }
   const injected: string[] = [];
+  const kindMap = overrides[kind] || {};
   for (const key of PROXY_ENV_KEYS) {
-    const v = overrides[key]?.trim();
+    const v = kindMap[key]?.trim();
     if (!v) continue;
     env[key] = v;
     env[key.toLowerCase()] = v;
     injected.push(key);
   }
-  // Stash for spawn log (keys only) — callers may read via lastInjectedProxyKeys
   lastInjectedProxyKeys = injected;
+  lastInjectedProxyKind = kind;
   return env;
 }
 
 /** Keys injected on the most recent childProcessEnv() call (no values). */
 export let lastInjectedProxyKeys: string[] = [];
+/** Kind used on the most recent childProcessEnv() call. */
+export let lastInjectedProxyKind: CliCommandKey | null = null;
 
 export type ProxyEnvSetting = {
   override: string;
@@ -86,57 +180,71 @@ export type ProxyEnvSetting = {
 };
 
 export function getProxyEnvSettings(): {
-  proxyEnv: Record<ProxyEnvKey, ProxyEnvSetting>;
+  proxyEnv: Record<CliCommandKey, Record<ProxyEnvKey, ProxyEnvSetting>>;
 } {
-  const proxyEnv = {} as Record<ProxyEnvKey, ProxyEnvSetting>;
-  for (const k of PROXY_ENV_KEYS) {
-    const override = overrides[k] || "";
-    const inheritedVal = (process.env[k] || process.env[k.toLowerCase()] || "").trim();
-    if (override) {
-      proxyEnv[k] = { override, effective: override, inherited: false };
-    } else {
-      proxyEnv[k] = {
-        override: "",
-        effective: inheritedVal,
-        inherited: Boolean(inheritedVal),
-      };
+  const proxyEnv = {} as Record<
+    CliCommandKey,
+    Record<ProxyEnvKey, ProxyEnvSetting>
+  >;
+  for (const kind of CLI_COMMAND_KEYS) {
+    const kindMap = overrides[kind] || {};
+    const row = {} as Record<ProxyEnvKey, ProxyEnvSetting>;
+    for (const k of PROXY_ENV_KEYS) {
+      const override = kindMap[k] || "";
+      const inheritedVal = (
+        process.env[k] ||
+        process.env[k.toLowerCase()] ||
+        ""
+      ).trim();
+      if (override) {
+        row[k] = { override, effective: override, inherited: false };
+      } else {
+        row[k] = {
+          override: "",
+          effective: inheritedVal,
+          inherited: Boolean(inheritedVal),
+        };
+      }
     }
+    proxyEnv[kind] = row;
   }
   return { proxyEnv };
 }
 
+/**
+ * Patch per-kind proxy overrides. `input[kind][KEY]=""` clears that key for
+ * the kind; omitting a kind leaves it unchanged.
+ */
 export async function setProxyEnvOverrides(
-  input: Partial<Record<ProxyEnvKey, string>>,
+  input: Partial<Record<CliCommandKey, Partial<Record<ProxyEnvKey, string>>>>,
 ): Promise<ReturnType<typeof getProxyEnvSettings>> {
-  const next: Partial<Record<ProxyEnvKey, string>> = { ...overrides };
-  for (const [rawKey, rawVal] of Object.entries(input)) {
-    if (!isKey(rawKey)) continue;
-    const v = normalize(rawVal);
-    if (v) next[rawKey] = v;
-    else delete next[rawKey];
+  const next: ProxyEnvByKind = { ...overrides };
+  for (const [rawKind, rawMap] of Object.entries(input)) {
+    if (!isKind(rawKind)) continue;
+    if (rawMap == null || typeof rawMap !== "object" || Array.isArray(rawMap)) {
+      continue;
+    }
+    const kindNext: Partial<Record<ProxyEnvKey, string>> = {
+      ...(next[rawKind] || {}),
+    };
+    for (const [rawKey, rawVal] of Object.entries(rawMap)) {
+      if (!isProxyKey(rawKey)) continue;
+      const v = normalize(rawVal);
+      if (v) kindNext[rawKey] = v;
+      else delete kindNext[rawKey];
+    }
+    if (Object.keys(kindNext).length) next[rawKind] = kindNext;
+    else delete next[rawKind];
   }
   overrides = next;
-  const p = getPool();
-  const payload = JSON.stringify(
-    Object.fromEntries(
-      PROXY_ENV_KEYS.filter((k) => next[k]).map((k) => [k, next[k]!]),
-    ),
-  );
-  await p.query(
-    `INSERT INTO meta (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [META_KEY, payload],
-  );
+  await persist(overrides);
   return getProxyEnvSettings();
 }
 
-export async function clearProxyEnvOverrides(): Promise<ReturnType<typeof getProxyEnvSettings>> {
+export async function clearProxyEnvOverrides(): Promise<
+  ReturnType<typeof getProxyEnvSettings>
+> {
   overrides = {};
-  const p = getPool();
-  await p.query(
-    `INSERT INTO meta (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [META_KEY, "{}"],
-  );
+  await persist(overrides);
   return getProxyEnvSettings();
 }

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { childProcessEnv, lastInjectedProxyKeys } from "../proxyEnv.js";
+import type { CliCommandKey } from "../cliPaths.js";
 import type { RunnerHandle, RunnerHooks } from "./types.js";
 import type { TaskStatus } from "../types.js";
 
@@ -99,6 +100,8 @@ export function spawnLogged(
   cwd: string,
   hooks: RunnerHooks,
   opts: {
+    /** Agent kind — selects per-kind proxy overrides. */
+    cliKind: CliCommandKey;
     classifyLine?: (line: string, hooks: RunnerHooks) => void;
     getStatus: () => TaskStatus;
   },
@@ -106,7 +109,7 @@ export function spawnLogged(
   let stoppedByUser = false;
   let endedByWatchdog = false;
   let consecutive429 = 0;
-  const env = childProcessEnv({ NO_COLOR: "1", FORCE_COLOR: "0" });
+  const env = childProcessEnv(opts.cliKind, { NO_COLOR: "1", FORCE_COLOR: "0" });
   const child = spawn(cmd, args, {
     cwd,
     env,

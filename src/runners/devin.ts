@@ -13,7 +13,7 @@ function latestDevinSession(cwd: string, hooks: RunnerHooks): string | undefined
     const r = spawnSync(resolveCliCommand("devin"), ["list", "--format", "json"], {
       cwd,
       encoding: "utf8",
-      env: childProcessEnv({ NO_COLOR: "1", FORCE_COLOR: "0" }),
+      env: childProcessEnv("devin", { NO_COLOR: "1", FORCE_COLOR: "0" }),
       timeout: 15000,
     });
     const raw = `${r.stdout || ""}\n${r.stderr || ""}`;
@@ -52,7 +52,7 @@ function latestSessionFromDb(cwd: string): string | undefined {
         dbPath,
         cwd,
       ],
-      { encoding: "utf8", timeout: 5000, env: childProcessEnv() },
+      { encoding: "utf8", timeout: 5000, env: childProcessEnv("devin") },
     );
     const id = (r.stdout || "").trim();
     return id || undefined;
@@ -142,6 +142,7 @@ export const devinRunner: Runner = {
         onLog: hooks.onLog,
       },
       {
+        cliKind: "devin",
         getStatus: () => status,
         classifyLine: (line, h) => {
           const trimmed = line.trim();

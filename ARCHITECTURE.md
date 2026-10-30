@@ -140,10 +140,13 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - UI：左上角 **agent-board** 菜单 → **设置**（`/settings`）
 - API：`GET /api/settings` · `PUT /api/settings`
   - `cliPaths`: `{ "pi"|"claude"|"agent"|"devin"|"codex": "<path或空>" }`
-  - `proxyEnv`: `{ "HTTP_PROXY"|"HTTPS_PROXY"|"NO_PROXY"|"ALL_PROXY": "<值或空>" }`（可只传其一）
+  - `proxyEnv`: **按 Agent kind 分桶**  
+    `{ "pi"|"claude"|"agent"|"devin"|"codex": { "HTTP_PROXY"|"HTTPS_PROXY"|"NO_PROXY"|"ALL_PROXY": "<值或空>" } }`  
+    （可只传部分 kind / 键；空字符串清除该项）
   - `{ "clear": true }` 清除路径与代理全部覆盖
-- 持久化：`meta.cli_paths` · `meta.proxy_env`（JSON）；空字符串清除该项
-- Runner：`resolveCliCommand(...)` 取命令；`childProcessEnv(...)` 合并代理到 `spawn` / `spawnSync`（日志只记注入的键名，不记值）
+- 持久化：`meta.cli_paths` · `meta.proxy_env`（JSON，代理为 per-kind）
+  - 兼容：若读到旧版全局扁平 `{ HTTP_PROXY: "..." }`，启动时复制到全部 kind 并写回新结构
+- Runner：`resolveCliCommand(kind)` 取命令；`childProcessEnv(kind, extras)` 只注入**该 kind** 的代理覆盖到 `spawn` / `spawnSync`（日志只记键名，不记值）
 
 ## 存储（Postgres）
 

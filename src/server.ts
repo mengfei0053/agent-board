@@ -457,15 +457,29 @@ app.put("/api/settings", async (c) => {
     if (typeof raw.proxyEnv !== "object" || Array.isArray(raw.proxyEnv)) {
       return c.json({ error: "proxyEnv must be an object" }, 400);
     }
-    const patch: Partial<Record<ProxyEnvKey, string>> = {};
-    for (const [k, v] of Object.entries(raw.proxyEnv as Record<string, unknown>)) {
-      if (!(PROXY_ENV_KEYS as readonly string[]).includes(k)) {
-        return c.json({ error: `unknown proxyEnv key: ${k}` }, 400);
+    const patch: Partial<
+      Record<CliCommandKey, Partial<Record<ProxyEnvKey, string>>>
+    > = {};
+    for (const [kind, kindVal] of Object.entries(
+      raw.proxyEnv as Record<string, unknown>,
+    )) {
+      if (!(CLI_COMMAND_KEYS as readonly string[]).includes(kind)) {
+        return c.json({ error: `unknown proxyEnv kind: ${kind}` }, 400);
       }
-      if (v != null && typeof v !== "string") {
-        return c.json({ error: `proxyEnv.${k} must be a string` }, 400);
+      if (kindVal == null || typeof kindVal !== "object" || Array.isArray(kindVal)) {
+        return c.json({ error: `proxyEnv.${kind} must be an object` }, 400);
       }
-      patch[k as ProxyEnvKey] = typeof v === "string" ? v : "";
+      const kindPatch: Partial<Record<ProxyEnvKey, string>> = {};
+      for (const [k, v] of Object.entries(kindVal as Record<string, unknown>)) {
+        if (!(PROXY_ENV_KEYS as readonly string[]).includes(k)) {
+          return c.json({ error: `unknown proxyEnv.${kind} key: ${k}` }, 400);
+        }
+        if (v != null && typeof v !== "string") {
+          return c.json({ error: `proxyEnv.${kind}.${k} must be a string` }, 400);
+        }
+        kindPatch[k as ProxyEnvKey] = typeof v === "string" ? v : "";
+      }
+      patch[kind as CliCommandKey] = kindPatch;
     }
     await setProxyEnvOverrides(patch);
   }

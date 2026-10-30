@@ -42,6 +42,7 @@ export const claudeRunner: Runner = {
 
     let status = task.status;
     return spawnLogged(resolveCliCommand("claude"), args, task.cwd, hooks, {
+      cliKind: "claude",
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

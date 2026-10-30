@@ -17,6 +17,7 @@ export const piRunner: Runner = {
 
     let status = task.status;
     return spawnLogged(resolveCliCommand("pi"), args, task.cwd, hooks, {
+      cliKind: "pi",
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);
