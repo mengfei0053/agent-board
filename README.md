@@ -1,6 +1,6 @@
 # agent-board
 
-本机 Agent 看板：左侧**工作区** CRUD，右侧四列泳道（草稿 / Todo / 进行中 / 已完成）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
+本机 Agent 看板：左侧**工作区** CRUD，右侧四列泳道（草稿 / Todo / 进行中 / 已完成）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
 ## 界面预览
 
@@ -34,7 +34,7 @@
 ## 要求
 
 - Node 20+（本机开发）或 Docker / Docker Compose（一键启动）
-- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
+- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`、`codex`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
 - Postgres（本机或 Compose 内置）
 
 ## 一键启动（Docker Compose）
@@ -87,7 +87,7 @@ pnpm install && pnpm dev
 
 ### Docker 与 CLI（重要）
 
-看板通过 **Node `spawn` 调用本机 CLI**（`pi` / `claude` / `agent` / `devin`）。`app` 镜像**不包含**这些二进制，也不带你的登录态（API key / OAuth cookie）。
+看板通过 **Node `spawn` 调用本机 CLI**（`pi` / `claude` / `agent` / `devin` / `codex`）。`app` 镜像**不包含**这些二进制，也不带你的登录态（API key / OAuth cookie）。
 
 因此：
 

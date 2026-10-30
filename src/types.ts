@@ -1,4 +1,4 @@
-export type AgentKind = "pi" | "claude" | "cursor" | "devin";
+export type AgentKind = "pi" | "claude" | "cursor" | "devin" | "codex";
 
 export type TaskStatus =
   | "draft"

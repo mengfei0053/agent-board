@@ -45,6 +45,37 @@ export function extractTextFromEventLine(line: string): string | undefined {
     if (text) return text;
   }
 
+
+  // Codex exec --json: item.completed with agent_message / assistant_message
+  if (t === "item.completed" || t === "item.updated") {
+    const item = ev.item;
+    if (item && typeof item === "object") {
+      const it = item as Record<string, unknown>;
+      const ity = it.type || it.item_type;
+      if (
+        (ity === "agent_message" || ity === "assistant_message") &&
+        typeof it.text === "string" &&
+        it.text.trim()
+      ) {
+        return it.text.trim();
+      }
+      if (typeof it.message === "string" && it.message.trim()) {
+        return it.message.trim();
+      }
+    }
+  }
+
+  // Codex event_msg / task_complete style (rollouts)
+  if (t === "event_msg" && ev.payload) {
+    const p = ev.payload as Record<string, unknown>;
+    if (p.type === "agent_message" && typeof p.message === "string" && p.message.trim()) {
+      return p.message.trim();
+    }
+    if (p.type === "task_complete" && typeof p.last_agent_message === "string" && p.last_agent_message.trim()) {
+      return p.last_agent_message.trim();
+    }
+  }
+
   // Cursor / Claude result event
   if (t === "result") {
     if (typeof ev.result === "string" && ev.result.trim()) return ev.result.trim();
