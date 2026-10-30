@@ -1,6 +1,6 @@
 /** Extract human-readable assistant output from agent CLI JSONL event lines. */
 
-import type { OutputTurn } from "./types.js";
+import type { OutputTurn, PromptTurn } from "./types.js";
 
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content.trim();
@@ -247,3 +247,77 @@ export function formatErrorMessage(task: {
   if (!bits.length && task.status === "stopped") bits.push("已由用户停止");
   return bits.join(" · ");
 }
+
+function upsertPrompt(list: PromptTurn[], turn: PromptTurn): PromptTurn[] {
+  const next = [...list];
+  const idx = next.findIndex((x) => x.iteration === turn.iteration);
+  if (idx >= 0) next[idx] = { ...next[idx], ...turn, prompt: turn.prompt };
+  else next.push(turn);
+  return next.sort((a, b) => a.iteration - b.iteration);
+}
+
+export function upsertPromptTurn(
+  existing: PromptTurn[] | undefined,
+  turn: PromptTurn,
+): PromptTurn[] {
+  return upsertPrompt(existing ?? [], turn);
+}
+
+/**
+ * Collect per-iteration user prompts from board meta log lines.
+ * Iteration 1 comes from `initialPrompt` (task.prompt); continue events carry later prompts.
+ */
+export function extractPromptsByIteration(
+  lines: string[],
+  initialPrompt?: string,
+): PromptTurn[] {
+  let turns: PromptTurn[] = [];
+  const seed = initialPrompt?.trim();
+  if (seed) {
+    turns = upsertPrompt(turns, { iteration: 1, prompt: seed });
+  }
+
+  let currentIter = 1;
+  for (const raw of lines) {
+    const line = raw?.trim();
+    if (!line?.startsWith("{")) continue;
+    try {
+      const ev = JSON.parse(line) as {
+        type?: string;
+        iteration?: number;
+        prompt?: string;
+      };
+      if (ev.type === "start") {
+        currentIter = 1;
+      } else if (ev.type === "continue") {
+        currentIter =
+          typeof ev.iteration === "number" && ev.iteration >= 1
+            ? ev.iteration
+            : currentIter + 1;
+        const prompt = typeof ev.prompt === "string" ? ev.prompt.trim() : "";
+        if (prompt) {
+          turns = upsertPrompt(turns, { iteration: currentIter, prompt });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return turns;
+}
+
+export function mergePromptTurns(
+  stored: PromptTurn[] | undefined,
+  extracted: PromptTurn[],
+): PromptTurn[] {
+  const map = new Map<number, PromptTurn>();
+  for (const p of extracted) {
+    if (p?.prompt?.trim()) map.set(p.iteration, p);
+  }
+  // Stored / explicit turns win over log extraction.
+  for (const p of stored || []) {
+    if (p?.prompt?.trim()) map.set(p.iteration, p);
+  }
+  return [...map.values()].sort((a, b) => a.iteration - b.iteration);
+}
+

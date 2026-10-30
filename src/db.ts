@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS task_outputs (
   PRIMARY KEY (task_id, iteration)
 );
 
+CREATE TABLE IF NOT EXISTS task_prompts (
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  iteration INT NOT NULL,
+  prompt TEXT NOT NULL,
+  at TIMESTAMPTZ,
+  PRIMARY KEY (task_id, iteration)
+);
+
 CREATE TABLE IF NOT EXISTS task_side_jobs (
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   job_id TEXT NOT NULL,

@@ -36,6 +36,14 @@ export type OutputTurn = {
   at?: string;
 };
 
+/** User prompt for a single start/continue iteration (1 = initial, 2+ = continue) */
+export type PromptTurn = {
+  iteration: number;
+  prompt: string;
+  /** ISO time when this prompt was submitted */
+  at?: string;
+};
+
 /** Board swimlane keys */
 export type BoardLane = "draft" | "todo" | "running" | "done" | "archived";
 
@@ -72,6 +80,8 @@ export type Task = {
   output?: string;
   /** Per-iteration assistant outputs (start = 1, each continue +1) */
   outputs?: OutputTurn[];
+  /** Per-iteration user prompts (1 = create prompt, each continue +1) */
+  prompts?: PromptTurn[];
   lastEvent?: string;
   error?: string;
   exitCode?: number | null;

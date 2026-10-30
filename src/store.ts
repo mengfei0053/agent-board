@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { nanoid } from "nanoid";
-import type { OutputTurn, SideJob, Task, Workspace } from "./types.js";
+import type { OutputTurn, PromptTurn, SideJob, Task, Workspace } from "./types.js";
 import {
   archiveJsonDb,
   dataDir,
@@ -114,6 +114,7 @@ function rowToTask(
   row: TaskRow,
   outputs: OutputTurn[] | undefined,
   sideJobs: SideJob[] | undefined,
+  prompts: PromptTurn[] | undefined,
 ): Task {
   return normalizeTask({
     id: row.id,
@@ -137,6 +138,7 @@ function rowToTask(
     error: row.error ?? undefined,
     exitCode: row.exit_code,
     outputs: outputs?.length ? outputs : undefined,
+    prompts: prompts?.length ? prompts : undefined,
     sideJobs: sideJobs?.length ? sideJobs : undefined,
   });
 }
@@ -228,6 +230,15 @@ async function persistTask(task: Task): Promise<void> {
       );
     }
 
+    await client.query(`DELETE FROM task_prompts WHERE task_id = $1`, [task.id]);
+    for (const pr of task.prompts || []) {
+      await client.query(
+        `INSERT INTO task_prompts (task_id, iteration, prompt, at)
+         VALUES ($1, $2, $3, $4::timestamptz)`,
+        [task.id, pr.iteration, pr.prompt, pr.at ?? null],
+      );
+    }
+
     await client.query(`DELETE FROM task_side_jobs WHERE task_id = $1`, [task.id]);
     for (const j of task.sideJobs || []) {
       await client.query(
@@ -290,6 +301,12 @@ async function loadAllFromPg(): Promise<void> {
     text: string;
     at: Date | string | null;
   }>(`SELECT task_id, iteration, text, at FROM task_outputs ORDER BY iteration ASC`);
+  const promptRes = await p.query<{
+    task_id: string;
+    iteration: number;
+    prompt: string;
+    at: Date | string | null;
+  }>(`SELECT task_id, iteration, prompt, at FROM task_prompts ORDER BY iteration ASC`);
   const sideRes = await p.query<{
     task_id: string;
     job_id: string;
@@ -313,6 +330,17 @@ async function loadAllFromPg(): Promise<void> {
     outputsBy.set(r.task_id, list);
   }
 
+  const promptsBy = new Map<string, PromptTurn[]>();
+  for (const r of promptRes.rows) {
+    const list = promptsBy.get(r.task_id) || [];
+    list.push({
+      iteration: r.iteration,
+      prompt: r.prompt,
+      at: iso(r.at),
+    });
+    promptsBy.set(r.task_id, list);
+  }
+
   const sidesBy = new Map<string, SideJob[]>();
   for (const r of sideRes.rows) {
     const list = sidesBy.get(r.task_id) || [];
@@ -331,7 +359,7 @@ async function loadAllFromPg(): Promise<void> {
 
   tasks = new Map();
   for (const row of taskRes.rows) {
-    const t = rowToTask(row, outputsBy.get(row.id), sidesBy.get(row.id));
+    const t = rowToTask(row, outputsBy.get(row.id), sidesBy.get(row.id), promptsBy.get(row.id));
     tasks.set(t.id, t);
   }
 

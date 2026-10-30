@@ -1376,7 +1376,7 @@ textarea { resize: vertical; min-height: 96px; }
   background: var(--panel-2);
   overflow: hidden;
   /* Keep natural height inside the flex column; otherwise shrink + clip
-     hides all but the first line of 模型输出. */
+     hides all but the first line of 任务进度. */
   flex: 0 0 auto;
   min-height: auto;
 }
@@ -1404,6 +1404,37 @@ textarea { resize: vertical; min-height: 96px; }
 }
 .output-turn-body.md-body > :first-child { margin-top: 0; }
 .output-turn-body.md-body > :last-child { margin-bottom: 0; }
+
+.output-turn-prompt {
+  margin: 0;
+  padding: 10px 14px 12px;
+  border-bottom: 1px dashed var(--border-soft);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-2));
+}
+.output-turn-prompt-empty {
+  background: var(--panel-2);
+}
+.output-turn-prompt-label,
+.output-turn-reply-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.output-turn-reply-label {
+  padding: 8px 14px 0;
+}
+.output-turn-prompt-body {
+  font-size: 13px;
+  line-height: 1.55;
+}
+.output-turn-prompt-body.md-body > :first-child { margin-top: 0; }
+.output-turn-prompt-body.md-body > :last-child { margin-bottom: 0; }
+.output-turn-pending {
+  padding: 12px 14px 16px;
+  font-size: 13px;
+}
 
 .md-body h1, .md-body h2, .md-body h3 { margin: 0.6em 0 0.35em; line-height: 1.3; color: var(--text); }
 .md-body h1 { font-size: 1.2em; }

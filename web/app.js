@@ -686,7 +686,19 @@ function metaItem(k, v, wide = false, opts = {}) {
 function outputSignature(task) {
   const turns = Array.isArray(task.outputs) ? task.outputs : [];
   const parts = turns.map((o) => `${o.iteration}:${(o.text || "").length}:${o.at || ""}`);
-  return `${task.id}|${task.status}|${task.output?.length || 0}|${parts.join(";")}|${task.error || ""}|${task.exitCode ?? ""}`;
+  const prompts = Array.isArray(task.prompts) ? task.prompts : [];
+  const promptParts = prompts.map((p) => `${p.iteration}:${(p.prompt || "").length}:${p.at || ""}`);
+  return `${task.id}|${task.status}|${task.output?.length || 0}|${parts.join(";")}|${promptParts.join(";")}|${task.error || ""}|${task.exitCode ?? ""}`;
+}
+
+function promptsOf(task) {
+  const list = Array.isArray(task.prompts) ? task.prompts.filter((p) => p && String(p.prompt || "").trim()) : [];
+  if (list.length) return list.slice().sort((a, b) => a.iteration - b.iteration);
+  // Fallback: at least show the initial task.prompt as round 1.
+  if (task.prompt && String(task.prompt).trim()) {
+    return [{ iteration: 1, prompt: task.prompt, at: task.createdAt }];
+  }
+  return [];
 }
 
 function paintOutput(task) {
@@ -716,24 +728,66 @@ function paintOutput(task) {
   if (!turns.length && task.output && task.output.trim()) {
     turns = [{ iteration: iterationOf(task), text: task.output, at: task.endedAt || task.updatedAt }];
   }
+  const promptTurns = promptsOf(task);
+  const byIter = new Map();
+  for (const p of promptTurns) {
+    const cur = byIter.get(p.iteration) || { iteration: p.iteration };
+    cur.prompt = p.prompt;
+    cur.promptAt = p.at;
+    byIter.set(p.iteration, cur);
+  }
+  for (const o of turns) {
+    const cur = byIter.get(o.iteration) || { iteration: o.iteration };
+    cur.text = o.text;
+    cur.at = o.at;
+    byIter.set(o.iteration, cur);
+  }
+  // Ensure the live iteration appears even before first token / if prompt missing in array.
+  const curIter = iterationOf(task);
+  if (running && !byIter.has(curIter)) {
+    byIter.set(curIter, { iteration: curIter });
+  }
+  const rounds = [...byIter.values()].sort((a, b) => a.iteration - b.iteration);
 
-  if (turns.length) {
+  if (rounds.length) {
     detailOutput.classList.remove("empty-output");
-    detailOutput.innerHTML = turns.map((o) => {
-      const when = formatLocal(o.at) || "";
-      const head = `迭代 ${o.iteration}${when ? " · " + when : ""}`;
-      const live = running && o.iteration === iterationOf(task) ? ' <span class="turn-live">实时</span>' : "";
+    detailOutput.innerHTML = rounds.map((r) => {
+      const when = formatLocal(r.at || r.promptAt) || "";
+      const kind = r.iteration <= 1 ? "初始" : "继续";
+      const head = `第 ${r.iteration} 轮 · ${kind}${when ? " · " + when : ""}`;
+      const live = running && r.iteration === curIter ? ' <span class="turn-live">实时</span>' : "";
+      const promptBlock = r.prompt
+        ? `<div class="output-turn-prompt">
+            <div class="output-turn-prompt-label">提示词</div>
+            <div class="output-turn-prompt-body md-body prompt-md">${renderMarkdown(r.prompt)}</div>
+          </div>`
+        : (r.iteration <= 1 && task.prompt
+          ? `<div class="output-turn-prompt">
+            <div class="output-turn-prompt-label">提示词</div>
+            <div class="output-turn-prompt-body md-body prompt-md">${renderMarkdown(task.prompt)}</div>
+          </div>`
+          : `<div class="output-turn-prompt output-turn-prompt-empty"><div class="output-turn-prompt-label">提示词</div><div class="muted">（无记录）</div></div>`);
+      let body;
+      if (r.text && String(r.text).trim()) {
+        body = `<div class="output-turn-body md-body">${renderMarkdown(r.text)}</div>`;
+      } else if (running && r.iteration === curIter) {
+        body = `<div class="output-turn-body output-turn-pending muted">回复生成中…</div>`;
+      } else {
+        body = `<div class="output-turn-body output-turn-pending muted">本轮暂无回复</div>`;
+      }
       return `<article class="output-turn">
         <header class="output-turn-head"><span>${escapeHtml(head)}</span>${live}</header>
-        <div class="output-turn-body md-body">${renderMarkdown(o.text)}</div>
+        ${promptBlock}
+        <div class="output-turn-reply-label">回复</div>
+        ${body}
       </article>`;
     }).join("");
     outputHint.textContent = running
-      ? `共 ${turns.length} 轮 · 当前迭代 ${iterationOf(task)} 更新中`
-      : `共 ${turns.length} 轮`;
+      ? `共 ${rounds.length} 轮 · 当前第 ${curIter} 轮更新中`
+      : `共 ${rounds.length} 轮`;
   } else if (running) {
     detailOutput.classList.add("empty-output");
-    detailOutput.textContent = "模型输出生成中…";
+    detailOutput.textContent = "任务进行中，等待本轮回复…";
     outputHint.textContent = "等待助手回复";
   } else if (task.status === "draft") {
     detailOutput.classList.add("empty-output");
@@ -741,15 +795,14 @@ function paintOutput(task) {
     outputHint.textContent = "";
   } else if (task.status === "failed") {
     detailOutput.classList.add("empty-output");
-    detailOutput.textContent = "没有可用的助手输出，请查看上方错误与原始日志。";
+    detailOutput.textContent = "没有可用的回复，请查看上方错误与原始日志。";
     outputHint.textContent = "";
   } else {
     detailOutput.classList.add("empty-output");
-    detailOutput.textContent = "暂无抽取到的模型输出。";
+    detailOutput.textContent = "暂无本轮回复。";
     outputHint.textContent = "";
   }
 }
-
 
 const SIDE_KIND_LABEL = {
   agent: "子代理",
@@ -835,6 +888,14 @@ function buildMetaJson(task) {
           textPreview: String(o.text || "").slice(0, 500),
         }))
       : undefined,
+    prompts: Array.isArray(task.prompts)
+      ? task.prompts.map((pr) => ({
+          iteration: pr.iteration,
+          at: pr.at,
+          promptLength: (pr.prompt || "").length,
+          promptPreview: String(pr.prompt || "").slice(0, 300),
+        }))
+      : undefined,
     outputLength: task.output ? task.output.length : 0,
   };
 }
@@ -863,7 +924,7 @@ function paintDetail(task) {
     metaItem("会话", task.sessionId || "—", true),
     metaItem("工作区", (task.workspaceId && workspaces.get(task.workspaceId)?.name) || task.workspaceId || "—"),
     metaItem("工作目录", task.cwd, true),
-    metaItem("任务内容", task.prompt, true, { markdown: true }),
+    metaItem("初始提示词", task.prompt, true, { markdown: true }),
   ].join("");
 
   paintOutput(task);

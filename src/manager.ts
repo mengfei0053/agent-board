@@ -21,10 +21,13 @@ import type { RunnerHandle } from "./runners/types.js";
 import {
   extractFinalOutput,
   extractOutputsByIteration,
+  extractPromptsByIteration,
   extractTextFromEventLine,
   latestOutputText,
+  mergePromptTurns,
   summarizeOutput,
   upsertOutputTurn,
+  upsertPromptTurn,
 } from "./extractOutput.js";
 import {
   finalizeRunningSideJobs,
@@ -221,6 +224,7 @@ export function createDraft(input: CreateTaskInput): Task {
   const { workspaceId, cwd } = resolveCreateCwd(input);
   const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
   const title = input.title?.trim() || plainPrompt.slice(0, 48) || `${input.kind} task`;
+  const createdAt = now();
   const task: Task = {
     id,
     title,
@@ -231,8 +235,9 @@ export function createDraft(input: CreateTaskInput): Task {
     model: input.model?.trim() || resolveDefaultModel(input.kind),
     iteration: 1,
     status: "draft",
-    createdAt: now(),
-    updatedAt: now(),
+    createdAt,
+    updatedAt: createdAt,
+    prompts: [{ iteration: 1, prompt: input.prompt, at: createdAt }],
   };
   upsertTask(task);
   publish({ type: "task_upsert", task });
@@ -291,6 +296,12 @@ export function continueTask(id: string, prompt?: string): Task {
 
   const continuePrompt = prompt?.trim() || "请基于当前上下文继续完成任务";
   const nextIter = (t.iteration ?? 1) + 1;
+  const continuedAt = now();
+  const prompts = upsertPromptTurn(t.prompts, {
+    iteration: nextIter,
+    prompt: continuePrompt,
+    at: continuedAt,
+  });
 
   patch(id, {
     status: "queued",
@@ -300,6 +311,7 @@ export function continueTask(id: string, prompt?: string): Task {
     endedAt: undefined,
     output: undefined,
     // keep outputs history; new iteration fills in as events arrive
+    prompts,
     summary: `continuing (iteration ${nextIter})`,
     lastEvent: "continue",
     pid: undefined,
@@ -487,6 +499,19 @@ export function readLogTail(id: string, maxLines = 400, maxTotalChars?: number):
   return storeReadLogTail(id, maxLines, maxTotalChars);
 }
 
+function ensureTaskPrompts(t: Task, extractSource: string[]): PromptTurnPatch | undefined {
+  const extracted = extractPromptsByIteration(extractSource, t.prompt);
+  const merged = mergePromptTurns(t.prompts, extracted);
+  if (!merged.length) return undefined;
+  const prev = t.prompts || [];
+  const changed =
+    prev.length !== merged.length ||
+    merged.some((p, i) => prev[i]?.iteration !== p.iteration || prev[i]?.prompt !== p.prompt);
+  return changed ? { prompts: merged } : undefined;
+}
+
+type PromptTurnPatch = { prompts: NonNullable<Task["prompts"]> };
+
 export function taskWithOutput(id: string): {
   task: Task;
   log: string[];
@@ -498,6 +523,8 @@ export function taskWithOutput(id: string): {
   // Keep open-detail payload small: do not embed multi-MB raw logs here.
   // Callers that need logs use taskLogTail() / GET /api/tasks/:id/log.
   const extractSource = readLogTail(t.id, 800, 1_000_000);
+  const promptPatch = ensureTaskPrompts(t, extractSource);
+
   if (t.outputs?.length || t.output) {
     if (!t.outputs?.length && t.output) {
       const outputs = extractOutputsByIteration(extractSource);
@@ -505,19 +532,30 @@ export function taskWithOutput(id: string): {
         const task = patch(id, {
           outputs,
           output: latestOutputText(outputs) || t.output,
+          ...(promptPatch || {}),
         });
         return { task, log: [], logLineCount: count };
       }
+    }
+    if (promptPatch) {
+      const task = patch(id, promptPatch);
+      return { task, log: [], logLineCount: count };
     }
     return { task: t, log: [], logLineCount: count };
   }
   const outputs = extractOutputsByIteration(extractSource);
   const out = latestOutputText(outputs);
-  if (!out) return { task: t, log: [], logLineCount: count };
+  if (!out) {
+    if (promptPatch) {
+      const task = patch(id, promptPatch);
+      return { task, log: [], logLineCount: count };
+    }
+    return { task: t, log: [], logLineCount: count };
+  }
   const summary = t.summary && t.summary !== "agent settled" && t.summary !== "starting"
     ? t.summary
     : summarizeOutput(out);
-  const task = patch(id, { output: out, outputs, summary });
+  const task = patch(id, { output: out, outputs, summary, ...(promptPatch || {}) });
   return { task, log: [], logLineCount: count };
 }
 
