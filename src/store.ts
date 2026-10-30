@@ -64,6 +64,17 @@ export function trimLogsKeepingMeta(arr: string[], maxLines = MAX_LOG_LINES_KEPT
 let ready = false;
 let persistChain: Promise<void> = Promise.resolve();
 let defaultWorkspaceId: string | null = null;
+/** Unit tests flip this off so task mutations stay in memory. */
+let persistWrites = true;
+
+type TasksDeletedListener = (ids: string[]) => void;
+/** Fired with ids just removed from the in-memory map (before async persist). */
+let tasksDeletedListener: TasksDeletedListener | null = null;
+
+/** Manager registers this so deferred per-task work dies with the row. */
+export function setTasksDeletedListener(listener: TasksDeletedListener | null): void {
+  tasksDeletedListener = listener;
+}
 
 function normalizeTask(t: Task): Task {
   return {
@@ -74,6 +85,7 @@ function normalizeTask(t: Task): Task {
 }
 
 function enqueuePersist(job: () => Promise<void>): void {
+  if (!persistWrites) return;
   persistChain = persistChain.then(job).catch((err) => {
     console.error("[db] persist error:", err);
   });
@@ -682,7 +694,11 @@ export function deleteTasks(ids: string[]): string[] {
       logs.delete(id);
     }
   }
-  if (removed.length) enqueuePersist(() => persistDelete(removed));
+  if (removed.length) {
+    // Sync, before the async DELETE, so timers cannot flush a removed id.
+    tasksDeletedListener?.(removed);
+    enqueuePersist(() => persistDelete(removed));
+  }
   return removed;
 }
 
@@ -824,6 +840,39 @@ export function countTasksInWorkspace(workspaceId: string): number {
   return n;
 }
 
+
+/**
+ * Unit tests: in-memory tasks/workspaces and no Postgres writes.
+ * Returns the seeded default workspace id.
+ */
+export function enableMemoryStoreForTests(): string {
+  persistWrites = false;
+  tasks = new Map();
+  workspaces = new Map();
+  logs = new Map();
+  const now = new Date().toISOString();
+  const ws: Workspace = {
+    id: "ws-memory-test",
+    name: "memory",
+    path: "/tmp/agent-board-memory-test",
+    createdAt: now,
+    updatedAt: now,
+  };
+  workspaces.set(ws.id, ws);
+  defaultWorkspaceId = ws.id;
+  ready = true;
+  return ws.id;
+}
+
+/** Undo enableMemoryStoreForTests. Does not touch an open Postgres pool. */
+export function disableMemoryStoreForTests(): void {
+  persistWrites = true;
+  tasks = new Map();
+  workspaces = new Map();
+  logs = new Map();
+  defaultWorkspaceId = null;
+  ready = false;
+}
 
 /** Integration tests: wipe PG + memory and re-init (keeps same DATABASE_URL pool). */
 export async function resetStoreForTests(): Promise<void> {
