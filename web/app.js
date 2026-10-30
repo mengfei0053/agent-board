@@ -30,6 +30,10 @@ const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
+const createQuickPromptsEl = document.getElementById("create-quick-prompts");
+const continueQuickPromptsEl = document.getElementById("continue-quick-prompts");
+/** @type {{ id: string, label: string, content: string }[]} */
+let quickPrompts = [];
 const bulkBar = document.getElementById("bulk-bar");
 const wsListEl = document.getElementById("ws-list");
 const wsEmptyEl = document.getElementById("ws-empty");
@@ -560,13 +564,72 @@ function renderList() {
   updateBulkBar();
 }
 
+function clearCreatePrompt() {
+  const ta = document.getElementById("create-prompt");
+  if (ta) ta.value = "";
+  formError.hidden = true;
+  formError.textContent = "";
+}
+
+function clearContinuePrompt() {
+  if (continuePrompt) continuePrompt.value = "";
+  if (continueError) {
+    continueError.hidden = true;
+    continueError.textContent = "";
+  }
+}
+
+function renderQuickPromptButtons(container, targetId) {
+  if (!container) return;
+  if (!quickPrompts.length) {
+    container.innerHTML = "";
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  container.innerHTML = quickPrompts.map((item) => {
+    const label = escapeHtml(item.label || "快捷");
+    return `<button type="button" class="secondary quick-prompt-btn" data-quick-id="${escapeHtml(item.id)}" data-target="${escapeHtml(targetId)}" title="${label}">${label}</button>`;
+  }).join("");
+}
+
+function applyQuickPromptsToUi() {
+  renderQuickPromptButtons(createQuickPromptsEl, "create-prompt");
+  renderQuickPromptButtons(continueQuickPromptsEl, "continue-prompt");
+}
+
+async function loadQuickPrompts() {
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return;
+    const data = await res.json();
+    quickPrompts = Array.isArray(data.quickPrompts) ? data.quickPrompts : [];
+    applyQuickPromptsToUi();
+  } catch {
+    /* ignore */
+  }
+}
+
+function fillPromptFromQuick(targetId, content) {
+  const ta = document.getElementById(targetId);
+  if (!ta) return;
+  ta.value = content || "";
+  ta.focus();
+  try {
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  } catch {
+    /* ignore */
+  }
+}
+
 function openCreate(mode = "draft") {
   if (!selectedWorkspaceId || !workspaces.get(selectedWorkspaceId)) {
     window.alert("请先在左侧选择或新建一个工作区");
     return;
   }
   createMode = mode === "todo" ? "todo" : "draft";
-  formError.hidden = true;
+  clearCreatePrompt();
+  applyQuickPromptsToUi();
   const ws = workspaces.get(selectedWorkspaceId);
   if (createWsHint) {
     createWsHint.textContent = `工作区：${ws.name} · ${ws.path}`;
@@ -584,6 +647,8 @@ function openCreate(mode = "draft") {
 }
 function closeCreate() {
   createModal.classList.add("hidden");
+  clearCreatePrompt();
+  try { form.reset(); } catch { /* ignore */ }
 }
 
 async function openDetail(id) {
@@ -592,6 +657,8 @@ async function openDetail(id) {
   selectedLogCount = 0;
   lastOutputSig = "";
   lastPaintedTaskId = null;
+  clearContinuePrompt();
+  applyQuickPromptsToUi();
   const metaFold = document.getElementById("detail-meta-fold");
   if (metaFold) metaFold.open = false;
   detailModal.classList.remove("hidden");
@@ -882,6 +949,7 @@ function closeDetail() {
   selectedLogCount = 0;
   lastOutputSig = "";
   lastPaintedTaskId = null;
+  clearContinuePrompt();
 }
 
 document.getElementById("btn-new").onclick = () => openCreate("draft");
@@ -896,6 +964,17 @@ document.getElementById("meta-viewer-close").onclick = closeMetaViewer;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
 wirePromptImageSupport("create-prompt");
 wirePromptImageSupport("continue-prompt");
+document.addEventListener("click", (e) => {
+  const btn = e.target?.closest?.(".quick-prompt-btn");
+  if (!btn) return;
+  e.preventDefault();
+  const id = btn.dataset.quickId;
+  const target = btn.dataset.target;
+  const item = quickPrompts.find((x) => x.id === id);
+  if (!item || !target) return;
+  fillPromptFromQuick(target, item.content);
+});
+void loadQuickPrompts();
 document.addEventListener("click", (e) => {
   const img = e.target?.closest?.("img.md-img, img.card-prompt-thumb");
   if (!img?.src) return;
@@ -1037,6 +1116,7 @@ continueBtn.addEventListener("click", async () => {
   }
   if (data.task) {
     tasks.set(data.task.id, data.task);
+    clearContinuePrompt();
     paintDetail(data.task);
     renderList();
   }

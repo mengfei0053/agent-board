@@ -30,7 +30,7 @@
         <div class="brand-mark" aria-hidden="true">ab</div>
         <div>
           <h1>设置</h1>
-          <p class="muted">按 Agent 配置 CLI 与代理</p>
+          <p class="muted">快捷输入 · 按 Agent 配置 CLI 与代理</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -41,6 +41,17 @@
 
     <main class="docs-main settings-main">
       <form id="settings-form" class="settings-form" autocomplete="off">
+        <section class="settings-card settings-quick-card" aria-labelledby="quick-prompts-title">
+          <header class="settings-block-head">
+            <h2 id="quick-prompts-title">快捷输入</h2>
+            <p class="settings-block-desc">自定义提示词按钮；会出现在新建任务与详情续跑输入框上方，点击后填入内容。</p>
+          </header>
+          <div id="quick-prompts-list" class="quick-prompt-list"></div>
+          <div class="quick-prompt-actions">
+            <button type="button" class="secondary" id="btn-add-quick-prompt">＋ 添加快捷输入</button>
+          </div>
+        </section>
+
         <div class="settings-kind-tabs" id="agent-tabs" role="tablist" aria-label="选择 Agent"></div>
 
         <div id="agent-panels" class="settings-agent-panels"></div>

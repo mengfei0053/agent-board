@@ -3,6 +3,8 @@ const panelsEl = document.getElementById("agent-panels");
 const form = document.getElementById("settings-form");
 const statusEl = document.getElementById("settings-status");
 const btnClear = document.getElementById("btn-clear-settings");
+const quickListEl = document.getElementById("quick-prompts-list");
+const btnAddQuick = document.getElementById("btn-add-quick-prompt");
 
 const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex"];
 const PROXY_ORDER = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
@@ -27,6 +29,12 @@ let activeKind = "pi";
 let lastCli = {};
 /** @type {Record<string, any>} */
 let lastProxy = {};
+/** @type {{ id: string, label: string, content: string }[]} */
+let lastQuick = [];
+
+function newQuickId() {
+  return `qp_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function escapeHtml(s) {
   return String(s)
@@ -181,9 +189,71 @@ function showKind(kind) {
   }
 }
 
+function renderQuickPrompts() {
+  if (!quickListEl) return;
+  if (!lastQuick.length) {
+    quickListEl.innerHTML = `<p class="muted quick-prompt-empty">暂无快捷输入。点击下方添加后，会出现在新建任务与续跑输入框上方。</p>`;
+    return;
+  }
+  quickListEl.innerHTML = lastQuick.map((item, idx) => `
+    <div class="quick-prompt-item settings-row" data-quick-idx="${idx}">
+      <div class="quick-prompt-item-head">
+        <label class="settings-label">
+          <strong>按钮名称</strong>
+          <span class="muted settings-default">第 ${idx + 1} 条</span>
+        </label>
+        <button type="button" class="settings-mini-btn danger-ish" data-remove-quick="${idx}">删除</button>
+      </div>
+      <input
+        type="text"
+        data-quick-field="label"
+        data-quick-idx="${idx}"
+        value="${escapeHtml(item.label || "")}"
+        placeholder="如：分析禅道 Bug"
+        maxlength="40"
+        spellcheck="false"
+      />
+      <label class="settings-label" style="margin-top:4px"><strong>提示词内容</strong></label>
+      <textarea
+        data-quick-field="content"
+        data-quick-idx="${idx}"
+        rows="3"
+        placeholder="点击快捷按钮后填入输入框的完整内容"
+        spellcheck="false"
+      >${escapeHtml(item.content || "")}</textarea>
+    </div>
+  `).join("");
+}
+
+function syncQuickFromDom() {
+  if (!quickListEl) return lastQuick;
+  const next = [];
+  for (const item of quickListEl.querySelectorAll(".quick-prompt-item")) {
+    const idx = Number(item.dataset.quickIdx);
+    const labelInput = item.querySelector('[data-quick-field="label"]');
+    const contentInput = item.querySelector('[data-quick-field="content"]');
+    const prev = lastQuick[idx] || {};
+    next.push({
+      id: prev.id || newQuickId(),
+      label: (labelInput?.value || "").trim(),
+      content: contentInput?.value || "",
+    });
+  }
+  lastQuick = next;
+  return lastQuick;
+}
+
 function renderAll(data) {
   lastCli = data.cliPaths || {};
   lastProxy = data.proxyEnv || {};
+  lastQuick = Array.isArray(data.quickPrompts)
+    ? data.quickPrompts.map((x) => ({
+        id: x.id || newQuickId(),
+        label: x.label || "",
+        content: x.content || "",
+      }))
+    : [];
+  renderQuickPrompts();
   renderTabs();
   renderPanels();
   showKind(activeKind);
@@ -202,7 +272,14 @@ function collectPayload() {
     if (!proxyEnv[kind]) proxyEnv[kind] = {};
     proxyEnv[kind][key] = input.value;
   }
-  return { cliPaths, proxyEnv };
+  const quickPrompts = syncQuickFromDom()
+    .map((x) => ({
+      id: x.id || newQuickId(),
+      label: (x.label || "").trim(),
+      content: x.content || "",
+    }))
+    .filter((x) => x.label && x.content.trim());
+  return { cliPaths, proxyEnv, quickPrompts };
 }
 
 tabsEl.addEventListener("click", (e) => {
@@ -233,6 +310,25 @@ panelsEl.addEventListener("click", (e) => {
     if (input) input.value = val;
   }
   setStatus("已填入 HTTP 与 HTTPS 代理（尚未保存）。");
+});
+
+btnAddQuick?.addEventListener("click", () => {
+  syncQuickFromDom();
+  lastQuick.push({ id: newQuickId(), label: "", content: "" });
+  renderQuickPrompts();
+  setStatus("已添加一条（尚未保存）。");
+});
+
+quickListEl?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-remove-quick]");
+  if (!btn) return;
+  e.preventDefault();
+  syncQuickFromDom();
+  const idx = Number(btn.dataset.removeQuick);
+  if (!Number.isFinite(idx) || idx < 0 || idx >= lastQuick.length) return;
+  lastQuick.splice(idx, 1);
+  renderQuickPrompts();
+  setStatus("已删除（尚未保存）。");
 });
 
 async function load() {

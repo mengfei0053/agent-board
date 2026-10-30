@@ -53,6 +53,11 @@ import {
   setProxyEnvOverrides,
   type ProxyEnvKey,
 } from "./proxyEnv.js";
+import {
+  clearQuickPrompts,
+  getQuickPromptSettings,
+  setQuickPrompts,
+} from "./quickPrompts.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
 import {
@@ -412,7 +417,11 @@ app.get("/api/events", (c) => {
 
 
 function fullSettings() {
-  return { ...getCliPathSettings(), ...getProxyEnvSettings() };
+  return {
+    ...getCliPathSettings(),
+    ...getProxyEnvSettings(),
+    ...getQuickPromptSettings(),
+  };
 }
 
 app.get("/api/settings", (c) => c.json(fullSettings()));
@@ -430,19 +439,22 @@ app.put("/api/settings", async (c) => {
   const raw = body as {
     cliPaths?: unknown;
     proxyEnv?: unknown;
+    quickPrompts?: unknown;
     clear?: unknown;
   };
 
   if (raw.clear === true) {
     await clearCliPathOverrides();
     await clearProxyEnvOverrides();
+    // Keep custom quick prompts; they are user content, not CLI defaults.
     return c.json(fullSettings());
   }
 
   const hasCli = raw.cliPaths != null;
   const hasProxy = raw.proxyEnv != null;
-  if (!hasCli && !hasProxy) {
-    return c.json({ error: "cliPaths and/or proxyEnv required (or clear: true)" }, 400);
+  const hasQuick = raw.quickPrompts != null;
+  if (!hasCli && !hasProxy && !hasQuick) {
+    return c.json({ error: "cliPaths, proxyEnv, and/or quickPrompts required (or clear: true)" }, 400);
   }
 
   if (hasCli) {
@@ -491,6 +503,15 @@ app.put("/api/settings", async (c) => {
       patch[kind as CliCommandKey] = kindPatch;
     }
     await setProxyEnvOverrides(patch);
+  }
+
+  if (hasQuick) {
+    try {
+      await setQuickPrompts(raw.quickPrompts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 400);
+    }
   }
 
   return c.json(fullSettings());

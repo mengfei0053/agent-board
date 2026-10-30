@@ -168,6 +168,7 @@
           <input name="model" placeholder="如 cn:glm-5.3 或 sonnet" />
         </label>
         <label class="prompt-field">任务内容
+          <div id="create-quick-prompts" class="quick-prompts" hidden></div>
           <textarea name="prompt" id="create-prompt" required rows="6" placeholder="要 Agent 做的事（可粘贴或插入图片）"></textarea>
         </label>
         <div class="prompt-toolbar" data-for="create-prompt">
@@ -236,6 +237,7 @@
           <button type="button" id="archive-btn" class="secondary" hidden>归档</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
+          <div id="continue-quick-prompts" class="quick-prompts" hidden></div>
           <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）"></textarea>
           <div class="prompt-toolbar prompt-toolbar-inline" data-for="continue-prompt">
             <button type="button" class="secondary prompt-img-btn" data-for="continue-prompt">插入图片</button>

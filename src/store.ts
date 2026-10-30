@@ -14,6 +14,7 @@ import {
 } from "./db.js";
 import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
+import { loadQuickPrompts } from "./quickPrompts.js";
 
 export { dataDir, logsDir };
 
@@ -464,6 +465,7 @@ export async function initStore(): Promise<void> {
   await loadAllFromPg();
   await loadCliPathOverrides();
   await loadProxyEnvOverrides();
+  await loadQuickPrompts();
   // Patch in-memory tasks missing workspaceId
   for (const [id, t] of tasks) {
     if (!t.workspaceId && defaultWorkspaceId) {
