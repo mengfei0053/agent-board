@@ -24,6 +24,7 @@ import {
   extractPromptsByIteration,
   extractTextFromEventLine,
   latestOutputText,
+  mergeOutputTurns,
   mergePromptTurns,
   summarizeOutput,
   upsertOutputTurn,
@@ -161,20 +162,11 @@ export function refreshOutputFromLogs(id: string): Task | undefined {
   const cur = getTask(id);
   if (!cur) return undefined;
   const lines = readLogTail(id, 2500, 1_500_000);
-  const outputs = extractOutputsByIteration(lines);
-  // Preserve wall-clock `at` from prior turns when text unchanged
-  if (cur.outputs?.length) {
-    const prevByIter = new Map(cur.outputs.map((o) => [o.iteration, o]));
-    for (let i = 0; i < outputs.length; i++) {
-      const prev = prevByIter.get(outputs[i].iteration);
-      if (prev?.at && prev.text === outputs[i].text) {
-        outputs[i] = { ...outputs[i], at: prev.at };
-      } else if (prev?.at && !outputs[i].at) {
-        outputs[i] = { ...outputs[i], at: prev.at };
-      }
-    }
-  }
-  const out = latestOutputText(outputs) || extractFinalOutput(lines);
+  const curIter = cur.iteration ?? 1;
+  const extracted = extractOutputsByIteration(lines, curIter);
+  // Merge — never replace prior rounds when the log tail lost start/continue markers.
+  const outputs = mergeOutputTurns(cur.outputs, extracted, curIter);
+  const out = latestOutputText(outputs) || extractFinalOutput(lines) || cur.output || "";
   if (!out && !outputs.length) return cur;
   return patch(id, {
     output: out || undefined,
@@ -527,7 +519,8 @@ export function taskWithOutput(id: string): {
 
   if (t.outputs?.length || t.output) {
     if (!t.outputs?.length && t.output) {
-      const outputs = extractOutputsByIteration(extractSource);
+      const extracted = extractOutputsByIteration(extractSource, t.iteration ?? 1);
+      const outputs = mergeOutputTurns(t.outputs, extracted, t.iteration ?? 1);
       if (outputs.length) {
         const task = patch(id, {
           outputs,
@@ -543,7 +536,8 @@ export function taskWithOutput(id: string): {
     }
     return { task: t, log: [], logLineCount: count };
   }
-  const outputs = extractOutputsByIteration(extractSource);
+  const extracted = extractOutputsByIteration(extractSource, t.iteration ?? 1);
+  const outputs = mergeOutputTurns(t.outputs, extracted, t.iteration ?? 1);
   const out = latestOutputText(outputs);
   if (!out) {
     if (promptPatch) {

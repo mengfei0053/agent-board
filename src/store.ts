@@ -16,6 +16,7 @@ import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
+import { isBoardMetaLine } from "./extractOutput.js";
 
 export { dataDir, logsDir };
 
@@ -37,6 +38,23 @@ export function truncateLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS): st
   if (line.length <= maxChars) return line;
   const omitted = line.length - maxChars;
   return `${line.slice(0, maxChars)}…[truncated ${omitted} chars]`;
+}
+
+/**
+ * Cap in-memory logs but always retain board meta lines (start/continue/exit/…).
+ * Without them, settle-time re-extraction tags the latest reply as iteration 1.
+ */
+export function trimLogsKeepingMeta(arr: string[], maxLines = MAX_LOG_LINES_KEPT): void {
+  if (arr.length <= maxLines) return;
+  const meta: string[] = [];
+  const rest: string[] = [];
+  for (const l of arr) {
+    if (isBoardMetaLine(l)) meta.push(l);
+    else rest.push(l);
+  }
+  const keepRest = Math.max(0, maxLines - meta.length);
+  arr.length = 0;
+  arr.push(...meta, ...rest.slice(-keepRest));
 }
 
 
@@ -370,9 +388,7 @@ async function loadAllFromPg(): Promise<void> {
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
     arr.push(truncateLogLine(r.line));
-    if (arr.length > MAX_LOG_LINES_KEPT) {
-      arr.splice(0, arr.length - MAX_LOG_LINES_KEPT);
-    }
+    trimLogsKeepingMeta(arr);
     logs.set(r.task_id, arr);
   }
 }
@@ -595,9 +611,7 @@ export function appendLog(id: string, line: string): void {
   const cleaned = truncateLogLine(line.endsWith("\n") ? line.slice(0, -1) : line);
   const arr = logs.get(id) || [];
   arr.push(cleaned);
-  if (arr.length > MAX_LOG_LINES_KEPT) {
-    arr.splice(0, arr.length - MAX_LOG_LINES_KEPT);
-  }
+  trimLogsKeepingMeta(arr);
   logs.set(id, arr);
   enqueuePersist(() => persistLogLine(id, cleaned));
 }

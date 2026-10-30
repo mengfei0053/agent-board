@@ -21,6 +21,22 @@ function textFromContent(content: unknown): string {
   return parts.join("\n\n").trim();
 }
 
+/** Recover pi text_end payload from a truncated / broken JSON line. */
+function textEndFromTruncatedLine(line: string): string | undefined {
+  if (!line.includes("text_end")) return undefined;
+  const m = line.match(
+    /"type"\s*:\s*"text_end"[\s\S]*?"content"\s*:\s*"((?:\\.|[^"\\])*)"/,
+  );
+  if (!m) return undefined;
+  try {
+    const text = JSON.parse(`"${m[1]}"`);
+    if (typeof text === "string" && text.trim()) return text.trim();
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
 /** Pull assistant-visible text from a single JSONL event, if any. */
 export function extractTextFromEventLine(line: string): string | undefined {
   const trimmed = line.trim();
@@ -29,9 +45,18 @@ export function extractTextFromEventLine(line: string): string | undefined {
   try {
     ev = JSON.parse(trimmed);
   } catch {
-    return undefined;
+    // Truncated agent dumps may still carry a usable pi text_end payload.
+    return textEndFromTruncatedLine(trimmed);
   }
   const t = ev.type;
+
+  // pi: final streamed assistant text (preferred over thinking-only message_end)
+  if (t === "message_update" && ev.assistantMessageEvent) {
+    const ame = ev.assistantMessageEvent as Record<string, unknown>;
+    if (ame.type === "text_end" && typeof ame.content === "string" && ame.content.trim()) {
+      return ame.content.trim();
+    }
+  }
 
   // pi: complete assistant message
   if (t === "message_end" && ev.message?.role === "assistant") {
@@ -112,7 +137,7 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 }
 
-function isBoardMetaLine(line: string): boolean {
+export function isBoardMetaLine(line: string): boolean {
   const t = line.trim();
   if (!t.startsWith("{")) return false;
   try {
@@ -157,7 +182,10 @@ function upsertTurn(list: OutputTurn[], turn: OutputTurn): OutputTurn[] {
 /**
  * Split logs by start/continue markers and take the last assistant text per segment.
  */
-export function extractOutputsByIteration(lines: string[]): OutputTurn[] {
+export function extractOutputsByIteration(
+  lines: string[],
+  fallbackIteration = 1,
+): OutputTurn[] {
   type Seg = { start: number; iteration: number };
   const segs: Seg[] = [];
   let currentIter = 1;
@@ -187,7 +215,9 @@ export function extractOutputsByIteration(lines: string[]): OutputTurn[] {
       if (text) last = text;
     }
     if (!last) last = plainTextFromRange(lines, 0, lines.length);
-    return last ? [{ iteration: 1, text: last }] : [];
+    const iter =
+      typeof fallbackIteration === "number" && fallbackIteration >= 1 ? fallbackIteration : 1;
+    return last ? [{ iteration: iter, text: last }] : [];
   }
 
   let turns: OutputTurn[] = [];
@@ -217,6 +247,53 @@ export function upsertOutputTurn(
   turn: OutputTurn,
 ): OutputTurn[] {
   return upsertTurn(existing ?? [], turn);
+}
+
+/**
+ * Merge log-extracted turns into stored ones.
+ * Never drop a prior iteration that extraction missed (common when the in-memory
+ * log tail lost start/continue markers). If extraction only found a single
+ * unmarked turn tagged as iteration 1 while the task is already past round 1,
+ * attribute that text to `currentIteration` instead of clobbering round 1.
+ */
+export function mergeOutputTurns(
+  stored: OutputTurn[] | undefined,
+  extracted: OutputTurn[],
+  currentIteration?: number,
+): OutputTurn[] {
+  const map = new Map<number, OutputTurn>();
+  for (const o of stored || []) {
+    if (o?.text?.trim()) map.set(o.iteration, { ...o });
+  }
+
+  let adjusted = extracted;
+  const cur =
+    typeof currentIteration === "number" && currentIteration >= 1 ? currentIteration : undefined;
+  if (
+    extracted.length === 1 &&
+    extracted[0]?.iteration === 1 &&
+    cur != null &&
+    cur > 1 &&
+    extracted[0].text?.trim()
+  ) {
+    const only = extracted[0];
+    const stored1 = map.get(1);
+    // Remap when this text is new to iter 1 (or iter 1 already has different text).
+    if (!stored1 || stored1.text !== only.text) {
+      adjusted = [{ ...only, iteration: cur }];
+    }
+  }
+
+  for (const o of adjusted) {
+    if (!o?.text?.trim()) continue;
+    const prev = map.get(o.iteration);
+    map.set(o.iteration, {
+      ...prev,
+      ...o,
+      at: o.at || prev?.at,
+    });
+  }
+  return [...map.values()].sort((a, b) => a.iteration - b.iteration);
 }
 
 /**
