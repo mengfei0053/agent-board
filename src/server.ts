@@ -58,6 +58,11 @@ import {
   getQuickPromptSettings,
   setQuickPrompts,
 } from "./quickPrompts.js";
+import {
+  clearCodexSandbox,
+  getCodexSandboxSettings,
+  setCodexSandbox,
+} from "./codexSandbox.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
 import {
@@ -421,6 +426,7 @@ function fullSettings() {
     ...getCliPathSettings(),
     ...getProxyEnvSettings(),
     ...getQuickPromptSettings(),
+    ...getCodexSandboxSettings(),
   };
 }
 
@@ -440,12 +446,14 @@ app.put("/api/settings", async (c) => {
     cliPaths?: unknown;
     proxyEnv?: unknown;
     quickPrompts?: unknown;
+    codexSandbox?: unknown;
     clear?: unknown;
   };
 
   if (raw.clear === true) {
     await clearCliPathOverrides();
     await clearProxyEnvOverrides();
+    await clearCodexSandbox();
     // Keep custom quick prompts; they are user content, not CLI defaults.
     return c.json(fullSettings());
   }
@@ -453,8 +461,9 @@ app.put("/api/settings", async (c) => {
   const hasCli = raw.cliPaths != null;
   const hasProxy = raw.proxyEnv != null;
   const hasQuick = raw.quickPrompts != null;
-  if (!hasCli && !hasProxy && !hasQuick) {
-    return c.json({ error: "cliPaths, proxyEnv, and/or quickPrompts required (or clear: true)" }, 400);
+  const hasCodexSandbox = raw.codexSandbox != null;
+  if (!hasCli && !hasProxy && !hasQuick && !hasCodexSandbox) {
+    return c.json({ error: "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required (or clear: true)" }, 400);
   }
 
   if (hasCli) {
@@ -508,6 +517,15 @@ app.put("/api/settings", async (c) => {
   if (hasQuick) {
     try {
       await setQuickPrompts(raw.quickPrompts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 400);
+    }
+  }
+
+  if (hasCodexSandbox) {
+    try {
+      await setCodexSandbox(raw.codexSandbox);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return c.json({ error: msg }, 400);

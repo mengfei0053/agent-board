@@ -1920,6 +1920,25 @@ button.topbar-brand[aria-expanded="true"] {
   color: var(--danger, #e35d6a);
 }
 
+.settings-row-toggle .settings-toggle-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.settings-row-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.settings-toggle-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  flex: 1 1 200px;
+}
+
 .settings-block-head {
   margin-bottom: 12px;
 }

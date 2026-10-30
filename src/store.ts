@@ -15,6 +15,7 @@ import {
 import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
+import { loadCodexSandbox } from "./codexSandbox.js";
 
 export { dataDir, logsDir };
 
@@ -466,6 +467,7 @@ export async function initStore(): Promise<void> {
   await loadCliPathOverrides();
   await loadProxyEnvOverrides();
   await loadQuickPrompts();
+  await loadCodexSandbox();
   // Patch in-memory tasks missing workspaceId
   for (const [id, t] of tasks) {
     if (!t.workspaceId && defaultWorkspaceId) {

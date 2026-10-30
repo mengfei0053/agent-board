@@ -3,20 +3,32 @@ import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
+import { isCodexSandboxEnabled } from "../codexSandbox.js";
 
 /**
  * OpenAI Codex CLI (`codex` on PATH).
  * Non-interactive board: `codex exec --json` (JSONL thread events).
- * Approvals: `--approve-for-me` alone (implies workspace-write; mutually exclusive with `-s`).
- * Resume: `codex exec resume <thread_id> --json …`
+ * Sandbox (meta.codex_sandbox, default ON):
+ *   ON  → `--approve-for-me` (workspace-write; blocks LAN like 192.168.x)
+ *   OFF → `-s danger-full-access` (allows company GitLab; safer than
+ *         `--dangerously-bypass-approvals-and-sandbox` which drops all sandboxing)
+ * Resume: `codex exec resume <thread_id> --json …` (CLI does not take -s/--approve-for-me)
  * Continue without sessionId: fresh `codex exec` with the original task.prompt (never `--last`).
  */
+function approvalFlags(): string[] {
+  if (isCodexSandboxEnabled()) {
+    return ["--approve-for-me"];
+  }
+  // Safer of the two “no workspace-write” options that can reach 192.168.3.11.
+  return ["-s", "danger-full-access"];
+}
+
 function baseExecFlags(taskModel?: string): string[] {
   const flags = [
     "--json",
     "--color",
     "never",
-    "--approve-for-me",
+    ...approvalFlags(),
     "--skip-git-repo-check",
   ];
   if (taskModel) flags.push("-m", taskModel);
@@ -48,6 +60,7 @@ export const codexRunner: Runner = {
           type: "continue_new_session",
           kind: "codex",
           note: "no sessionId; starting fresh exec with task.prompt (not resume --last)",
+          sandbox: isCodexSandboxEnabled(),
         }),
       );
     } else {

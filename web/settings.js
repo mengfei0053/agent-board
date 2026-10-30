@@ -31,6 +31,8 @@ let lastCli = {};
 let lastProxy = {};
 /** @type {{ id: string, label: string, content: string }[]} */
 let lastQuick = [];
+/** @type {boolean} default ON */
+let lastCodexSandbox = true;
 
 function newQuickId() {
   return `qp_${Math.random().toString(36).slice(2, 10)}`;
@@ -153,9 +155,41 @@ function renderProxyBlock(kind, kindMap) {
     </section>`;
 }
 
+function renderCodexSandboxBlock() {
+  const on = lastCodexSandbox !== false;
+  return `
+    <section class="settings-block" aria-labelledby="codex-sandbox-title">
+      <header class="settings-block-head">
+        <h2 id="codex-sandbox-title">Codex 沙箱</h2>
+        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。</p>
+      </header>
+      <label class="settings-row settings-row-toggle">
+        <span class="settings-label">
+          <strong>启用沙箱</strong>
+          <span class="muted settings-default">默认开启（<code>--approve-for-me</code>）</span>
+        </span>
+        <span class="settings-toggle-line">
+          <input
+            type="checkbox"
+            id="codex-sandbox-enabled"
+            name="codexSandbox"
+            data-codex-sandbox="1"
+            ${on ? "checked" : ""}
+          />
+          <span class="settings-toggle-hint muted" id="codex-sandbox-hint">${
+            on
+              ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
+              : "关：-s danger-full-access（可访问内网；比完全绕过沙箱更稳妥）"
+          }</span>
+        </span>
+      </label>
+    </section>`;
+}
+
 function renderPanels() {
   panelsEl.innerHTML = CLI_ORDER.map((kind) => {
     const hidden = kind !== activeKind;
+    const extra = kind === "codex" ? renderCodexSandboxBlock() : "";
     return `
       <div
         class="settings-agent-panel${hidden ? " hidden" : ""}"
@@ -168,6 +202,7 @@ function renderPanels() {
         <div class="settings-card settings-agent-card">
           ${renderCliBlock(kind, lastCli[kind])}
           ${renderProxyBlock(kind, lastProxy[kind])}
+          ${extra}
         </div>
       </div>`;
   }).join("");
@@ -253,6 +288,7 @@ function renderAll(data) {
         content: x.content || "",
       }))
     : [];
+  lastCodexSandbox = data.codexSandbox !== false;
   renderQuickPrompts();
   renderTabs();
   renderPanels();
@@ -279,13 +315,27 @@ function collectPayload() {
       content: x.content || "",
     }))
     .filter((x) => x.label && x.content.trim());
-  return { cliPaths, proxyEnv, quickPrompts };
+  const sandboxEl = panelsEl.querySelector("input[data-codex-sandbox]");
+  const codexSandbox = sandboxEl ? Boolean(sandboxEl.checked) : lastCodexSandbox !== false;
+  return { cliPaths, proxyEnv, quickPrompts, codexSandbox };
 }
 
 tabsEl.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-agent-kind]");
   if (!btn) return;
   showKind(btn.dataset.agentKind);
+});
+
+panelsEl.addEventListener("change", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLInputElement) || !t.matches("input[data-codex-sandbox]")) return;
+  const hint = document.getElementById("codex-sandbox-hint");
+  if (hint) {
+    hint.textContent = t.checked
+      ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
+      : "关：-s danger-full-access（可访问内网；比完全绕过沙箱更稳妥）";
+  }
+  setStatus(t.checked ? "已勾选启用沙箱（尚未保存）。" : "已取消沙箱（尚未保存）。");
 });
 
 panelsEl.addEventListener("click", (e) => {
@@ -366,7 +416,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 btnClear.addEventListener("click", async () => {
-  if (!confirm("确定清除全部 CLI 路径与各 Agent 代理覆盖？")) return;
+  if (!confirm("确定清除全部 CLI 路径、各 Agent 代理覆盖，并将 Codex 沙箱恢复为开启？")) return;
   setStatus("恢复中…");
   try {
     const res = await fetch("/api/settings", {
