@@ -57,45 +57,50 @@ describe("pending output patch vs delete (S4)", () => {
     disableMemoryStoreForTests();
   });
 
-  it("delete disarms the deferred patch so the timer cannot throw", (t) => {
+  it("natural end flushes the deferred patch before delete", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     runners.pi = settlingRunner("deferred-output-s4");
-    const draft = createDraft({
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-delete",
     });
-    const started = startTask(draft.id);
+    const started = await startTask(draft.id);
     assert.equal(started.status, "succeeded");
-    assert.equal(hasPendingPatchForTests(started.id), true);
+    assert.equal(started.output, "deferred-output-s4");
+    assert.equal(hasPendingPatchForTests(started.id), false);
 
-    const result = removeTasks([started.id]);
+    const result = await removeTasks([started.id]);
     assert.deepEqual(result.deleted, [started.id]);
     assert.equal(getTask(started.id), undefined);
-    assert.equal(hasPendingPatchForTests(started.id), false);
 
     assert.doesNotThrow(() => {
       t.mock.timers.tick(1000);
     });
     assert.equal(getTask(started.id), undefined);
-    assert.equal(hasPendingPatchForTests(started.id), false);
   });
 
-  it("a deferred patch does not rewrite a task reused under the same id", (t) => {
+  it("a deferred patch does not rewrite a task reused under the same id", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    runners.pi = settlingRunner("stale-output");
-    const draft = createDraft({
+    runners.pi = {
+      start(_task, hooks) {
+        hooks.onStatus({ status: "blocked", startedAt: new Date().toISOString() });
+        hooks.onLog(resultLine("stale-output"));
+        return { stop() {} };
+      },
+    };
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-reuse",
     });
-    startTask(draft.id);
+    await startTask(draft.id);
     assert.equal(hasPendingPatchForTests(draft.id), true);
     const snapshot = getTask(draft.id);
     assert.ok(snapshot);
-    removeTasks([draft.id]);
+    await removeTasks([draft.id]);
     upsertTask({
       ...snapshot,
       status: "draft",
@@ -114,7 +119,7 @@ describe("pending output patch vs delete (S4)", () => {
     assert.equal(hasPendingPatchForTests(draft.id), false);
   });
 
-  it("stop() during delete cannot leave a patch timer behind", (t) => {
+  it("stop() during delete cannot leave a patch timer behind", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     runners.pi = {
       start(_task, hooks) {
@@ -130,17 +135,17 @@ describe("pending output patch vs delete (S4)", () => {
         };
       },
     };
-    const draft = createDraft({
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-blocked",
     });
-    const started = startTask(draft.id);
+    const started = await startTask(draft.id);
     assert.equal(started.status, "blocked");
     assert.equal(hasPendingPatchForTests(draft.id), true);
 
-    const result = removeTasks([draft.id]);
+    const result = await removeTasks([draft.id]);
     assert.deepEqual(result.deleted, [draft.id]);
     assert.ok(result.stopped.includes(draft.id));
     assert.equal(hasPendingPatchForTests(draft.id), false);
@@ -151,19 +156,25 @@ describe("pending output patch vs delete (S4)", () => {
     assert.equal(getTask(draft.id), undefined);
   });
 
-  it("deleteTasks drops a pending patch when removeTasks is not the caller", (t) => {
+  it("deleteTasks drops a pending patch when removeTasks is not the caller", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    runners.pi = settlingRunner("via-store");
-    const draft = createDraft({
+    runners.pi = {
+      start(_task, hooks) {
+        hooks.onStatus({ status: "blocked", startedAt: new Date().toISOString() });
+        hooks.onLog(resultLine("via-store"));
+        return { stop() {} };
+      },
+    };
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-store-delete",
     });
-    startTask(draft.id);
+    await startTask(draft.id);
     assert.equal(hasPendingPatchForTests(draft.id), true);
 
-    assert.deepEqual(deleteTasks([draft.id]), [draft.id]);
+    assert.deepEqual(await deleteTasks([draft.id]), [draft.id]);
     assert.equal(getTask(draft.id), undefined);
     assert.equal(hasPendingPatchForTests(draft.id), false);
 
@@ -173,16 +184,22 @@ describe("pending output patch vs delete (S4)", () => {
     assert.equal(getTask(draft.id), undefined);
   });
 
-  it("flushing a patch whose task was already removed does not throw", (t) => {
+  it("flushing a patch whose task was already removed does not throw", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    runners.pi = settlingRunner("orphan-flush");
-    const draft = createDraft({
+    runners.pi = {
+      start(_task, hooks) {
+        hooks.onStatus({ status: "blocked", startedAt: new Date().toISOString() });
+        hooks.onLog(resultLine("orphan-flush"));
+        return { stop() {} };
+      },
+    };
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-orphan",
     });
-    startTask(draft.id);
+    await startTask(draft.id);
     assert.equal(hasPendingPatchForTests(draft.id), true);
 
     // Drop the row without the delete hook so the timer is still armed.
@@ -197,7 +214,7 @@ describe("pending output patch vs delete (S4)", () => {
     assert.equal(hasPendingPatchForTests(draft.id), false);
   });
 
-  it("stop still flushes a pending patch, and a refused delete leaves it queued", (t) => {
+  it("stop still flushes a pending patch, and a refused delete leaves it queued", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     runners.pi = {
       start(_task, hooks) {
@@ -207,32 +224,78 @@ describe("pending output patch vs delete (S4)", () => {
           sessionId: "hold",
         });
         hooks.onLog(resultLine("flushed-on-stop"));
+        hooks.onLog(
+          JSON.stringify({
+            type: "tool_execution_start",
+            toolName: "agent",
+            toolCallId: "job-1",
+            args: { description: "bg-job" },
+          }),
+        );
         return { stop() {} };
       },
     };
-    const draft = createDraft({
+    const draft = await createDraft({
       kind: "pi",
       workspaceId,
       prompt: "hello",
       title: "s4-stop",
     });
-    const started = startTask(draft.id);
+    const started = await startTask(draft.id);
     assert.equal(started.status, "running");
     assert.equal(hasPendingPatchForTests(draft.id), true);
     assert.equal(getTask(draft.id)?.output, undefined);
 
-    const refused = removeTasks([draft.id]);
+    const refused = await removeTasks([draft.id]);
     assert.deepEqual(refused.deleted, []);
     assert.equal(refused.skipped[0]?.id, draft.id);
     assert.equal(hasPendingPatchForTests(draft.id), true);
 
-    const stopped = stopTask(draft.id);
+    const stopped = await stopTask(draft.id);
     assert.equal(stopped.status, "stopped");
     assert.equal(stopped.output, "flushed-on-stop");
+    assert.equal(stopped.sideJobs?.[0]?.id, "job-1");
+    assert.equal(stopped.sideJobs?.[0]?.status, "stopped");
     assert.equal(hasPendingPatchForTests(draft.id), false);
 
     t.mock.timers.tick(1000);
     assert.equal(getTask(draft.id)?.output, "flushed-on-stop");
     assert.equal(getTask(draft.id)?.status, "stopped");
+    assert.equal(getTask(draft.id)?.sideJobs?.[0]?.status, "stopped");
+  });
+
+  it("a late callback from a finished run cannot overwrite the task", async () => {
+    let late: { onLog: (line: string) => void; onStatus: (p: object) => void } | undefined;
+    runners.pi = {
+      start(_task, hooks) {
+        late = hooks;
+        hooks.onStatus({
+          status: "running",
+          startedAt: new Date().toISOString(),
+          sessionId: "run-1",
+        });
+        hooks.onLog(resultLine("first-run"));
+        hooks.onStatus({
+          status: "succeeded",
+          exitCode: 0,
+          endedAt: new Date().toISOString(),
+        });
+        return { stop() {} };
+      },
+    };
+    const draft = await createDraft({
+      kind: "pi",
+      workspaceId,
+      prompt: "hello",
+      title: "m4-stale",
+    });
+    const started = await startTask(draft.id);
+    assert.equal(started.output, "first-run");
+    assert.equal(started.sessionId, "run-1");
+    late?.onLog(resultLine("stale-line"));
+    late?.onStatus({ status: "running", output: "overwrite" });
+    const after = getTask(draft.id);
+    assert.equal(after?.status, "succeeded");
+    assert.equal(after?.output, "first-run");
   });
 });

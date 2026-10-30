@@ -4,6 +4,7 @@ import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
+import { mergeContinueWithoutSession } from "./promptForRun.js";
 
 export type ClaudeArgInput = {
   prompt: string;
@@ -44,7 +45,8 @@ export function buildClaudeArgs(
     args.push("--resume", task.sessionId);
   } else if (isContinue && !task.sessionId) {
     // First round failed before session — do NOT --continue (wrong cwd session).
-    prompt = task.prompt;
+    // Keep the original prompt and append this turn's instruction.
+    prompt = mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "");
     sessionId = newSessionId();
     assignedSession = true;
     continueNewSession = true;
@@ -76,7 +78,7 @@ export const claudeRunner: Runner = {
         JSON.stringify({
           type: "continue_new_session",
           kind: "claude",
-          note: "no sessionId; starting fresh session with task.prompt (not --continue)",
+          note: "no sessionId; fresh session with original prompt plus continue instruction (not --continue)",
           sessionId: built.sessionId,
         }),
       );

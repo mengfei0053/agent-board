@@ -8,15 +8,7 @@ describe("sessionFromJsonLine", () => {
     assert.equal(sessionFromJsonLine("{}"), undefined);
   });
 
-  it("reads common id fields", () => {
-    assert.equal(
-      sessionFromJsonLine(JSON.stringify({ session_id: " s1 " })),
-      "s1",
-    );
-    assert.equal(
-      sessionFromJsonLine(JSON.stringify({ chatId: "c1" })),
-      "c1",
-    );
+  it("reads session ids only from session-init events", () => {
     assert.equal(
       sessionFromJsonLine(JSON.stringify({ type: "session", id: "pi-1" })),
       "pi-1",
@@ -29,9 +21,27 @@ describe("sessionFromJsonLine", () => {
     );
     assert.equal(
       sessionFromJsonLine(
-        JSON.stringify({ payload: { session_id: "roll" } }),
+        JSON.stringify({ type: "session_meta", payload: { session_id: "roll" } }),
       ),
       "roll",
+    );
+    assert.equal(
+      sessionFromJsonLine(
+        JSON.stringify({ type: "system", subtype: "init", session_id: " s1 " }),
+      ),
+      "s1",
+    );
+    assert.equal(
+      sessionFromJsonLine(JSON.stringify({ session_id: "nope" })),
+      undefined,
+    );
+    assert.equal(
+      sessionFromJsonLine(JSON.stringify({ type: "assistant", payload: { id: "evt" } })),
+      undefined,
+    );
+    assert.equal(
+      sessionFromJsonLine(JSON.stringify({ chatId: "c1" })),
+      undefined,
     );
   });
 });

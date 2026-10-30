@@ -11,6 +11,7 @@ import {
   parseCliPathsJson,
   resolveCliCommand,
   whichResolved,
+  whichResolvedAsync,
 } from "./cliPaths.js";
 
 afterEach(() => {
@@ -59,9 +60,10 @@ describe("whichResolved", () => {
     }
   });
 
-  it("resolves a known PATH command", () => {
-    const sh = whichResolved("sh");
+  it("resolves a known PATH command without spawnSync", async () => {
+    const sh = await whichResolvedAsync("sh");
     assert.ok(sh);
     assert.match(sh!, /sh$/);
+    assert.equal(whichResolved("sh"), sh);
   });
 });

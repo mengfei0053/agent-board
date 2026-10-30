@@ -75,7 +75,9 @@ describe("U16 runner buildArgs (no spawn)", () => {
       );
       assert.equal(r.continueNewSession, true);
       assert.equal(r.assignedSession, true);
-      assert.equal(r.args.at(-1), "orig");
+      assert.match(r.args.at(-1) || "", /orig/);
+      assert.match(r.args.at(-1) || "", /ignored/);
+      assert.match(r.args.at(-1) || "", /继续指令/);
       assert.ok(r.args.includes("--session-id"));
       assert.ok(!r.args.includes("--resume"));
     });
@@ -126,7 +128,9 @@ describe("U16 runner buildArgs (no spawn)", () => {
       );
       assert.equal(r.continueNewSession, true);
       assert.ok(!r.args.includes("resume"));
-      assert.equal(r.args.at(-1), "orig");
+      assert.match(r.args.at(-1) || "", /orig/);
+      assert.match(r.args.at(-1) || "", /nope/);
+      assert.match(r.args.at(-1) || "", /继续指令/);
     });
   });
 
@@ -162,7 +166,8 @@ describe("U16 runner buildArgs (no spawn)", () => {
         "new-chat-id-0123456789abcdef",
       );
       assert.equal(r.continueNewSession, true);
-      assert.equal(r.args.at(-1), "orig");
+      assert.match(r.args.at(-1) || "", /orig/);
+      assert.match(r.args.at(-1) || "", /ignored/);
       assert.ok(r.args.includes("--resume"));
       assert.ok(r.args.includes("new-chat-id-0123456789abcdef"));
     });
@@ -203,7 +208,9 @@ describe("U16 runner buildArgs (no spawn)", () => {
       assert.equal(r.continueNewSession, true);
       assert.ok(!r.args.includes("-r"));
       assert.ok(!r.args.includes("-c"));
-      assert.equal(r.args.at(-1), "orig");
+      assert.match(r.args.at(-1) || "", /orig/);
+      assert.match(r.args.at(-1) || "", /ignored/);
+      assert.match(r.args.at(-1) || "", /继续指令/);
     });
   });
 

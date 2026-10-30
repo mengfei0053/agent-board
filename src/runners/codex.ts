@@ -4,6 +4,7 @@ import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
 import { isCodexSandboxEnabled } from "../codexSandbox.js";
+import { mergeContinueWithoutSession } from "./promptForRun.js";
 
 /**
  * OpenAI Codex CLI (`codex` on PATH).
@@ -95,7 +96,7 @@ export function buildCodexArgs(
     ];
   } else if (isContinue && !task.sessionId) {
     // First round failed before thread.started — do NOT resume --last (wrong session).
-    prompt = task.prompt;
+    prompt = mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "");
     args = ["exec", ...baseExecFlags(task.model, sandboxEnabled), prompt];
     continueNewSession = true;
   } else {
@@ -114,7 +115,7 @@ export const codexRunner: Runner = {
         JSON.stringify({
           type: "continue_new_session",
           kind: "codex",
-          note: "no sessionId; starting fresh exec with task.prompt (not resume --last)",
+          note: "no sessionId; fresh exec with original prompt plus continue instruction (not resume --last)",
           sandbox: built.sandbox,
         }),
       );

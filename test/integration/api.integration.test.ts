@@ -31,6 +31,7 @@ const {
   getPool,
   appendLog,
   purgeArchivedTaskLogs,
+  pruneTaskLogsForTests,
   logLineCount,
   getTask,
 } = await import("../../src/store.js");
@@ -619,6 +620,165 @@ describe("integration I1–I12", () => {
     assert.equal(res.status, 200);
     const body = await jsonOf(res);
     assert.equal(body.ok, true);
+  });
+
+  it("M3 rejects bad task input and oversized bodies", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "校验空间", path }),
+      }),
+    );
+
+    const strFalse = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "x",
+        start: "false",
+      }),
+    });
+    assert.equal(strFalse.status, 400);
+
+    const rel = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "pi", cwd: "relative/path", prompt: "x" }),
+    });
+    assert.equal(rel.status, 400);
+
+    const fileCwd = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "pi", cwd: "/etc/hosts", prompt: "x" }),
+    });
+    assert.equal(fileCwd.status, 400);
+
+    const overPrompt = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "p".repeat(100_001),
+      }),
+    });
+    assert.equal(overPrompt.status, 413);
+
+    const huge = await app.request("/api/tasks", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": "5000000",
+      },
+      body: JSON.stringify({ kind: "pi", workspaceId: workspace.id, prompt: "x" }),
+    });
+    assert.equal(huge.status, 413);
+  });
+
+  it("S2 serves html attachments as download, not inline html", async () => {
+    const fd = new FormData();
+    fd.append(
+      "file",
+      new File([Buffer.from("<script>alert(1)</script>")], "x.html", { type: "text/html" }),
+    );
+    const up = await app.request("/api/uploads?as=attachment", { method: "POST", body: fd });
+    assert.equal(up.status, 201);
+    const saved = await jsonOf(up);
+    const get = await app.request(`/uploads/${saved.name}`);
+    assert.equal(get.status, 200);
+    assert.match(get.headers.get("content-disposition") || "", /attachment/i);
+    assert.equal(get.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(get.headers.get("content-type"), "application/octet-stream");
+  });
+
+  it("M2 create does not report success when persist fails", async () => {
+    const { failNextPersistForTests } = await import("../../src/store.js");
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "故障空间", path }),
+      }),
+    );
+    failNextPersistForTests("task");
+    const res = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "should-not-stick",
+        start: false,
+      }),
+    });
+    assert.equal(res.status, 500);
+    const listed = await jsonOf(await app.request("/api/tasks"));
+    assert.ok(!(listed.tasks || []).some((t: { prompt?: string }) => t.prompt === "should-not-stick"));
+    const health = await app.request("/api/health");
+    assert.equal(health.status, 503);
+    const recover = freshWorkspacePath();
+    const again = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "恢复空间", path: recover }),
+    });
+    assert.equal(again.status, 201);
+    const health2 = await app.request("/api/health");
+    assert.equal(health2.status, 200);
+    await assert.rejects(flushPersist(), /persist failed/);
+    const health3 = await app.request("/api/health");
+    assert.equal(health3.status, 200);
+  });
+
+  it("M1 prune keeps board meta in original order with an exact line budget", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "裁剪空间", path }),
+      }),
+    );
+    const { task } = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "trim",
+          start: false,
+        }),
+      }),
+    );
+    const start = JSON.stringify({ type: "start" });
+    const cont = JSON.stringify({ type: "continue", iteration: 2 });
+    const exit = JSON.stringify({ type: "exit", code: 0 });
+    appendLog(task.id, start);
+    appendLog(task.id, "A");
+    appendLog(task.id, "B");
+    appendLog(task.id, cont);
+    appendLog(task.id, "C");
+    appendLog(task.id, exit);
+    await flushPersist();
+    await pruneTaskLogsForTests(task.id, 4);
+    const rows = await getPool().query<{ line: string }>(
+      `SELECT line FROM task_logs WHERE task_id = $1 ORDER BY id ASC`,
+      [task.id],
+    );
+    assert.deepEqual(
+      rows.rows.map((r) => r.line),
+      [start, cont, "C", exit],
+    );
   });
 });
 

@@ -1,7 +1,7 @@
 /** CLI command path overrides (meta.cli_paths). Empty → PATH lookup by default name. */
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { getPool } from "./db.js";
+import { spawnCollect } from "./spawnCollect.js";
 
 export const CLI_COMMAND_KEYS = ["pi", "claude", "agent", "devin", "codex"] as const;
 export type CliCommandKey = (typeof CLI_COMMAND_KEYS)[number];
@@ -70,24 +70,60 @@ export function resolveCliCommand(key: CliCommandKey): string {
   return o || CLI_COMMAND_DEFAULTS[key];
 }
 
-/** Best-effort absolute path for UI (does not affect spawn). */
+const whichCache = new Map<string, { path: string | null; at: number }>();
+const WHICH_TTL_MS = 30_000;
+
+function whichFromCache(cmd: string): string | null | undefined {
+  const hit = whichCache.get(cmd);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > WHICH_TTL_MS) return undefined;
+  return hit.path;
+}
+
+/**
+ * Best-effort absolute path for UI (does not affect spawn).
+ * Absolute paths are a sync exists check. PATH lookups use the cache filled
+ * by {@link whichResolvedAsync} so a settings read does not spawnSync.
+ */
 export function whichResolved(cmd: string): string | null {
   const c = cmd.trim();
   if (!c) return null;
   if (c.includes("/") || c.startsWith(".")) {
     return existsSync(c) ? c : null;
   }
-  try {
-    const r = spawnSync("sh", ["-c", 'command -v -- "$1"', "sh", c], {
-      encoding: "utf8",
-      env: process.env,
-      timeout: 3000,
-    });
-    const out = (r.stdout || "").trim().split(/\r?\n/)[0]?.trim();
-    return out || null;
-  } catch {
-    return null;
+  return whichFromCache(c) ?? null;
+}
+
+/** PATH lookup via async `command -v`. Result is cached. */
+export async function whichResolvedAsync(cmd: string): Promise<string | null> {
+  const c = cmd.trim();
+  if (!c) return null;
+  if (c.includes("/") || c.startsWith(".")) {
+    return existsSync(c) ? c : null;
   }
+  const cached = whichFromCache(c);
+  if (cached !== undefined) return cached;
+  const env: NodeJS.ProcessEnv = {};
+  if (process.env.PATH) env.PATH = process.env.PATH;
+  if (process.env.HOME) env.HOME = process.env.HOME;
+  const r = await spawnCollect("sh", ["-c", 'command -v -- "$1"', "sh", c], {
+    env,
+    timeoutMs: 3_000,
+  });
+  const out = (r.stdout || "").trim().split(/\r?\n/)[0]?.trim() || null;
+  whichCache.set(c, { path: out, at: Date.now() });
+  return out;
+}
+
+export async function getCliPathSettingsResolved(): Promise<
+  ReturnType<typeof getCliPathSettings>
+> {
+  await Promise.all(
+    CLI_COMMAND_KEYS.map(async (k) => {
+      await whichResolvedAsync(resolveCliCommand(k));
+    }),
+  );
+  return getCliPathSettings();
 }
 
 export type CliPathSetting = {
@@ -126,31 +162,52 @@ export async function setCliPathOverrides(
     if (v) next[rawKey] = v;
     else delete next[rawKey];
   }
-  overrides = next;
-
+  const planned = { next, json: cliPathsJson(next) };
   const p = getPool();
-  const payload = JSON.stringify(
+  await p.query(
+    `INSERT INTO meta (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [META_KEY, planned.json],
+  );
+  overrides = planned.next;
+  return getCliPathSettings();
+}
+
+function cliPathsJson(next: Partial<Record<CliCommandKey, string>>): string {
+  return JSON.stringify(
     Object.fromEntries(
       CLI_COMMAND_KEYS.filter((k) => next[k]).map((k) => [k, next[k]!]),
     ),
   );
-  await p.query(
-    `INSERT INTO meta (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [META_KEY, payload],
-  );
-  return getCliPathSettings();
+}
+
+/** Pure next-state for an atomic settings write. Does not touch memory or DB. */
+export function planCliPathOverrides(
+  input: Partial<Record<CliCommandKey, string>>,
+): { next: Partial<Record<CliCommandKey, string>>; json: string } {
+  const next: Partial<Record<CliCommandKey, string>> = { ...overrides };
+  for (const [rawKey, rawVal] of Object.entries(input)) {
+    if (!isKey(rawKey)) continue;
+    const v = normalizeOverride(rawVal);
+    if (v) next[rawKey] = v;
+    else delete next[rawKey];
+  }
+  return { next, json: cliPathsJson(next) };
+}
+
+export function applyCliPathMemory(next: Partial<Record<CliCommandKey, string>>): void {
+  overrides = { ...next };
 }
 
 /** Clear all CLI path overrides. */
 export async function clearCliPathOverrides(): Promise<ReturnType<typeof getCliPathSettings>> {
-  overrides = {};
   const p = getPool();
   await p.query(
     `INSERT INTO meta (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
     [META_KEY, "{}"],
   );
+  overrides = {};
   return getCliPathSettings();
 }
 

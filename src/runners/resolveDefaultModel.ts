@@ -1,13 +1,26 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentKind } from "../types.js";
 
 
-function readTomlModel(path: string): string | undefined {
+const MAX_CONFIG_BYTES = 262_144;
+
+function readCapped(path: string): string | undefined {
   try {
     if (!existsSync(path)) return undefined;
-    const text = readFileSync(path, "utf8");
+    const st = statSync(path);
+    if (!st.isFile() || st.size > MAX_CONFIG_BYTES) return undefined;
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function readTomlModel(path: string): string | undefined {
+  try {
+    const text = readCapped(path);
+    if (text == null) return undefined;
     // Prefer top-level `model = "..."` (ignore [profiles.*] blocks roughly by first match)
     const m = text.match(/^\s*model\s*=\s*"([^"]+)"/m);
     if (m?.[1]?.trim()) return m[1].trim();
@@ -19,8 +32,9 @@ function readTomlModel(path: string): string | undefined {
 
 function readJson(path: string): any | null {
   try {
-    if (!existsSync(path)) return null;
-    return JSON.parse(readFileSync(path, "utf8"));
+    const text = readCapped(path);
+    if (text == null) return null;
+    return JSON.parse(text);
   } catch {
     return null;
   }

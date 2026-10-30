@@ -15,6 +15,7 @@ import {
   isSafeUploadName,
   mimeForStoredName,
   normalizeAttachmentsInput,
+  uploadNameReferenced,
   publicUploadUrl,
   stripImageMarkdown,
   uploadsDir,
@@ -57,6 +58,18 @@ describe("uploads mime / name guards", () => {
     assert.ok(MAX_UPLOAD_BYTES > 0);
     assert.ok(MAX_ATTACHMENT_BYTES > MAX_UPLOAD_BYTES);
     assert.equal(MAX_ATTACHMENTS_PER_TASK, 20);
+  });
+});
+
+describe("uploadNameReferenced", () => {
+  it("sees attachments and prompt urls, ignores other tasks' files", () => {
+    const tasks = [
+      { attachments: [{ name: "a.png" }], prompt: "see /uploads/b.png" },
+      { prompt: "nope" },
+    ];
+    assert.equal(uploadNameReferenced("a.png", tasks), true);
+    assert.equal(uploadNameReferenced("b.png", tasks), true);
+    assert.equal(uploadNameReferenced("c.png", tasks), false);
   });
 });
 

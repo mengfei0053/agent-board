@@ -1,19 +1,22 @@
-import { spawnSync } from "node:child_process";
 import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
-import type { Runner, RunnerHooks } from "./types.js";
+import type { Runner, RunnerHandle, RunnerHooks } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
 import { childProcessEnv } from "../proxyEnv.js";
+import { spawnCollect } from "../spawnCollect.js";
+import { mergeContinueWithoutSession } from "./promptForRun.js";
 
-function ensureCursorChatId(task: { sessionId?: string }, hooks: RunnerHooks): string | undefined {
-  if (task.sessionId) return task.sessionId;
+async function ensureCursorChatId(
+  hooks: RunnerHooks,
+  isStopped: () => boolean,
+): Promise<string | undefined> {
   try {
-    const r = spawnSync(resolveCliCommand("agent"), ["create-chat"], {
-      encoding: "utf8",
+    const r = await spawnCollect(resolveCliCommand("agent"), ["create-chat"], {
       env: childProcessEnv("agent", { NO_COLOR: "1" }),
-      timeout: 20000,
+      timeoutMs: 20_000,
     });
+    if (isStopped()) return undefined;
     const out = `${r.stdout || ""}\n${r.stderr || ""}`.trim();
     const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const id = lines[lines.length - 1];
@@ -22,9 +25,17 @@ function ensureCursorChatId(task: { sessionId?: string }, hooks: RunnerHooks): s
       hooks.onLog(JSON.stringify({ type: "cursor_create_chat", sessionId: id }));
       return id;
     }
-    hooks.onLog(JSON.stringify({ type: "cursor_create_chat_failed", out: out.slice(0, 500) }));
+    hooks.onLog(
+      JSON.stringify({
+        type: "cursor_create_chat_failed",
+        out: out.slice(0, 500),
+        timedOut: r.timedOut,
+      }),
+    );
   } catch (err) {
-    hooks.onLog(JSON.stringify({ type: "cursor_create_chat_error", error: String(err) }));
+    if (!isStopped()) {
+      hooks.onLog(JSON.stringify({ type: "cursor_create_chat_error", error: String(err) }));
+    }
   }
   return undefined;
 }
@@ -66,7 +77,7 @@ export function buildCursorArgs(
     args.push("--resume", task.sessionId);
   } else if (isContinue && !task.sessionId) {
     // First round failed before session — do NOT --continue (wrong cwd session).
-    prompt = task.prompt;
+    prompt = mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "");
     continueNewSession = true;
     resumeSessionId = resolvedSessionId;
     if (resumeSessionId) args.push("--resume", resumeSessionId);
@@ -84,55 +95,74 @@ export function buildCursorArgs(
 
 export const cursorRunner: Runner = {
   start(task, hooks, opts) {
-    const priorSessionId = task.sessionId;
-    let resolved: string | undefined;
-    if (!priorSessionId) {
-      resolved = ensureCursorChatId(task, hooks);
-      if (resolved) task.sessionId = resolved;
-    }
-
-    const built = buildCursorArgs(
-      { prompt: task.prompt, sessionId: priorSessionId, model: task.model },
-      opts,
-      resolved,
-    );
-
-    if (built.continueNewSession) {
-      hooks.onLog(
-        JSON.stringify({
-          type: "continue_new_session",
-          kind: "cursor",
-          note: "no sessionId; starting fresh chat with task.prompt (not --continue)",
-          sessionId: built.resumeSessionId || null,
-        }),
-      );
-    }
-
-    let status = task.status;
-    return spawnLogged(resolveCliCommand("agent"), built.args, task.cwd, hooks, {
-      cliKind: "agent",
-      getStatus: () => status,
-      classifyLine: (line, h) => {
-        const detected = modelFromJsonLine(line);
-        if (detected && !task.model) {
-          task.model = detected;
-          h.onStatus({ model: detected });
-        }
-        const sid = sessionFromJsonLine(line);
-        if (sid && sid !== task.sessionId) {
-          task.sessionId = sid;
-          h.onStatus({ sessionId: sid });
-        }
+    let stopped = false;
+    let inner: RunnerHandle | null = null;
+    const handle: RunnerHandle = {
+      stop() {
+        stopped = true;
         try {
-          const ev = JSON.parse(line) as { type?: string };
-          if (ev.type) {
-            status = "running";
-            h.onStatus({ status: "running", lastEvent: ev.type });
-          }
+          inner?.stop();
         } catch {
-          /* plain */
+          /* ignore */
         }
       },
-    });
+    };
+
+    const priorSessionId = task.sessionId;
+    const launch = (resolved: string | undefined) => {
+      if (stopped) return;
+      if (resolved) task.sessionId = resolved;
+      const built = buildCursorArgs(
+        { prompt: task.prompt, sessionId: priorSessionId, model: task.model },
+        opts,
+        resolved,
+      );
+      if (built.continueNewSession) {
+        hooks.onLog(
+          JSON.stringify({
+            type: "continue_new_session",
+            kind: "cursor",
+            note: "no sessionId; fresh chat with original prompt plus continue instruction",
+            sessionId: built.resumeSessionId || null,
+          }),
+        );
+      }
+      let status = task.status;
+      inner = spawnLogged(resolveCliCommand("agent"), built.args, task.cwd, hooks, {
+        cliKind: "agent",
+        getStatus: () => status,
+        classifyLine: (line, h) => {
+          const detected = modelFromJsonLine(line);
+          if (detected && !task.model) {
+            task.model = detected;
+            h.onStatus({ model: detected });
+          }
+          const sid = sessionFromJsonLine(line);
+          if (sid && sid !== task.sessionId) {
+            task.sessionId = sid;
+            h.onStatus({ sessionId: sid });
+          }
+          try {
+            const ev = JSON.parse(line) as { type?: string };
+            if (ev.type) {
+              status = "running";
+              h.onStatus({ status: "running", lastEvent: ev.type });
+            }
+          } catch {
+            /* plain */
+          }
+        },
+      });
+      if (inner.pid) handle.pid = inner.pid;
+    };
+
+    if (priorSessionId) {
+      launch(undefined);
+    } else {
+      void ensureCursorChatId(hooks, () => stopped).then((id) => {
+        if (!stopped) launch(id);
+      });
+    }
+    return handle;
   },
 };

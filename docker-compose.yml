@@ -18,12 +18,14 @@ services:
     image: docker.m.daocloud.io/library/postgres:16-alpine
     container_name: agent-board-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: agent_board
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Required. Do not default to "postgres". Existing volumes keep the
+      # password they were initialized with until you ALTER USER.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_board}
     ports:
-      # Host 5433 so a local Postgres on :5432 is not displaced
-      - "5433:5432"
+      # Loopback only. Host 5433 so a local Postgres on :5432 is not displaced.
+      - "127.0.0.1:5433:5432"
     volumes:
       - agent_board_pg:/var/lib/postgresql/data
     healthcheck:
@@ -37,11 +39,12 @@ services:
     build: .
     container_name: agent-board-app
     ports:
-      - "8791:8791"
+      # Publish on loopback. The process inside the container still binds 0.0.0.0.
+      - "127.0.0.1:8791:8791"
     environment:
       PORT: "8791"
       HOST: "0.0.0.0"
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agent_board
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_board}
       AGENT_BOARD_WEBHOOK_SECRET: ${AGENT_BOARD_WEBHOOK_SECRET:-}
     volumes:
       # Persist task logs / any on-disk data under ./data

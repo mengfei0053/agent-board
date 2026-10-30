@@ -50,6 +50,11 @@ export function extractTextFromEventLine(line: string): string | undefined {
   }
   const t = ev.type;
 
+  // Stored when a JSON line was cut before persist. Not assistant prose by itself.
+  if (t === "log_truncated" && typeof ev.recoveredText === "string" && ev.recoveredText.trim()) {
+    return ev.recoveredText.trim();
+  }
+
   // pi: final streamed assistant text (preferred over thinking-only message_end)
   if (t === "message_update" && ev.assistantMessageEvent) {
     const ame = ev.assistantMessageEvent as Record<string, unknown>;
@@ -119,7 +124,7 @@ export function extractTextFromEventLine(line: string): string | undefined {
 }
 
 
-const BOARD_META_TYPES = new Set([
+export const BOARD_META_TYPE_LIST = [
   "spawn",
   "exit",
   "continue",
@@ -131,7 +136,15 @@ const BOARD_META_TYPES = new Set([
   "devin_list_failed",
   "devin_list_error",
   "devin_session",
-]);
+  "devin_session_unbound",
+] as const;
+
+const BOARD_META_TYPES = new Set<string>(BOARD_META_TYPE_LIST);
+
+/** POSIX regex for Postgres `~`. Used to retain meta rows across the same trim as memory. */
+export function boardMetaLineSqlPattern(): string {
+  return `"type"[[:space:]]*:[[:space:]]*"(${BOARD_META_TYPE_LIST.join("|")})"`;
+}
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
@@ -157,14 +170,10 @@ function plainTextFromRange(lines: string[], from: number, to: number): string {
     const t = cleaned.trim();
     if (!t) continue;
     if (isBoardMetaLine(t)) continue;
-    if (t.startsWith("{")) {
-      // JSON event lines are handled by extractTextFromEventLine; skip for plain fallback
-      try {
-        JSON.parse(t);
-        continue;
-      } catch {
-        /* keep as plain */
-      }
+    if (t.startsWith("{") || t.startsWith("[")) {
+      // Valid JSON is handled by extractTextFromEventLine. Broken JSON
+      // (truncated persist) must not be merged into the reply body.
+      continue;
     }
     parts.push(cleaned);
   }
