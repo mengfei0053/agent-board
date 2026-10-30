@@ -30,7 +30,7 @@
         <div class="brand-mark" aria-hidden="true">ab</div>
         <div>
           <h1>设置</h1>
-          <p class="muted">CLI 路径 · 各 Agent 进程代理</p>
+          <p class="muted">按 Agent 配置 CLI 与代理</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -40,36 +40,17 @@
     </header>
 
     <main class="docs-main settings-main">
-      <p class="settings-status muted" id="settings-status" role="status">加载中…</p>
-
       <form id="settings-form" class="settings-form" autocomplete="off">
-        <section class="settings-card" aria-labelledby="cli-heading">
-          <header class="settings-card-head">
-            <h2 id="cli-heading">CLI 路径</h2>
-            <p class="settings-card-desc">
-              非空覆盖用于后续 spawn；清空后恢复默认命令名（走 <code>PATH</code>）。
-              持久化 <code>meta.cli_paths</code>。
-            </p>
-          </header>
-          <div id="settings-fields" class="settings-fields"></div>
-        </section>
+        <div class="settings-kind-tabs" id="agent-tabs" role="tablist" aria-label="选择 Agent"></div>
 
-        <section class="settings-card" aria-labelledby="proxy-heading">
-          <header class="settings-card-head">
-            <h2 id="proxy-heading">进程代理</h2>
-            <p class="settings-card-desc">
-              按 Agent 种类分别注入子进程环境（<code>spawn</code> / <code>spawnSync</code>）。
-              某键为空则不覆盖，子进程继承看板进程环境。写入时同步小写别名（如 <code>http_proxy</code>）。
-              持久化 <code>meta.proxy_env</code>（按 kind 分桶）。
-            </p>
-          </header>
-          <div class="settings-kind-tabs" id="proxy-kind-tabs" role="tablist" aria-label="Agent 种类"></div>
-          <div id="proxy-fields" class="settings-proxy-panels"></div>
-        </section>
+        <div id="agent-panels" class="settings-agent-panels"></div>
 
-        <div class="settings-actions">
-          <button type="submit" id="btn-save-settings">保存</button>
-          <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
+        <div class="settings-sticky-bar" id="settings-sticky">
+          <p class="settings-status muted" id="settings-status" role="status">加载中…</p>
+          <div class="settings-actions">
+            <button type="submit" id="btn-save-settings">保存</button>
+            <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
+          </div>
         </div>
       </form>
     </main>

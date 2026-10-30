@@ -188,8 +188,8 @@ npm start</code></pre>
       </section>
     
       <section id="settings">
-        <h2>设置（CLI 路径 / 按 Agent 进程代理）</h2>
-        <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。</p>
+        <h2>设置（按 Agent：CLI 路径 + 进程代理）</h2>
+        <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。UI 顶部按 Agent 切换，同屏编辑该 Agent 的 CLI 路径与代理。</p>
         <p><code>GET /api/settings</code> — 返回 <code>cliPaths</code> 与按 kind 分桶的 <code>proxyEnv</code>（覆盖值、生效值；空键可显示是否继承看板进程环境）。</p>
         <pre><code>curl -sS http://127.0.0.1:8791/api/settings</code></pre>
         <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code> 和/或 <code>proxyEnv</code>。代理按 <code>pi</code> / <code>claude</code> / <code>agent</code> / <code>devin</code> / <code>codex</code> 分别配置；空字符串清除该项覆盖。</p>

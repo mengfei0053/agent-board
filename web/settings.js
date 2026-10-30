@@ -1,6 +1,5 @@
-const fieldsEl = document.getElementById("settings-fields");
-const proxyEl = document.getElementById("proxy-fields");
-const proxyTabsEl = document.getElementById("proxy-kind-tabs");
+const tabsEl = document.getElementById("agent-tabs");
+const panelsEl = document.getElementById("agent-panels");
 const form = document.getElementById("settings-form");
 const statusEl = document.getElementById("settings-status");
 const btnClear = document.getElementById("btn-clear-settings");
@@ -16,7 +15,18 @@ const KIND_LABELS = {
   codex: "Codex",
 };
 
-let activeProxyKind = "pi";
+const PROXY_LABELS = {
+  HTTP_PROXY: "HTTP 代理",
+  HTTPS_PROXY: "HTTPS 代理",
+  NO_PROXY: "不走代理",
+  ALL_PROXY: "全局代理",
+};
+
+let activeKind = "pi";
+/** @type {Record<string, any>} */
+let lastCli = {};
+/** @type {Record<string, any>} */
+let lastProxy = {};
 
 function escapeHtml(s) {
   return String(s)
@@ -30,110 +40,141 @@ function setStatus(msg, ok) {
   statusEl.textContent = msg;
   statusEl.classList.toggle("ok", ok === true);
   statusEl.classList.toggle("bad", ok === false);
-}
-
-function renderCli(cliPaths) {
-  fieldsEl.innerHTML = CLI_ORDER.map((key) => {
-    const row = cliPaths[key];
-    if (!row) return "";
-    const resolved = row.resolved
-      ? `<span class="settings-hint muted">解析到 <code>${escapeHtml(row.resolved)}</code></span>`
-      : `<span class="settings-hint muted">未在 PATH / 磁盘上找到</span>`;
-    return `
-      <label class="settings-row">
-        <span class="settings-label">
-          <strong>${escapeHtml(row.label || key)}</strong>
-          <span class="muted settings-default">默认 <code>${escapeHtml(row.default)}</code></span>
-        </span>
-        <input
-          type="text"
-          name="cli-${escapeHtml(key)}"
-          data-cli-key="${escapeHtml(key)}"
-          value="${escapeHtml(row.override || "")}"
-          placeholder="${escapeHtml(row.default)}"
-          spellcheck="false"
-        />
-        ${resolved}
-      </label>`;
-  }).join("");
+  statusEl.classList.toggle("muted", ok !== true && ok !== false);
 }
 
 function proxyHint(row) {
   if (row?.override) {
-    return `<span class="settings-hint muted">将注入该 Agent 子进程（日志只记键名）</span>`;
+    return `<span class="settings-hint muted">已为本 Agent 单独设置</span>`;
   }
   if (row?.inherited && row.effective) {
-    return `<span class="settings-hint muted">继承看板：<code>${escapeHtml(row.effective)}</code></span>`;
+    return `<span class="settings-hint muted">当前沿用看板：<code>${escapeHtml(row.effective)}</code></span>`;
   }
-  return `<span class="settings-hint muted">空 = 不注入，继承看板进程环境</span>`;
+  return `<span class="settings-hint muted">留空则沿用看板环境</span>`;
 }
 
-function renderProxyTabs() {
-  proxyTabsEl.innerHTML = CLI_ORDER.map((kind) => {
-    const selected = kind === activeProxyKind;
+function renderTabs() {
+  tabsEl.innerHTML = CLI_ORDER.map((kind) => {
+    const selected = kind === activeKind;
     return `<button
       type="button"
       class="settings-kind-tab${selected ? " active" : ""}"
       role="tab"
       aria-selected="${selected ? "true" : "false"}"
-      data-proxy-kind="${escapeHtml(kind)}"
-      id="proxy-tab-${escapeHtml(kind)}"
+      aria-controls="agent-panel-${escapeHtml(kind)}"
+      data-agent-kind="${escapeHtml(kind)}"
+      id="agent-tab-${escapeHtml(kind)}"
     >${escapeHtml(KIND_LABELS[kind] || kind)}</button>`;
   }).join("");
 }
 
-function renderProxy(proxyEnv) {
-  renderProxyTabs();
-  proxyEl.innerHTML = CLI_ORDER.map((kind) => {
-    const kindMap = proxyEnv[kind] || {};
-    const hidden = kind !== activeProxyKind;
-    const rows = PROXY_ORDER.map((key) => {
-      const row = kindMap[key] || { override: "", effective: "", inherited: false };
-      return `
-        <label class="settings-row">
-          <span class="settings-label">
-            <strong><code>${escapeHtml(key)}</code></strong>
-          </span>
-          <input
-            type="text"
-            name="proxy-${escapeHtml(kind)}-${escapeHtml(key)}"
-            data-proxy-kind="${escapeHtml(kind)}"
-            data-proxy-key="${escapeHtml(key)}"
-            value="${escapeHtml(row.override || "")}"
-            placeholder="留空则继承"
-            spellcheck="false"
-            autocomplete="off"
-          />
+function renderCliBlock(kind, cliRow) {
+  const row = cliRow || {
+    default: kind,
+    override: "",
+    resolved: "",
+    label: KIND_LABELS[kind] || kind,
+  };
+  const resolvedBadge = row.resolved
+    ? `<span class="settings-badge" title="${escapeHtml(row.resolved)}">已找到</span>
+       <span class="settings-resolved muted" title="${escapeHtml(row.resolved)}">${escapeHtml(row.resolved)}</span>`
+    : `<span class="settings-badge settings-badge-warn">未找到</span>`;
+
+  return `
+    <section class="settings-block" aria-labelledby="cli-title-${escapeHtml(kind)}">
+      <header class="settings-block-head">
+        <h2 id="cli-title-${escapeHtml(kind)}">CLI 路径</h2>
+        <p class="settings-block-desc">填写可执行文件路径；留空则使用默认命令名（系统 PATH）。</p>
+      </header>
+      <label class="settings-row settings-row-cli">
+        <span class="settings-label">
+          <strong>${escapeHtml(row.label || KIND_LABELS[kind] || kind)}</strong>
+          <span class="muted settings-default">默认 <code>${escapeHtml(row.default || kind)}</code></span>
+        </span>
+        <input
+          type="text"
+          name="cli-${escapeHtml(kind)}"
+          data-cli-key="${escapeHtml(kind)}"
+          value="${escapeHtml(row.override || "")}"
+          placeholder="${escapeHtml(row.default || kind)}"
+          spellcheck="false"
+        />
+        <span class="settings-resolved-line">${resolvedBadge}</span>
+      </label>
+    </section>`;
+}
+
+function renderProxyBlock(kind, kindMap) {
+  const map = kindMap || {};
+  const cells = PROXY_ORDER.map((key) => {
+    const row = map[key] || { override: "", effective: "", inherited: false };
+    const fillBtn =
+      key === "HTTP_PROXY" || key === "HTTPS_PROXY"
+        ? `<button type="button" class="settings-mini-btn" data-fill-both="${escapeHtml(kind)}" data-from-key="${escapeHtml(key)}">填到 HTTP &amp; HTTPS</button>`
+        : "";
+    return `
+      <label class="settings-row settings-proxy-cell">
+        <span class="settings-label">
+          <strong>${escapeHtml(PROXY_LABELS[key] || key)}</strong>
+          <span class="muted settings-default"><code>${escapeHtml(key)}</code></span>
+        </span>
+        <input
+          type="text"
+          name="proxy-${escapeHtml(kind)}-${escapeHtml(key)}"
+          data-proxy-kind="${escapeHtml(kind)}"
+          data-proxy-key="${escapeHtml(key)}"
+          value="${escapeHtml(row.override || "")}"
+          placeholder="留空则沿用看板"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <span class="settings-cell-foot">
           ${proxyHint(row)}
-        </label>`;
-    }).join("");
+          ${fillBtn}
+        </span>
+      </label>`;
+  }).join("");
+
+  return `
+    <section class="settings-block" aria-labelledby="proxy-title-${escapeHtml(kind)}">
+      <header class="settings-block-head">
+        <h2 id="proxy-title-${escapeHtml(kind)}">进程代理</h2>
+        <p class="settings-block-desc">仅影响本 Agent 新开的任务进程；留空不覆盖看板环境。</p>
+      </header>
+      <div class="settings-proxy-grid">${cells}</div>
+    </section>`;
+}
+
+function renderPanels() {
+  panelsEl.innerHTML = CLI_ORDER.map((kind) => {
+    const hidden = kind !== activeKind;
     return `
       <div
-        class="settings-proxy-panel${hidden ? " hidden" : ""}"
+        class="settings-agent-panel${hidden ? " hidden" : ""}"
         role="tabpanel"
-        data-proxy-panel="${escapeHtml(kind)}"
-        aria-labelledby="proxy-tab-${escapeHtml(kind)}"
+        id="agent-panel-${escapeHtml(kind)}"
+        data-agent-panel="${escapeHtml(kind)}"
+        aria-labelledby="agent-tab-${escapeHtml(kind)}"
         ${hidden ? "hidden" : ""}
       >
-        <p class="settings-panel-caption muted">
-          仅影响 <strong>${escapeHtml(KIND_LABELS[kind] || kind)}</strong>
-          （kind=<code>${escapeHtml(kind)}</code>）的 spawn。
-        </p>
-        <div class="settings-fields">${rows}</div>
+        <div class="settings-card settings-agent-card">
+          ${renderCliBlock(kind, lastCli[kind])}
+          ${renderProxyBlock(kind, lastProxy[kind])}
+        </div>
       </div>`;
   }).join("");
 }
 
-function showProxyKind(kind) {
+function showKind(kind) {
   if (!CLI_ORDER.includes(kind)) return;
-  activeProxyKind = kind;
-  for (const btn of proxyTabsEl.querySelectorAll(".settings-kind-tab")) {
-    const on = btn.dataset.proxyKind === kind;
+  activeKind = kind;
+  for (const btn of tabsEl.querySelectorAll(".settings-kind-tab")) {
+    const on = btn.dataset.agentKind === kind;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
   }
-  for (const panel of proxyEl.querySelectorAll(".settings-proxy-panel")) {
-    const on = panel.dataset.proxyPanel === kind;
+  for (const panel of panelsEl.querySelectorAll(".settings-agent-panel")) {
+    const on = panel.dataset.agentPanel === kind;
     panel.classList.toggle("hidden", !on);
     if (on) panel.removeAttribute("hidden");
     else panel.setAttribute("hidden", "");
@@ -141,14 +182,57 @@ function showProxyKind(kind) {
 }
 
 function renderAll(data) {
-  renderCli(data.cliPaths || {});
-  renderProxy(data.proxyEnv || {});
+  lastCli = data.cliPaths || {};
+  lastProxy = data.proxyEnv || {};
+  renderTabs();
+  renderPanels();
+  showKind(activeKind);
 }
 
-proxyTabsEl.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-proxy-kind]");
+function collectPayload() {
+  const cliPaths = {};
+  for (const input of panelsEl.querySelectorAll("input[data-cli-key]")) {
+    cliPaths[input.dataset.cliKey] = input.value;
+  }
+  const proxyEnv = {};
+  for (const kind of CLI_ORDER) proxyEnv[kind] = {};
+  for (const input of panelsEl.querySelectorAll("input[data-proxy-kind][data-proxy-key]")) {
+    const kind = input.dataset.proxyKind;
+    const key = input.dataset.proxyKey;
+    if (!proxyEnv[kind]) proxyEnv[kind] = {};
+    proxyEnv[kind][key] = input.value;
+  }
+  return { cliPaths, proxyEnv };
+}
+
+tabsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-agent-kind]");
   if (!btn) return;
-  showProxyKind(btn.dataset.proxyKind);
+  showKind(btn.dataset.agentKind);
+});
+
+panelsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-fill-both]");
+  if (!btn) return;
+  e.preventDefault();
+  const kind = btn.dataset.fillBoth;
+  const fromKey = btn.dataset.fromKey;
+  const from = panelsEl.querySelector(
+    `input[data-proxy-kind="${CSS.escape(kind)}"][data-proxy-key="${CSS.escape(fromKey)}"]`
+  );
+  if (!from) return;
+  const val = from.value.trim();
+  if (!val) {
+    setStatus("请先填写一个代理地址，再点「填到 HTTP & HTTPS」。", false);
+    return;
+  }
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY"]) {
+    const input = panelsEl.querySelector(
+      `input[data-proxy-kind="${CSS.escape(kind)}"][data-proxy-key="${CSS.escape(key)}"]`
+    );
+    if (input) input.value = val;
+  }
+  setStatus("已填入 HTTP 与 HTTPS 代理（尚未保存）。");
 });
 
 async function load() {
@@ -160,31 +244,18 @@ async function load() {
   }
   const data = await res.json();
   renderAll(data);
-  setStatus("已加载。保存后对新 spawn 生效。", true);
+  setStatus("已加载。修改后点保存即可。", true);
 }
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const cliPaths = {};
-  for (const input of fieldsEl.querySelectorAll("input[data-cli-key]")) {
-    cliPaths[input.dataset.cliKey] = input.value;
-  }
-  const proxyEnv = {};
-  for (const kind of CLI_ORDER) {
-    proxyEnv[kind] = {};
-  }
-  for (const input of proxyEl.querySelectorAll("input[data-proxy-kind][data-proxy-key]")) {
-    const kind = input.dataset.proxyKind;
-    const key = input.dataset.proxyKey;
-    if (!proxyEnv[kind]) proxyEnv[kind] = {};
-    proxyEnv[kind][key] = input.value;
-  }
+  const body = collectPayload();
   setStatus("保存中…");
   try {
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cliPaths, proxyEnv }),
+      body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -192,7 +263,7 @@ form.addEventListener("submit", async (e) => {
       return;
     }
     renderAll(data);
-    setStatus("已保存。", true);
+    setStatus("已保存，对新任务生效。", true);
   } catch (err) {
     setStatus(`保存失败：${err}`, false);
   }
