@@ -292,9 +292,35 @@ async function persistDelete(ids: string[]): Promise<void> {
   await p.query(`DELETE FROM tasks WHERE id = ANY($1::text[])`, [ids]);
 }
 
+/** How often to prune Postgres rows for a task after append (amortize DELETE cost). */
+const LOG_DB_PRUNE_EVERY = 50;
+const logPersistCounts = new Map<string, number>();
+
+async function pruneTaskLogsInDb(taskId: string, keep = MAX_LOG_LINES_KEPT): Promise<void> {
+  const p = getPool();
+  // Keep the newest `keep` rows by id; older ones are dropped.
+  await p.query(
+    `DELETE FROM task_logs
+     WHERE task_id = $1
+       AND id < (
+         SELECT id FROM task_logs
+         WHERE task_id = $1
+         ORDER BY id DESC
+         OFFSET $2
+         LIMIT 1
+       )`,
+    [taskId, keep],
+  );
+}
+
 async function persistLogLine(taskId: string, line: string): Promise<void> {
   const p = getPool();
   await p.query(`INSERT INTO task_logs (task_id, line) VALUES ($1, $2)`, [taskId, line]);
+  const n = (logPersistCounts.get(taskId) || 0) + 1;
+  logPersistCounts.set(taskId, n);
+  if (n === 1 || n % LOG_DB_PRUNE_EVERY === 0) {
+    await pruneTaskLogsInDb(taskId);
+  }
 }
 
 async function loadWorkspacesFromPg(): Promise<void> {
@@ -381,15 +407,27 @@ async function loadAllFromPg(): Promise<void> {
     tasks.set(t.id, t);
   }
 
+  // Do NOT load every historical task_logs row — chatty agents can leave 100k+/task
+  // and a full SELECT + per-row trim stalls listen for minutes at 100% CPU.
+  // Load only the newest MAX_LOG_LINES_KEPT lines per task (meta kept via trim).
   logs = new Map();
   const logRes = await p.query<{ task_id: string; line: string }>(
-    `SELECT task_id, line FROM task_logs ORDER BY id ASC`,
+    `SELECT task_id, line FROM (
+       SELECT task_id, line, id,
+              ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+       FROM task_logs
+     ) t
+     WHERE rn <= $1
+     ORDER BY task_id ASC, id ASC`,
+    [MAX_LOG_LINES_KEPT],
   );
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
     arr.push(truncateLogLine(r.line));
-    trimLogsKeepingMeta(arr);
     logs.set(r.task_id, arr);
+  }
+  for (const arr of logs.values()) {
+    trimLogsKeepingMeta(arr);
   }
 }
 
