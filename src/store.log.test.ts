@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  boundStoredLogLine,
   DEFAULT_LOG_TAIL_CHARS,
   DEFAULT_LOG_TAIL_LINES,
+  keptLogIndices,
   MAX_LOG_LINE_CHARS,
   truncateLogLine,
   trimLogsKeepingMeta,
@@ -51,10 +53,28 @@ describe("trimLogsKeepingMeta (U12)", () => {
     assert.ok(arr.includes(metaStart));
     assert.ok(arr.includes(metaExit));
     assert.equal(arr.length, 4);
-    // meta first, then newest rest
-    assert.equal(arr[0], metaStart);
-    assert.equal(arr[1], metaExit);
-    assert.deepEqual(arr.slice(2), ["noise-4", "noise-5"]);
+    // Original order: start, noise-4, exit, noise-5 (not meta-first).
+    assert.deepEqual(arr, [metaStart, "noise-4", metaExit, "noise-5"]);
+  });
+
+  it("keeps zero ordinary lines when the budget is only meta", () => {
+    const meta = JSON.stringify({ type: "start" });
+    const arr = [meta, "a", "b", "c"];
+    trimLogsKeepingMeta(arr, 1);
+    assert.deepEqual(arr, [meta]);
+  });
+
+  it("keeps nothing when the line budget is zero", () => {
+    const arr = ["a", "b", JSON.stringify({ type: "exit", code: 0 })];
+    trimLogsKeepingMeta(arr, 0);
+    assert.deepEqual(arr, []);
+  });
+
+  it("caps meta lines and keeps the newest ones in order", () => {
+    const metas = [1, 2, 3, 4, 5].map((n) => JSON.stringify({ type: "start", n }));
+    const arr = [...metas, "noise"];
+    trimLogsKeepingMeta(arr, 2);
+    assert.deepEqual(arr, [metas[3], metas[4]]);
   });
 
   it("ignores non-meta JSON and plain lines as rest", () => {
@@ -66,6 +86,30 @@ describe("trimLogsKeepingMeta (U12)", () => {
     trimLogsKeepingMeta(arr, 2);
     assert.equal(arr.length, 2);
     assert.ok(arr.some((l) => l.includes('"continue"')));
+  });
+});
+
+describe("boundStoredLogLine", () => {
+  it("wraps a cut JSON line instead of leaving broken JSON", () => {
+    const raw = JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_end", content: "hello reply" },
+      pad: "x".repeat(9000),
+    });
+    const stored = boundStoredLogLine(raw, 200);
+    const parsed = JSON.parse(stored) as { type?: string; recoveredText?: string };
+    assert.equal(parsed.type, "log_truncated");
+    assert.equal(typeof stored, "string");
+    assert.ok(!stored.includes("…[truncated"));
+  });
+
+  it("selects indices in original order", () => {
+    const start = JSON.stringify({ type: "start" });
+    const cont = JSON.stringify({ type: "continue", iteration: 2 });
+    const exit = JSON.stringify({ type: "exit", code: 0 });
+    const lines = [start, "A", cont, "B", exit, "tail"];
+    const idx = keptLogIndices(lines, 4);
+    assert.deepEqual(idx.map((i) => lines[i]), [start, cont, exit, "tail"]);
   });
 });
 

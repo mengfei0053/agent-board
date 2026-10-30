@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS task_prompts (
   PRIMARY KEY (task_id, iteration)
 );
 
+CREATE TABLE IF NOT EXISTS uploads (
+  name TEXT PRIMARY KEY,
+  original_name TEXT,
+  mime TEXT,
+  size INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS task_side_jobs (
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   job_id TEXT NOT NULL,
@@ -122,6 +130,32 @@ CREATE TABLE IF NOT EXISTS task_side_jobs (
   PRIMARY KEY (task_id, job_id)
 );
 `;
+
+/** One transaction for several meta keys. Memory is updated by the caller after this resolves. */
+export async function upsertMetaMany(entries: ReadonlyArray<readonly [string, string]>): Promise<void> {
+  if (!entries.length) return;
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    for (const [key, value] of entries) {
+      await client.query(
+        `INSERT INTO meta (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [key, value],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 export async function ensureSchema(): Promise<void> {
   const p = getPool();

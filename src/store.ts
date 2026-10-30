@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { nanoid } from "nanoid";
 import type { OutputTurn, PromptTurn, SideJob, Task, Workspace } from "./types.js";
@@ -19,46 +19,37 @@ import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
-import { isBoardMetaLine } from "./extractOutput.js";
+import { boardMetaLineSqlPattern } from "./extractOutput.js";
+import { gcOrphanUploads } from "./uploads.js";
+import {
+  boundStoredLogLine,
+  DEFAULT_LOG_TAIL_CHARS,
+  DEFAULT_LOG_TAIL_LINES,
+  keptLogIndices,
+  MAX_LOG_CHARS_KEPT,
+  MAX_LOG_LINE_CHARS,
+  MAX_LOG_LINES_KEPT,
+  trimLogsKeepingMeta,
+  truncateLogLine,
+} from "./logRetention.js";
 
 export { dataDir, logsDir };
+export {
+  boundStoredLogLine,
+  DEFAULT_LOG_TAIL_CHARS,
+  DEFAULT_LOG_TAIL_LINES,
+  keptLogIndices,
+  MAX_LOG_CHARS_KEPT,
+  MAX_LOG_LINE_CHARS,
+  MAX_LOG_LINES_KEPT,
+  trimLogsKeepingMeta,
+  truncateLogLine,
+};
 
 /** In-memory mirror for sync reads; Postgres is the source of truth after init. */
 let tasks = new Map<string, Task>();
 let workspaces = new Map<string, Workspace>();
 let logs = new Map<string, string[]>();
-
-/** Cap a single log line — agent_end / tool dumps can be multi-MB JSON. */
-export const MAX_LOG_LINE_CHARS = 8_000;
-/** Soft cap for in-memory lines kept per task. */
-export const MAX_LOG_LINES_KEPT = 3_000;
-/** UI/API default: last N lines. */
-export const DEFAULT_LOG_TAIL_LINES = 400;
-/** UI/API default: total chars across returned lines. */
-export const DEFAULT_LOG_TAIL_CHARS = 240_000;
-
-export function truncateLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS): string {
-  if (line.length <= maxChars) return line;
-  const omitted = line.length - maxChars;
-  return `${line.slice(0, maxChars)}…[truncated ${omitted} chars]`;
-}
-
-/**
- * Cap in-memory logs but always retain board meta lines (start/continue/exit/…).
- * Without them, settle-time re-extraction tags the latest reply as iteration 1.
- */
-export function trimLogsKeepingMeta(arr: string[], maxLines = MAX_LOG_LINES_KEPT): void {
-  if (arr.length <= maxLines) return;
-  const meta: string[] = [];
-  const rest: string[] = [];
-  for (const l of arr) {
-    if (isBoardMetaLine(l)) meta.push(l);
-    else rest.push(l);
-  }
-  const keepRest = Math.max(0, maxLines - meta.length);
-  arr.length = 0;
-  arr.push(...meta, ...rest.slice(-keepRest));
-}
 
 
 let ready = false;
@@ -84,15 +75,146 @@ function normalizeTask(t: Task): Task {
   };
 }
 
-function enqueuePersist(job: () => Promise<void>): void {
+type PersistOp = "task" | "delete" | "workspace" | "log";
+
+let persistFault: { op: PersistOp; error: Error } | null = null;
+/** Set when a job fails. Cleared by a later successful job. */
+let persistDegraded: unknown = null;
+/** Failure not yet observed by flushPersist(). */
+let unreportedFailure: unknown = null;
+let persistDepth = 0;
+
+const pendingTaskWrites = new Map<string, Task>();
+let coalesceQueued = false;
+
+type LogRow = { taskId: string; line: string };
+let logBatch: LogRow[] = [];
+let logBatchTimer: ReturnType<typeof setTimeout> | null = null;
+let logBatchQueued = false;
+const MAX_LOG_BATCH = 5_000;
+
+function consumePersistFault(op: PersistOp): void {
+  if (!persistFault || persistFault.op !== op) return;
+  const err = persistFault.error;
+  persistFault = null;
+  throw err;
+}
+
+/** One-shot fault injection for tests. The next matching persist op throws. */
+export function failNextPersistForTests(op: PersistOp, error = new Error("persist failed")): void {
+  persistFault = { op, error };
+}
+
+export function isPersistDegraded(): boolean {
+  return persistDegraded != null;
+}
+
+export function persistFailureMessage(): string | null {
+  if (persistDegraded == null) return null;
+  return persistDegraded instanceof Error ? persistDegraded.message : String(persistDegraded);
+}
+
+function asPersistError(err: unknown): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  return Object.assign(new Error(`persist failed: ${msg}`), { statusCode: 500, cause: err });
+}
+
+function enqueuePersist(job: () => Promise<void>): Promise<void> {
+  if (!persistWrites) return Promise.resolve();
+  if (persistDepth > 32) {
+    console.warn(`[db] persist queue depth ${persistDepth}`);
+  }
+  persistDepth += 1;
+  const run = persistChain.then(job);
+  persistChain = run.then(
+    () => {
+      persistDepth = Math.max(0, persistDepth - 1);
+      persistDegraded = null;
+    },
+    (err) => {
+      persistDepth = Math.max(0, persistDepth - 1);
+      console.error("[db] persist error:", err);
+      persistDegraded = err;
+      unreportedFailure = err;
+    },
+  );
+  return run;
+}
+
+function enqueueTaskCoalesced(task: Task): void {
   if (!persistWrites) return;
-  persistChain = persistChain.then(job).catch((err) => {
-    console.error("[db] persist error:", err);
+  pendingTaskWrites.set(task.id, task);
+  if (coalesceQueued) return;
+  coalesceQueued = true;
+  void enqueuePersist(async () => {
+    coalesceQueued = false;
+    const batch = [...pendingTaskWrites.values()];
+    pendingTaskWrites.clear();
+    for (const t of batch) await persistTask(t);
+    if (pendingTaskWrites.size) {
+      const again = pendingTaskWrites.values().next().value;
+      if (again) enqueueTaskCoalesced(again);
+    }
   });
 }
 
+function dropQueuedLogs(ids: Set<string>): void {
+  if (!ids.size) return;
+  logBatch = logBatch.filter((row) => !ids.has(row.taskId));
+}
+
+function queueLogFlush(): void {
+  if (logBatchTimer) {
+    clearTimeout(logBatchTimer);
+    logBatchTimer = null;
+  }
+  if (!logBatch.length || logBatchQueued || !persistWrites) return;
+  logBatchQueued = true;
+  void enqueuePersist(async () => {
+    logBatchQueued = false;
+    const rows = logBatch.splice(0, 200);
+    if (!rows.length) return;
+    await insertLogRows(rows);
+    const touched = new Set(rows.map((r) => r.taskId));
+    for (const id of touched) await pruneTaskLogsInDb(id);
+    if (logBatch.length) queueLogFlush();
+  });
+}
+
+function enqueueLogLine(taskId: string, line: string): void {
+  if (!persistWrites) return;
+  if (logBatch.length >= MAX_LOG_BATCH) {
+    const idx = logBatch.findIndex((row) => row.line && !row.line.includes('"type":"start"'));
+    if (idx >= 0) logBatch.splice(idx, 1);
+    else logBatch.shift();
+    console.warn(`[db] log batch cap ${MAX_LOG_BATCH}; dropped an oldest queued line`);
+  }
+  logBatch.push({ taskId, line });
+  if (!persistWrites) return;
+  if (logBatch.length >= 50) {
+    queueLogFlush();
+    return;
+  }
+  if (logBatchTimer) return;
+  logBatchTimer = setTimeout(() => {
+    logBatchTimer = null;
+    queueLogFlush();
+  }, 30);
+  logBatchTimer.unref?.();
+}
+
 export async function flushPersist(): Promise<void> {
+  if (logBatch.length) queueLogFlush();
   await persistChain;
+  if (logBatch.length) {
+    queueLogFlush();
+    await persistChain;
+  }
+  if (unreportedFailure) {
+    const err = unreportedFailure;
+    unreportedFailure = null;
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 function iso(v: unknown): string | undefined {
@@ -201,6 +323,7 @@ function rowToTask(
 }
 
 async function persistWorkspace(ws: Workspace): Promise<void> {
+  consumePersistFault("workspace");
   const p = getPool();
   const settingsJson = ws.settings ? JSON.stringify(ws.settings) : null;
   await p.query(
@@ -222,6 +345,7 @@ async function persistDeleteWorkspaces(ids: string[]): Promise<void> {
 }
 
 async function persistTask(task: Task): Promise<void> {
+  consumePersistFault("task");
   const p = getPool();
   const client = await p.connect();
   try {
@@ -331,13 +455,27 @@ async function persistTask(task: Task): Promise<void> {
 
 async function persistDelete(ids: string[]): Promise<void> {
   if (!ids.length) return;
-  const p = getPool();
-  // Explicit child deletes (FK also has ON DELETE CASCADE — belt and suspenders).
-  await p.query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [ids]);
-  await p.query(`DELETE FROM task_outputs WHERE task_id = ANY($1::text[])`, [ids]);
-  await p.query(`DELETE FROM task_prompts WHERE task_id = ANY($1::text[])`, [ids]);
-  await p.query(`DELETE FROM task_side_jobs WHERE task_id = ANY($1::text[])`, [ids]);
-  await p.query(`DELETE FROM tasks WHERE id = ANY($1::text[])`, [ids]);
+  consumePersistFault("delete");
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    // Explicit child deletes (FK also has ON DELETE CASCADE — belt and suspenders).
+    await client.query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [ids]);
+    await client.query(`DELETE FROM task_outputs WHERE task_id = ANY($1::text[])`, [ids]);
+    await client.query(`DELETE FROM task_prompts WHERE task_id = ANY($1::text[])`, [ids]);
+    await client.query(`DELETE FROM task_side_jobs WHERE task_id = ANY($1::text[])`, [ids]);
+    await client.query(`DELETE FROM tasks WHERE id = ANY($1::text[])`, [ids]);
+    await client.query("COMMIT");
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
   for (const id of ids) {
     try {
       const path = `${logsDir}/${id}.jsonl`;
@@ -350,33 +488,74 @@ async function persistDelete(ids: string[]): Promise<void> {
 
 /** How often to prune Postgres rows for a task after append (amortize DELETE cost). */
 const LOG_DB_PRUNE_EVERY = 50;
-const logPersistCounts = new Map<string, number>();
 
 async function pruneTaskLogsInDb(taskId: string, keep = MAX_LOG_LINES_KEPT): Promise<void> {
+  if (keep <= 0) {
+    await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [taskId]);
+    return;
+  }
   const p = getPool();
-  // Keep the newest `keep` rows by id; older ones are dropped.
-  await p.query(
-    `DELETE FROM task_logs
-     WHERE task_id = $1
-       AND id < (
-         SELECT id FROM task_logs
-         WHERE task_id = $1
-         ORDER BY id DESC
-         OFFSET $2
-         LIMIT 1
-       )`,
-    [taskId, keep],
+  const countRes = await p.query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM task_logs WHERE task_id = $1`,
+    [taskId],
+  );
+  const n = Number(countRes.rows[0]?.n || 0);
+  if (n <= keep) return;
+
+  // Bound a legacy backlog before the exact in-memory selection: keep the
+  // newest `keep` rows plus older meta-like lines, fixing the old OFFSET off-by-one.
+  if (n > keep + LOG_DB_PRUNE_EVERY) {
+    await p.query(
+      `DELETE FROM task_logs AS t
+       WHERE t.task_id = $1
+         AND t.id < (
+           SELECT id FROM task_logs
+           WHERE task_id = $1
+           ORDER BY id DESC
+           OFFSET $2
+           LIMIT 1
+         )
+         AND NOT (t.line ~ $3)`,
+      [taskId, keep - 1, boardMetaLineSqlPattern()],
+    );
+  }
+
+  const res = await p.query<{ id: string; line: string }>(
+    `SELECT id, line FROM task_logs WHERE task_id = $1 ORDER BY id ASC`,
+    [taskId],
+  );
+  if (res.rows.length <= keep) return;
+  const indices = keptLogIndices(
+    res.rows.map((r) => r.line),
+    keep,
+  );
+  const keepIds = new Set(indices.map((i) => res.rows[i]!.id));
+  const dropIds = res.rows.filter((r) => !keepIds.has(r.id)).map((r) => r.id);
+  if (!dropIds.length) return;
+  await p.query(`DELETE FROM task_logs WHERE task_id = $1 AND id = ANY($2::bigint[])`, [
+    taskId,
+    dropIds,
+  ]);
+}
+
+/** Test hook: run the same prune the append path uses, with an explicit cap. */
+export async function pruneTaskLogsForTests(taskId: string, keep: number): Promise<void> {
+  await pruneTaskLogsInDb(taskId, keep);
+}
+
+async function insertLogRows(rows: LogRow[]): Promise<void> {
+  if (!rows.length) return;
+  consumePersistFault("log");
+  await getPool().query(
+    `INSERT INTO task_logs (task_id, line)
+     SELECT * FROM UNNEST($1::text[], $2::text[])`,
+    [rows.map((r) => r.taskId), rows.map((r) => r.line)],
   );
 }
 
 async function persistLogLine(taskId: string, line: string): Promise<void> {
-  const p = getPool();
-  await p.query(`INSERT INTO task_logs (task_id, line) VALUES ($1, $2)`, [taskId, line]);
-  const n = (logPersistCounts.get(taskId) || 0) + 1;
-  logPersistCounts.set(taskId, n);
-  if (n === 1 || n % LOG_DB_PRUNE_EVERY === 0) {
-    await pruneTaskLogsInDb(taskId);
-  }
+  await insertLogRows([{ taskId, line }]);
+  await pruneTaskLogsInDb(taskId);
 }
 
 async function loadWorkspacesFromPg(): Promise<void> {
@@ -468,14 +647,15 @@ async function loadAllFromPg(): Promise<void> {
   // Load only the newest MAX_LOG_LINES_KEPT lines per task (meta kept via trim).
   logs = new Map();
   const logRes = await p.query<{ task_id: string; line: string }>(
-    `SELECT task_id, line FROM (
+    `SELECT task_id, line, id FROM (
        SELECT task_id, line, id,
               ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
        FROM task_logs
      ) t
      WHERE rn <= $1
+        OR line ~ $2
      ORDER BY task_id ASC, id ASC`,
-    [MAX_LOG_LINES_KEPT],
+    [MAX_LOG_LINES_KEPT + LOG_DB_PRUNE_EVERY, boardMetaLineSqlPattern()],
   );
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
@@ -593,6 +773,44 @@ async function ensureDefaultWorkspace(): Promise<void> {
   }
 }
 
+/** Leftover queued/running/blocked rows are not reattached to child processes. */
+async function reconcileInterruptedTasks(): Promise<number> {
+  let n = 0;
+  const nowIso = new Date().toISOString();
+  for (const t of [...tasks.values()]) {
+    if (t.status !== "queued" && t.status !== "running" && t.status !== "blocked") continue;
+    const next: Task = {
+      ...t,
+      status: "failed",
+      error: t.error || "服务重启，任务已中断（未接管子进程）",
+      lastEvent: "interrupted",
+      pid: undefined,
+      endedAt: t.endedAt || nowIso,
+      updatedAt: nowIso,
+    };
+    tasks.set(t.id, next);
+    await persistTask(next);
+    n += 1;
+  }
+  return n;
+}
+
+function referencedUploadNames(): Set<string> {
+  const names = new Set<string>();
+  const re = /\/uploads\/([A-Za-z0-9_-]+\.[A-Za-z0-9]{1,16})/g;
+  for (const t of tasks.values()) {
+    for (const a of t.attachments || []) names.add(a.name);
+    const texts = [t.prompt, t.output, ...(t.prompts || []).map((p) => p.prompt)];
+    for (const text of texts) {
+      if (!text) continue;
+      for (const m of text.matchAll(re)) {
+        if (m[1]) names.add(m[1]);
+      }
+    }
+  }
+  return names;
+}
+
 /** Call once before serving HTTP. */
 export async function initStore(): Promise<void> {
   if (ready) return;
@@ -626,6 +844,16 @@ export async function initStore(): Promise<void> {
       `[db] purged archived task_logs: tasks=${archivedLogs.tasks} rows=${archivedLogs.rows}`,
     );
   }
+  const interrupted = await reconcileInterruptedTasks();
+  if (interrupted) {
+    console.log(`[db] marked ${interrupted} leftover running task(s) interrupted`);
+  }
+  try {
+    const gc = await gcOrphanUploads(referencedUploadNames());
+    if (gc) console.log(`[uploads] gc ${gc} unreferenced file(s)`);
+  } catch (err) {
+    console.warn("[uploads] gc failed:", err);
+  }
 
   ready = true;
   console.log(
@@ -647,13 +875,20 @@ export function getDefaultWorkspaceId(): string {
   return defaultWorkspaceId;
 }
 
-export function upsertWorkspace(ws: Workspace): Workspace {
+export async function upsertWorkspace(ws: Workspace): Promise<Workspace> {
+  const prev = workspaces.get(ws.id);
   workspaces.set(ws.id, ws);
-  enqueuePersist(() => persistWorkspace(ws));
+  try {
+    await enqueuePersist(() => persistWorkspace(ws));
+  } catch (err) {
+    if (prev) workspaces.set(ws.id, prev);
+    else workspaces.delete(ws.id);
+    throw asPersistError(err);
+  }
   return ws;
 }
 
-export function deleteWorkspace(id: string): boolean {
+export async function deleteWorkspace(id: string): Promise<boolean> {
   if (!workspaces.has(id)) return false;
   if (id === defaultWorkspaceId) {
     throw new Error("cannot delete the default workspace");
@@ -663,8 +898,12 @@ export function deleteWorkspace(id: string): boolean {
       throw new Error("workspace still has tasks; move or delete them first");
     }
   }
+  try {
+    await enqueuePersist(() => persistDeleteWorkspaces([id]));
+  } catch (err) {
+    throw asPersistError(err);
+  }
   workspaces.delete(id);
-  enqueuePersist(() => persistDeleteWorkspaces([id]));
   return true;
 }
 
@@ -682,23 +921,40 @@ export function getTask(id: string): Task | undefined {
 export function upsertTask(task: Task): Task {
   const normalized = normalizeTask(task);
   tasks.set(normalized.id, normalized);
-  enqueuePersist(() => persistTask(normalized));
+  enqueueTaskCoalesced(normalized);
   return normalized;
 }
 
-export function deleteTasks(ids: string[]): string[] {
-  const removed: string[] = [];
-  for (const id of ids) {
-    if (tasks.delete(id)) {
-      removed.push(id);
-      logs.delete(id);
-    }
+/** Wait until this snapshot is committed. Rolls memory back if the write fails. */
+export async function saveTaskDurable(task: Task): Promise<Task> {
+  const normalized = normalizeTask(task);
+  const prev = tasks.get(normalized.id);
+  tasks.set(normalized.id, normalized);
+  try {
+    await enqueuePersist(() => persistTask(normalized));
+  } catch (err) {
+    if (prev) tasks.set(normalized.id, prev);
+    else tasks.delete(normalized.id);
+    throw asPersistError(err);
   }
-  if (removed.length) {
-    // Sync, before the async DELETE, so timers cannot flush a removed id.
-    tasksDeletedListener?.(removed);
-    enqueuePersist(() => persistDelete(removed));
+  return normalized;
+}
+
+export async function deleteTasks(ids: string[]): Promise<string[]> {
+  const removed = ids.filter((id) => tasks.has(id));
+  if (!removed.length) return [];
+  // Disarm deferred work before the await so a timer cannot rewrite the row.
+  tasksDeletedListener?.(removed);
+  try {
+    if (persistWrites) await enqueuePersist(() => persistDelete(removed));
+  } catch (err) {
+    throw asPersistError(err);
   }
+  for (const id of removed) {
+    tasks.delete(id);
+    logs.delete(id);
+  }
+  dropQueuedLogs(new Set(removed));
   return removed;
 }
 
@@ -708,12 +964,12 @@ export function logPath(id: string) {
 }
 
 export function appendLog(id: string, line: string): void {
-  const cleaned = truncateLogLine(line.endsWith("\n") ? line.slice(0, -1) : line);
+  const cleaned = boundStoredLogLine(line);
   const arr = logs.get(id) || [];
   arr.push(cleaned);
   trimLogsKeepingMeta(arr);
   logs.set(id, arr);
-  enqueuePersist(() => persistLogLine(id, cleaned));
+  enqueueLogLine(id, cleaned);
 }
 
 export function logLineCount(id: string): number {
@@ -741,6 +997,7 @@ export function readLogTail(
 
 export function removeLog(id: string): void {
   logs.delete(id);
+  dropQueuedLogs(new Set([id]));
   enqueuePersist(async () => {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [id]);
     try {
@@ -757,6 +1014,7 @@ export function clearTaskLogs(ids: string[]): void {
   const uniq = [...new Set(ids.filter(Boolean))];
   if (!uniq.length) return;
   for (const id of uniq) logs.delete(id);
+  dropQueuedLogs(new Set(uniq));
   enqueuePersist(async () => {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [uniq]);
     for (const id of uniq) {
@@ -847,9 +1105,12 @@ export function countTasksInWorkspace(workspaceId: string): number {
  */
 export function enableMemoryStoreForTests(): string {
   persistWrites = false;
+  persistFault = null;
   tasks = new Map();
   workspaces = new Map();
   logs = new Map();
+  logBatch = [];
+  pendingTaskWrites.clear();
   const now = new Date().toISOString();
   const ws: Workspace = {
     id: "ws-memory-test",
@@ -858,6 +1119,7 @@ export function enableMemoryStoreForTests(): string {
     createdAt: now,
     updatedAt: now,
   };
+  mkdirSync(ws.path, { recursive: true });
   workspaces.set(ws.id, ws);
   defaultWorkspaceId = ws.id;
   ready = true;
@@ -876,10 +1138,21 @@ export function disableMemoryStoreForTests(): void {
 
 /** Integration tests: wipe PG + memory and re-init (keeps same DATABASE_URL pool). */
 export async function resetStoreForTests(): Promise<void> {
-  await flushPersist();
+  persistFault = null;
+  unreportedFailure = null;
+  persistDegraded = null;
+  try {
+    await flushPersist();
+  } catch (err) {
+    console.error("[db] flush before test reset:", err);
+  }
+  unreportedFailure = null;
+  persistDegraded = null;
+  logBatch = [];
+  pendingTaskWrites.clear();
   const p = getPool();
   await p.query(
-    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, workspaces, meta RESTART IDENTITY CASCADE`,
+    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta RESTART IDENTITY CASCADE`,
   );
   tasks = new Map();
   workspaces = new Map();

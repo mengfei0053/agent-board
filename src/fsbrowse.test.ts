@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { browseHome, listDirs } from "./fsbrowse.js";
@@ -31,6 +31,16 @@ describe("listDirs", () => {
     assert.equal(res.path, visible);
     assert.equal(res.parent, browseHome);
     assert.deepEqual(res.entries, []);
+  });
+
+  it("rejects a symlink inside home that points outside", () => {
+    const link = join(browseHome, "agent-board-fsbrowse-escape");
+    try {
+      symlinkSync("/tmp", link);
+      assert.throws(() => listDirs(link), /outside home/);
+    } finally {
+      rmSync(link, { force: true });
+    }
   });
 
   it("rejects paths outside home", () => {

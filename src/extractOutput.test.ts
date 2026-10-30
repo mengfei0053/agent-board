@@ -82,6 +82,22 @@ describe("extractTextFromEventLine", () => {
     );
   });
 
+  it("reads a stored log_truncated wrapper", () => {
+    assert.equal(
+      extractTextFromEventLine(
+        JSON.stringify({ type: "log_truncated", recoveredText: "kept reply" }),
+      ),
+      "kept reply",
+    );
+  });
+
+  it("does not treat broken JSON as plain assistant text", () => {
+    const turns = extractOutputsByIteration([
+      '{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"cut',
+    ]);
+    assert.deepEqual(turns, []);
+  });
+
   it("recovers truncated pi text_end lines", () => {
     // JSON broken after content string, but content field itself is closed
     const broken =

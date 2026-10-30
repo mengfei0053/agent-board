@@ -1,10 +1,11 @@
-import { createWriteStream, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type { TaskAttachment } from "./types.js";
+import { getPool } from "./db.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const uploadsDir = join(root, "data", "uploads");
@@ -73,6 +74,45 @@ export function ensureUploadsDir(): void {
 
 export function isAllowedImageMime(mime: string): boolean {
   return Boolean(MIME_EXT[mime.toLowerCase()]);
+}
+
+/** Magic-byte check so a renamed HTML file cannot be served as an image. */
+export function sniffImageMime(buf: Uint8Array): string | null {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return "image/png";
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (buf.length >= 6 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+    return "image/gif";
+  }
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+export function uploadNameReferenced(
+  name: string,
+  tasks: Iterable<{ attachments?: { name: string }[] | undefined; prompt?: string }>,
+): boolean {
+  const needle = `/uploads/${name}`;
+  for (const t of tasks) {
+    if (t.attachments?.some((a) => a.name === name)) return true;
+    if (t.prompt && t.prompt.includes(needle)) return true;
+  }
+  return false;
 }
 
 export function extForMime(mime: string): string | null {
@@ -181,8 +221,18 @@ export async function saveUploadFile(
       status: 400,
     });
   }
+  const sniffed = sniffImageMime(buf);
+  if (!sniffed || sniffed !== mime && !(mime === "image/jpg" && sniffed === "image/jpeg")) {
+    throw Object.assign(new Error("文件内容与图片类型不符"), { status: 400 });
+  }
   await pipeline(Readable.from(buf), createWriteStream(dest));
-  return { name, url: publicUploadUrl(name), mime, size: buf.length };
+  try {
+    await rememberUpload({ name, originalName: file.name || name, mime: sniffed, size: buf.length });
+  } catch (err) {
+    try { unlinkSync(dest); } catch { /* ignore */ }
+    throw err;
+  }
+  return { name, url: publicUploadUrl(name), mime: sniffed, size: buf.length };
 }
 
 export async function saveAttachmentFile(file: File): Promise<TaskAttachment> {
@@ -210,6 +260,12 @@ export async function saveAttachmentFile(file: File): Promise<TaskAttachment> {
   await pipeline(Readable.from(buf), createWriteStream(dest));
   const mime =
     (file.type || "").trim() || mimeForStoredName(name, "application/octet-stream");
+  try {
+    await rememberUpload({ name, originalName, mime, size: buf.length });
+  } catch (err) {
+    try { unlinkSync(dest); } catch { /* ignore */ }
+    throw err;
+  }
   return {
     name,
     originalName,
@@ -219,17 +275,91 @@ export async function saveAttachmentFile(file: File): Promise<TaskAttachment> {
   };
 }
 
+async function rememberUpload(row: {
+  name: string;
+  originalName: string;
+  mime: string;
+  size: number;
+}): Promise<void> {
+  await getPool().query(
+    `INSERT INTO uploads (name, original_name, mime, size)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (name) DO UPDATE SET
+       original_name = EXCLUDED.original_name,
+       mime = EXCLUDED.mime,
+       size = EXCLUDED.size`,
+    [row.name, row.originalName.slice(0, 180), row.mime.slice(0, 200), row.size],
+  );
+}
+
 export function deleteAttachmentFiles(attachments: TaskAttachment[] | undefined): void {
   if (!attachments?.length) return;
-  for (const a of attachments) {
-    const abs = absoluteUploadPath(a.name);
-    if (!abs) continue;
+  for (const a of attachments) unlinkUploadFile(a.name);
+}
+
+function unlinkUploadFile(name: string): void {
+  const abs = absoluteUploadPath(name);
+  if (!abs) return;
+  try {
+    if (existsSync(abs)) unlinkSync(abs);
+  } catch (err) {
+    console.warn(`[uploads] could not remove attachment ${name}:`, err);
+  }
+}
+
+/**
+ * Unlink files no remaining task points at. `tasks` is the post-delete set.
+ * Shared attachments stay on disk.
+ */
+export async function removeUploadsIfUnreferenced(
+  names: string[],
+  tasks: Iterable<{ attachments?: { name: string }[] | undefined; prompt?: string }>,
+): Promise<void> {
+  const unique = [...new Set(names.filter(Boolean))];
+  const dropped: string[] = [];
+  for (const name of unique) {
+    if (uploadNameReferenced(name, tasks)) continue;
+    unlinkUploadFile(name);
+    dropped.push(name);
+  }
+  if (!dropped.length) return;
+  try {
+    await getPool().query(`DELETE FROM uploads WHERE name = ANY($1::text[])`, [dropped]);
+  } catch (err) {
+    console.warn("[uploads] could not drop upload rows:", err);
+  }
+}
+
+/** Delete on-disk uploads that nothing references and that are older than maxAgeMs. */
+export async function gcOrphanUploads(
+  referenced: Set<string>,
+  maxAgeMs = 24 * 60 * 60 * 1000,
+): Promise<number> {
+  ensureUploadsDir();
+  const now = Date.now();
+  const dropped: string[] = [];
+  for (const name of readdirSync(uploadsDir)) {
+    if (!isSafeStoredName(name) && !isSafeUploadName(name)) continue;
+    if (referenced.has(name)) continue;
+    const abs = join(uploadsDir, name);
     try {
-      if (existsSync(abs)) unlinkSync(abs);
+      const st = statSync(abs);
+      if (!st.isFile()) continue;
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      unlinkSync(abs);
+      dropped.push(name);
     } catch (err) {
-      console.warn(`[uploads] could not remove attachment ${a.name}:`, err);
+      console.warn(`[uploads] gc skip ${name}:`, err);
     }
   }
+  if (dropped.length) {
+    try {
+      await getPool().query(`DELETE FROM uploads WHERE name = ANY($1::text[])`, [dropped]);
+    } catch (err) {
+      console.warn("[uploads] gc row delete failed:", err);
+    }
+  }
+  return dropped.length;
 }
 
 export function normalizeAttachmentsInput(

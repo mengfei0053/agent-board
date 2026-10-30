@@ -7,6 +7,29 @@ import {
   isProgressLine,
   lineLooksLike429,
 } from "./common.js";
+import { createStreamLineState, endStream, pushStreamBytes } from "../streamLines.js";
+
+describe("stream line buffer", () => {
+  it("decodes a utf-8 character split across chunks and keeps streams separate", () => {
+    const state = createStreamLineState();
+    const you = Buffer.from("你", "utf8");
+    const first = pushStreamBytes(state, you.subarray(0, 2));
+    assert.deepEqual(first.lines, []);
+    const second = pushStreamBytes(state, Buffer.concat([you.subarray(2), Buffer.from("\n")]));
+    assert.deepEqual(second.lines, ["你"]);
+    pushStreamBytes(state, Buffer.from("tail"));
+    assert.equal(endStream(state), "tail");
+  });
+
+  it("drops an unterminated line that exceeds the cap", () => {
+    const state = createStreamLineState();
+    const huge = Buffer.alloc(1_000_001, 0x61);
+    const pushed = pushStreamBytes(state, huge);
+    assert.equal(pushed.truncated, true);
+    assert.deepEqual(pushed.lines, []);
+    assert.equal(state.buf, "");
+  });
+});
 
 describe("429 detection", () => {
   it("lineLooksLike429 matches 429 and too many requests", () => {

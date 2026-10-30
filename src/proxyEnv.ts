@@ -141,16 +141,79 @@ export async function loadProxyEnvOverrides(): Promise<void> {
 }
 
 /**
- * Env for agent child processes: board `process.env` + optional extras,
- * then non-empty proxy overrides **for that kind**. Empty override → leave
- * process.env as-is. Also mirrors lowercase keys when injecting.
+ * Names copied from the board process into an agent child.
+ * Database URLs, webhook secrets, and other service credentials are not included.
+ */
+const CHILD_ENV_ALLOW = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "USERNAME",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "SSH_AUTH_SOCK",
+  "TERM",
+  "COLORTERM",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "PNPM_HOME",
+  "NPM_CONFIG_PREFIX",
+  "BUN_INSTALL",
+  "VOLTA_HOME",
+  "ASDF_DIR",
+  "NVM_DIR",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  "GOPATH",
+  "GOROOT",
+] as const;
+
+const CHILD_ENV_DENY = /^(DATABASE_URL|AGENT_BOARD_WEBHOOK_SECRET|POSTGRES_PASSWORD|PGPASSWORD)$/i;
+
+/** Hide user:password in proxy URLs returned by the settings API. */
+export function redactProxyCredential(value: string): string {
+  return value.replace(/\/\/([^/\s:@]+):([^/\s@]+)@/g, "//$1:***@");
+}
+
+/**
+ * Env for agent child processes: an allowlist from the board environment,
+ * plus optional extras, then non-empty proxy overrides **for that kind**.
+ * Empty override leaves the allowlisted inherited value. Also mirrors
+ * lowercase keys when injecting.
  */
 export function childProcessEnv(
   kind: CliCommandKey,
   extra: Record<string, string | undefined> = {},
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of CHILD_ENV_ALLOW) {
+    if (CHILD_ENV_DENY.test(key)) continue;
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
   for (const [k, v] of Object.entries(extra)) {
+    if (CHILD_ENV_DENY.test(k)) continue;
     if (v !== undefined) env[k] = v;
   }
   const injected: string[] = [];
@@ -198,11 +261,13 @@ export function getProxyEnvSettings(): {
         ""
       ).trim();
       if (override) {
-        row[k] = { override, effective: override, inherited: false };
+        const shown = redactProxyCredential(override);
+        row[k] = { override: shown, effective: shown, inherited: false };
       } else {
+        const shown = redactProxyCredential(inheritedVal);
         row[k] = {
           override: "",
-          effective: inheritedVal,
+          effective: shown,
           inherited: Boolean(inheritedVal),
         };
       }
@@ -237,16 +302,45 @@ export async function setProxyEnvOverrides(
     if (Object.keys(kindNext).length) next[rawKind] = kindNext;
     else delete next[rawKind];
   }
+  await persist(next);
   overrides = next;
-  await persist(overrides);
   return getProxyEnvSettings();
+}
+
+/** Pure next-state for an atomic settings write. Does not touch memory or DB. */
+export function planProxyEnvOverrides(
+  input: Partial<Record<CliCommandKey, Partial<Record<ProxyEnvKey, string>>>>,
+): { next: ProxyEnvByKind; json: string } {
+  const next: ProxyEnvByKind = { ...overrides };
+  for (const [rawKind, rawMap] of Object.entries(input)) {
+    if (!isKind(rawKind)) continue;
+    if (rawMap == null || typeof rawMap !== "object" || Array.isArray(rawMap)) {
+      continue;
+    }
+    const kindNext: Partial<Record<ProxyEnvKey, string>> = {
+      ...(next[rawKind] || {}),
+    };
+    for (const [rawKey, rawVal] of Object.entries(rawMap)) {
+      if (!isProxyKey(rawKey)) continue;
+      const v = normalize(rawVal);
+      if (v) kindNext[rawKey] = v;
+      else delete kindNext[rawKey];
+    }
+    if (Object.keys(kindNext).length) next[rawKind] = kindNext;
+    else delete next[rawKind];
+  }
+  return { next, json: serialize(next) };
+}
+
+export function applyProxyEnvMemory(next: ProxyEnvByKind): void {
+  overrides = next;
 }
 
 export async function clearProxyEnvOverrides(): Promise<
   ReturnType<typeof getProxyEnvSettings>
 > {
+  await persist({});
   overrides = {};
-  await persist(overrides);
   return getProxyEnvSettings();
 }
 

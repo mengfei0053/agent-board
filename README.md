@@ -50,8 +50,8 @@ docker compose up -d --build
 
 | 服务 | 容器内 | 宿主机映射 |
 | --- | --- | --- |
-| `app`（看板） | `8791` | **8791** |
-| `postgres` | `5432` | **5433**（避免占本机已有 5432） |
+| `app`（看板） | `8791` | **127.0.0.1:8791** |
+| `postgres` | `5432` | **127.0.0.1:5433**（避免占本机已有 5432，且不向局域网发布） |
 
 常用命令：
 
@@ -65,7 +65,8 @@ docker compose down -v          # 停掉并删库数据 volume
 
 ```bash
 docker compose up -d postgres
-export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/agent_board'
+# 密码来自 .env 的 POSTGRES_PASSWORD（须 URL-safe）。端口只绑定 127.0.0.1。
+export DATABASE_URL='postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5433/agent_board'
 pnpm install && pnpm dev
 ```
 
@@ -109,9 +110,9 @@ pnpm install   # 或 npm i / bun i
 export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/agent_board'
 # 若库不存在：
 #   PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE agent_board;'
-# 或只用 Compose 的库（宿主机 5433）：
+# 或只用 Compose 的库（127.0.0.1:5433，密码见 .env）：
 #   docker compose up -d postgres
-#   export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/agent_board'
+#   export DATABASE_URL='postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5433/agent_board'
 
 pnpm dev
 # 或生产式：pnpm start   # 默认 PORT=8791

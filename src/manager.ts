@@ -11,6 +11,7 @@ import {
   readLogTail as storeReadLogTail,
   removeLog,
   clearTaskLogs,
+  saveTaskDurable,
   setTasksDeletedListener,
   truncateLogLine,
   upsertTask,
@@ -40,18 +41,33 @@ import {
 } from "./sideJobs.js";
 import {
   appendAttachmentsToPrompt,
-  deleteAttachmentFiles,
   expandUploadUrlsInPrompt,
+  removeUploadsIfUnreferenced,
   stripImageMarkdown,
 } from "./uploads.js";
+import { resolveAllowedDirectory } from "./paths.js";
+import { BOARD_FIELD_CHARS } from "./limits.js";
 
 const handles = new Map<string, RunnerHandle>();
 /** Coalesce rapid output/sideJob patches so stop/SSE stay responsive. */
-const pendingPatch = new Map<string, Partial<Task>>();
+type PendingPatch = { runId: number; partial: Partial<Task> };
+const pendingPatch = new Map<string, PendingPatch>();
 const patchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Bumped on start/continue/stop/move/natural end so a delayed patch cannot cross runs. */
+const taskRunIds = new Map<string, number>();
+
+function currentRunId(id: string): number {
+  return taskRunIds.get(id) ?? 0;
+}
+
+function bumpRun(id: string): number {
+  const next = currentRunId(id) + 1;
+  taskRunIds.set(id, next);
+  return next;
+}
 
 /** Take and disarm any deferred output/sideJob patch for this task. */
-function takePendingPatch(id: string): Partial<Task> | undefined {
+function takePendingPatch(id: string): PendingPatch | undefined {
   const timer = patchTimers.get(id);
   if (timer) clearTimeout(timer);
   patchTimers.delete(id);
@@ -69,18 +85,22 @@ function cancelPendingPatch(id: string): void {
 }
 
 function flushPendingPatch(id: string) {
-  const partial = takePendingPatch(id);
-  if (!partial || Object.keys(partial).length === 0) return;
+  const pending = takePendingPatch(id);
+  if (!pending || Object.keys(pending.partial).length === 0) return;
   // This runs from a timer, outside the request that deleted the task.
   // Missing ids are a no-op here. patch() itself still throws, so start/stop/move
   // do not swallow a real "task missing" bug.
   if (!getTask(id)) return;
-  patch(id, partial);
+  if (pending.runId !== currentRunId(id)) return;
+  patch(id, pending.partial);
 }
 
 function schedulePatch(id: string, partial: Partial<Task>, immediate = false) {
-  const cur = pendingPatch.get(id) || {};
-  pendingPatch.set(id, { ...cur, ...partial });
+  const runId = currentRunId(id);
+  const cur = pendingPatch.get(id);
+  const base = cur && cur.runId === runId ? cur.partial : {};
+  if (cur && cur.runId !== runId) takePendingPatch(id);
+  pendingPatch.set(id, { runId, partial: { ...base, ...partial } });
   if (immediate) {
     flushPendingPatch(id);
     return;
@@ -116,7 +136,9 @@ function writeLog(id: string, line: string) {
     const prevTurn = cur.outputs?.find((o) => o.iteration === iter);
     if (!prevTurn || prevTurn.text !== piece) {
       const pending = pendingPatch.get(id);
-      const baseOutputs = (pending?.outputs as Task["outputs"]) || cur.outputs;
+      const baseOutputs =
+        (pending && pending.runId === currentRunId(id) ? pending.partial.outputs : undefined) ||
+        cur.outputs;
       const outputs = upsertOutputTurn(baseOutputs, { iteration: iter, text: piece, at });
       const latest = latestOutputText(outputs);
       patchPartial.output = latest;
@@ -125,8 +147,11 @@ function writeLog(id: string, line: string) {
     }
   }
   try {
+    const pendingSides = pendingPatch.get(id);
     const baseSides =
-      ((pendingPatch.get(id)?.sideJobs as Task["sideJobs"]) || cur.sideJobs);
+      (pendingSides && pendingSides.runId === currentRunId(id)
+        ? (pendingSides.partial.sideJobs as Task["sideJobs"])
+        : undefined) || cur.sideJobs;
     const updates = sideJobsFromLogLine(line, at);
     const merged = mergeSideJobs(baseSides, updates);
     if (merged) patchPartial.sideJobs = merged;
@@ -145,42 +170,42 @@ function patch(id: string, partial: Partial<Task>): Task {
   return next;
 }
 
+function isTerminalStatus(status: TaskStatus | undefined): boolean {
+  return status === "succeeded" || status === "failed" || status === "stopped";
+}
+
 function applyStatus(id: string, partial: Partial<Task>): Task {
   const cur = getTask(id);
+  if (!cur) throw new Error(`task ${id} missing`);
   const merged: Partial<Task> = { ...partial };
+  const terminal = isTerminalStatus(merged.status);
+  // Commit the deferred output/sideJobs snapshot before settling this run.
+  if (terminal) flushPendingPatch(id);
+  const fresh = getTask(id) ?? cur;
   // Keep the first real start time across continue / re-runs.
-  if (merged.startedAt && cur?.startedAt) {
-    merged.startedAt = cur.startedAt;
+  if (merged.startedAt && fresh.startedAt) {
+    merged.startedAt = fresh.startedAt;
   }
-  if (
-    (merged.status === "succeeded" ||
-      merged.status === "failed" ||
-      merged.status === "stopped") &&
-    !merged.endedAt
-  ) {
+  if (terminal && !merged.endedAt) {
     merged.endedAt = now();
   }
-  if (
-    merged.status === "succeeded" ||
-    merged.status === "failed" ||
-    merged.status === "stopped"
-  ) {
+  if (terminal) {
     const endedAt = merged.endedAt || now();
     merged.endedAt = endedAt;
+    merged.pid = undefined;
     const closed = finalizeRunningSideJobs(
-      (merged.sideJobs as SideJob[] | undefined) || cur?.sideJobs,
+      (merged.sideJobs as SideJob[] | undefined) || fresh.sideJobs,
       endedAt,
       merged.status === "failed" ? "failed" : "stopped",
     );
     if (closed) merged.sideJobs = closed;
   }
   const next = patch(id, merged);
-  if (
-    merged.status === "succeeded" ||
-    merged.status === "failed" ||
-    merged.status === "stopped"
-  ) {
+  if (terminal) {
     refreshOutputFromLogs(id);
+    handles.delete(id);
+    bumpRun(id);
+    cancelPendingPatch(id);
   }
   return getTask(id) ?? next;
 }
@@ -230,9 +255,16 @@ function spawnRunner(task: Task): Task {
     );
   }
   const runnerTask: Task = { ...task, prompt: runnerPrompt };
+  const runId = currentRunId(id);
   const handle = runner.start(runnerTask, {
-    onStatus: (p) => applyStatus(id, p),
-    onLog: (line) => writeLog(id, line),
+    onStatus: (p) => {
+      if (currentRunId(id) !== runId) return;
+      applyStatus(id, p);
+    },
+    onLog: (line) => {
+      if (currentRunId(id) !== runId) return;
+      writeLog(id, line);
+    },
   });
   handles.set(id, handle);
   if (handle.pid) patch(id, { pid: handle.pid });
@@ -243,18 +275,36 @@ function resolveCreateCwd(input: CreateTaskInput): { workspaceId: string; cwd: s
   if (input.workspaceId) {
     const ws = getWorkspace(input.workspaceId);
     if (!ws) throw new Error(`workspace not found: ${input.workspaceId}`);
-    return { workspaceId: ws.id, cwd: ws.path };
+    const cwd = resolveAllowedDirectory(ws.path, "cwd");
+    return { workspaceId: ws.id, cwd };
   }
   const cwd = input.cwd?.trim() || "";
   if (!cwd) throw new Error("workspaceId or cwd required");
+  const resolved = resolveAllowedDirectory(cwd, "cwd");
   // Prefer matching existing workspace by path; else attach to default
-  const match = listWorkspaces().find((w) => w.path === cwd);
-  if (match) return { workspaceId: match.id, cwd: match.path };
-  return { workspaceId: getDefaultWorkspaceId(), cwd };
+  const match = listWorkspaces().find((w) => w.path === resolved || w.path === cwd);
+  if (match) return { workspaceId: match.id, cwd: resolveAllowedDirectory(match.path, "cwd") };
+  return { workspaceId: getDefaultWorkspaceId(), cwd: resolved };
+}
+
+function beginFreshRun(id: string): void {
+  flushPendingPatch(id);
+  bumpRun(id);
+  cancelPendingPatch(id);
+}
+
+async function patchDurable(id: string, partial: Partial<Task>): Promise<Task> {
+  const cur = getTask(id);
+  if (!cur) throw new Error(`task ${id} missing`);
+  const next: Task = { ...cur, ...partial, updatedAt: now() };
+  await saveTaskDurable(next);
+  const stored = getTask(id) ?? next;
+  publish({ type: "task_upsert", task: stored });
+  return stored;
 }
 
 /** Create a draft — do not spawn. */
-export function createDraft(input: CreateTaskInput): Task {
+export async function createDraft(input: CreateTaskInput): Promise<Task> {
   const id = nanoid(10);
   const { workspaceId, cwd } = resolveCreateCwd(input);
   const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
@@ -276,14 +326,14 @@ export function createDraft(input: CreateTaskInput): Task {
     prompts: [{ iteration: 1, prompt: input.prompt, at: createdAt }],
     attachments,
   };
-  upsertTask(task);
-  publish({ type: "task_upsert", task });
+  await saveTaskDurable(task);
+  publish({ type: "task_upsert", task: getTask(id) ?? task });
   writeLog(id, JSON.stringify({ type: "draft_created" }));
   return getTask(id)!;
 }
 
 /** Start a draft (or re-queue a terminal task as a fresh run without continue). */
-export function startTask(id: string): Task {
+export async function startTask(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "queued" || t.status === "running") {
@@ -293,14 +343,20 @@ export function startTask(id: string): Task {
     throw new Error("task is blocked; stop it before starting again");
   }
 
+  beginFreshRun(id);
   const existing = handles.get(id);
   if (existing) {
-    existing.stop();
+    try {
+      existing.stop();
+    } catch {
+      /* ignore */
+    }
     handles.delete(id);
   }
 
-  patch(id, {
+  await patchDurable(id, {
     status: "queued",
+    sessionId: undefined,
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
@@ -315,7 +371,7 @@ export function startTask(id: string): Task {
   return spawnRunner(getTask(id)!);
 }
 
-export function continueTask(id: string, prompt?: string): Task {
+export async function continueTask(id: string, prompt?: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "draft") {
@@ -325,9 +381,14 @@ export function continueTask(id: string, prompt?: string): Task {
     throw new Error("task is still running; stop it before continue");
   }
 
+  beginFreshRun(id);
   const existing = handles.get(id);
   if (existing) {
-    existing.stop();
+    try {
+      existing.stop();
+    } catch {
+      /* ignore */
+    }
     handles.delete(id);
   }
 
@@ -340,7 +401,7 @@ export function continueTask(id: string, prompt?: string): Task {
     at: continuedAt,
   });
 
-  patch(id, {
+  await patchDurable(id, {
     status: "queued",
     iteration: nextIter,
     error: undefined,
@@ -365,6 +426,7 @@ export function continueTask(id: string, prompt?: string): Task {
   );
 
   const fresh = getTask(id)!;
+  const runId = currentRunId(id);
   const runner = runners[fresh.kind];
   const basePrompt = appendAttachmentsToPrompt(
     expandUploadUrlsInPrompt(fresh.prompt),
@@ -384,8 +446,14 @@ export function continueTask(id: string, prompt?: string): Task {
   const handle = runner.start(
     runnerTask,
     {
-      onStatus: (p) => applyStatus(id, p),
-      onLog: (line) => writeLog(id, line),
+      onStatus: (p) => {
+        if (currentRunId(id) !== runId) return;
+        applyStatus(id, p);
+      },
+      onLog: (line) => {
+        if (currentRunId(id) !== runId) return;
+        writeLog(id, line);
+      },
     },
     { continuePrompt: contPrompt },
   );
@@ -394,20 +462,23 @@ export function continueTask(id: string, prompt?: string): Task {
   return getTask(id)!;
 }
 
-export function stopTask(id: string): Task {
+export async function stopTask(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
-  // Mark stopped first so writeLog stops upsert/SSE flood, then cut the child.
+  // Flush first, then read sideJobs so a just-merged job is not dropped.
   flushPendingPatch(id);
+  const fresh = getTask(id) ?? t;
   const endedAt = now();
-  const sideJobs = finalizeRunningSideJobs(t.sideJobs, endedAt, "stopped") ?? t.sideJobs;
-  const updated = patch(id, {
+  const sideJobs = finalizeRunningSideJobs(fresh.sideJobs, endedAt, "stopped") ?? fresh.sideJobs;
+  const updated = await patchDurable(id, {
     status: "stopped" satisfies TaskStatus,
     endedAt,
-    summary: t.summary ?? "stopped by user",
+    summary: fresh.summary ?? "stopped by user",
     sideJobs,
     pid: undefined,
   });
+  bumpRun(id);
+  cancelPendingPatch(id);
   const h = handles.get(id);
   handles.delete(id);
   try {
@@ -415,7 +486,7 @@ export function stopTask(id: string): Task {
   } catch (err) {
     console.warn("[stop] kill failed", id, err);
   }
-  return updated;
+  return getTask(id) ?? updated;
 }
 
 /**
@@ -425,7 +496,7 @@ export function stopTask(id: string): Task {
  * * → done: stop if active → stopped; archived → restore prior terminal status
  * * → archived: park as archived (stop if needed)
  */
-export function moveTask(id: string, lane: BoardLane): Task {
+export async function moveTask(id: string, lane: BoardLane): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (!["draft", "todo", "running", "done", "archived"].includes(lane)) {
@@ -441,12 +512,19 @@ export function moveTask(id: string, lane: BoardLane): Task {
 
   if (lane === "draft") {
     if (t.status === "draft") return t;
+    flushPendingPatch(id);
+    bumpRun(id);
+    cancelPendingPatch(id);
     const h = handles.get(id);
+    handles.delete(id);
     if (h || ACTIVE.includes(t.status)) {
-      h?.stop();
-      handles.delete(id);
+      try {
+        h?.stop();
+      } catch {
+        /* ignore */
+      }
     }
-    return patch(id, {
+    return patchDurable(id, {
       status: "draft",
       pid: undefined,
       endedAt: undefined,
@@ -457,16 +535,23 @@ export function moveTask(id: string, lane: BoardLane): Task {
 
   if (lane === "archived") {
     if (t.status === "archived") return t;
+    flushPendingPatch(id);
+    bumpRun(id);
+    cancelPendingPatch(id);
     const h = handles.get(id);
+    handles.delete(id);
     if (h || ACTIVE.includes(t.status)) {
-      h?.stop();
-      handles.delete(id);
+      try {
+        h?.stop();
+      } catch {
+        /* ignore */
+      }
     }
     const prior =
       t.status === "succeeded" || t.status === "failed" || t.status === "stopped"
         ? t.status
         : "stopped";
-    const archived = patch(id, {
+    const archived = await patchDurable(id, {
       status: "archived",
       pid: undefined,
       endedAt: t.endedAt || now(),
@@ -483,14 +568,14 @@ export function moveTask(id: string, lane: BoardLane): Task {
   if (t.status === "archived") {
     const m = /^archive:(succeeded|failed|stopped)$/.exec(t.lastEvent || "");
     const restored = (m?.[1] as TaskStatus | undefined) || "stopped";
-    return patch(id, {
+    return patchDurable(id, {
       status: restored,
       lastEvent: "move_done",
       summary: t.summary ?? "restored from archive",
     });
   }
   if (t.status === "draft") {
-    return patch(id, {
+    return patchDurable(id, {
       status: "stopped",
       endedAt: now(),
       summary: "moved to done without running",
@@ -500,12 +585,14 @@ export function moveTask(id: string, lane: BoardLane): Task {
   return stopTask(id);
 }
 
-/** Stop live processes if needed, then remove tasks + logs. Skips queued/running. */
-export function removeTasks(ids: string[]): {
+type RemoveTasksResult = {
   deleted: string[];
   stopped: string[];
   skipped: { id: string; status: TaskStatus; reason: string }[];
-} {
+};
+
+/** Stop live processes if needed, then remove tasks + logs. Skips queued/running. */
+export async function removeTasks(ids: string[]): Promise<RemoveTasksResult> {
   const stopped: string[] = [];
   const skipped: { id: string; status: TaskStatus; reason: string }[] = [];
   const deletable: string[] = [];
@@ -540,18 +627,38 @@ export function removeTasks(ids: string[]): {
   // any other caller that removes rows from the store.
   for (const id of deletable) cancelPendingPatch(id);
 
-  const attachmentBags = deletable
-    .map((id) => getTask(id)?.attachments)
-    .filter((a): a is NonNullable<Task["attachments"]> => Boolean(a?.length));
-  const deleted = deleteTasks(deletable);
+  const attachmentNames = deletable.flatMap((id) => getTask(id)?.attachments?.map((a) => a.name) || []);
+  const deleted = await deleteTasks(deletable);
   for (const id of deleted) removeLog(id);
-  for (const bag of attachmentBags) deleteAttachmentFiles(bag);
+  if (attachmentNames.length) {
+    try {
+      await removeUploadsIfUnreferenced(attachmentNames, listTasks());
+    } catch (err) {
+      console.warn("[uploads] unreferenced cleanup failed:", err);
+    }
+  }
   if (deleted.length) publish({ type: "task_delete", taskIds: deleted });
   return { deleted, stopped, skipped };
 }
 
+function clipBoardText(s: string | undefined): string | undefined {
+  if (!s || s.length <= BOARD_FIELD_CHARS) return s;
+  return `${s.slice(0, BOARD_FIELD_CHARS)}…`;
+}
+
+/** List/hello payload: keep card fields, clip long prompt/output bodies. */
+export function presentBoardTask(t: Task): Task {
+  return {
+    ...t,
+    prompt: clipBoardText(t.prompt) || t.prompt,
+    output: clipBoardText(t.output),
+    outputs: t.outputs?.map((o) => ({ ...o, text: clipBoardText(o.text) || "" })),
+    prompts: t.prompts?.map((p) => ({ ...p, prompt: clipBoardText(p.prompt) || "" })),
+  };
+}
+
 export function boardSnapshot(workspaceId?: string): Task[] {
-  return listTasks(workspaceId);
+  return listTasks(workspaceId).map(presentBoardTask);
 }
 
 export function workspaceSnapshot(): Workspace[] {
@@ -637,9 +744,24 @@ export function taskLogTail(id: string, maxLines = 500): {
 }
 
 /** Create draft then immediately start (queued → runner). */
-export function createAndStart(input: CreateTaskInput): Task {
-  const draft = createDraft(input);
+export async function createAndStart(input: CreateTaskInput): Promise<Task> {
+  const draft = await createDraft(input);
   return startTask(draft.id);
+}
+
+/** Stop runners and flush deferred patches. Used by process shutdown. */
+export function shutdownManager(): void {
+  for (const id of [...handles.keys()]) {
+    const h = handles.get(id);
+    handles.delete(id);
+    try {
+      h?.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const id of [...patchTimers.keys()]) flushPendingPatch(id);
+  pendingPatch.clear();
 }
 
 
@@ -663,8 +785,12 @@ export function clearHandlesForTests(): void {
     flushPendingPatch(id);
   }
   pendingPatch.clear();
+  taskRunIds.clear();
 }
 
 setTasksDeletedListener((ids) => {
-  for (const id of ids) cancelPendingPatch(id);
+  for (const id of ids) {
+    cancelPendingPatch(id);
+    taskRunIds.delete(id);
+  }
 });

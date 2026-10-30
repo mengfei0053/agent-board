@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
+import { isBoardMetaLine } from "../extractOutput.js";
 import { childProcessEnv, lastInjectedProxyKeys } from "../proxyEnv.js";
 import type { CliCommandKey } from "../cliPaths.js";
 import type { RunnerHandle, RunnerHooks } from "./types.js";
 import type { TaskStatus } from "../types.js";
+import {
+  createStreamLineState,
+  endStream,
+  pushStreamBytes,
+  type StreamLineState,
+} from "../streamLines.js";
 
 /** Consecutive 429 strikes before board kills the runner. */
 export const RATE_LIMIT_STRIKE_LIMIT = 5;
@@ -118,11 +125,15 @@ export function spawnLogged(
   });
 
   hooks.onStatus({ status: "running", pid: child.pid, startedAt: new Date().toISOString() });
+  const previewArg = (arg: string) => {
+    if (arg.includes("\n") || arg.length > 80) return `[${arg.length} chars]`;
+    return arg.replace(/\/\/([^/\s:@]+):([^/\s@]+)@/g, "//$1:***@");
+  };
   hooks.onLog(
     JSON.stringify({
       type: "spawn",
       cmd,
-      args,
+      args: args.map(previewArg),
       cwd,
       pid: child.pid,
       ...(lastInjectedProxyKeys.length
@@ -131,8 +142,21 @@ export function spawnLogged(
     }),
   );
 
+  let closed = false;
+  let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const markClosed = () => {
+    if (closed) return;
+    closed = true;
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = null;
+    }
+  };
+
   const signalGroup = (sig: NodeJS.Signals) => {
-    if (!child.pid) return;
+    // Once the child has exited, its pid may be reused. Never signal it again.
+    if (closed || !child.pid) return;
     try {
       process.kill(-child.pid, sig);
     } catch {
@@ -145,6 +169,7 @@ export function spawnLogged(
   };
 
   const cutPipesAndKill = () => {
+    if (closed) return;
     try {
       child.stdout?.removeAllListeners("data");
       child.stderr?.removeAllListeners("data");
@@ -156,7 +181,9 @@ export function spawnLogged(
     signalGroup("SIGTERM");
     const pid = child.pid;
     if (pid) {
-      setTimeout(() => {
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        if (closed) return;
         try {
           process.kill(-pid, 0);
           signalGroup("SIGKILL");
@@ -172,7 +199,8 @@ export function spawnLogged(
             /* already dead */
           }
         }
-      }, 1200).unref?.();
+      }, 1200);
+      killTimer.unref?.();
     }
     try {
       child.unref();
@@ -239,27 +267,53 @@ export function spawnLogged(
     }
   };
 
-  let buf = "";
-  const feed = (chunk: Buffer) => {
-    if (stoppedByUser || endedByWatchdog) return;
-    buf += chunk.toString("utf8");
-    // Cap per-chunk processing so a huge dump cannot block the event loop.
-    const parts = buf.split(/\r?\n/);
-    buf = parts.pop() ?? "";
-    for (const line of parts) {
-      if (!line.trim()) continue;
-      hooks.onLog(line);
-      opts.classifyLine?.(line, hooks);
-      noteLineForRateLimit(line);
+  const stdoutState = createStreamLineState();
+  const stderrState = createStreamLineState();
+
+  const emitLine = (line: string, stream: "stdout" | "stderr") => {
+    if (!line.trim()) return;
+    // Child text must not impersonate board lifecycle events (start/exit/…).
+    const stored = isBoardMetaLine(line)
+      ? JSON.stringify({
+          type: "agent_stream",
+          stream,
+          note: "reserved board event type from child was not stored raw",
+          preview: line.trim().slice(0, 180),
+        })
+      : line;
+    hooks.onLog(stored);
+    opts.classifyLine?.(line, hooks);
+    noteLineForRateLimit(line);
+  };
+
+  const feed = (state: StreamLineState, stream: "stdout" | "stderr", chunk: Buffer) => {
+    if (stoppedByUser || endedByWatchdog || closed) return;
+    const pushed = pushStreamBytes(state, chunk);
+    if (pushed.truncated) {
+      hooks.onLog(JSON.stringify({ type: "stream_truncated", stream, reason: "line_too_long" }));
+      return;
+    }
+    if (pushed.droppedLines > 0) {
+      hooks.onLog(
+        JSON.stringify({
+          type: "stream_truncated",
+          stream,
+          reason: "too_many_lines",
+          droppedLines: pushed.droppedLines,
+        }),
+      );
+    }
+    for (const line of pushed.lines) {
+      emitLine(line, stream);
       if (endedByWatchdog) return;
     }
   };
 
-  child.stdout?.on("data", feed);
-  child.stderr?.on("data", feed);
+  child.stdout?.on("data", (chunk: Buffer) => feed(stdoutState, "stdout", chunk));
+  child.stderr?.on("data", (chunk: Buffer) => feed(stderrState, "stderr", chunk));
 
   child.on("error", (err) => {
-    if (stoppedByUser || endedByWatchdog) return;
+    if (stoppedByUser || endedByWatchdog || closed) return;
     hooks.onStatus({
       status: "failed",
       error: String(err),
@@ -267,7 +321,14 @@ export function spawnLogged(
     });
   });
 
+  const drainTail = (state: StreamLineState, stream: "stdout" | "stderr") => {
+    const rest = endStream(state).trim();
+    if (!rest) return;
+    emitLine(rest, stream);
+  };
+
   child.on("close", (code) => {
+    markClosed();
     if (stoppedByUser) {
       hooks.onLog(JSON.stringify({ type: "exit", code, stopped: true }));
       return;
@@ -276,15 +337,15 @@ export function spawnLogged(
       hooks.onLog(JSON.stringify({ type: "exit", code, rateLimited: true }));
       return;
     }
-    if (buf.trim()) {
-      hooks.onLog(buf);
-      opts.classifyLine?.(buf, hooks);
-      noteLineForRateLimit(buf);
-      buf = "";
-      if (endedByWatchdog) {
-        hooks.onLog(JSON.stringify({ type: "exit", code, rateLimited: true }));
-        return;
-      }
+    drainTail(stdoutState, "stdout");
+    if (endedByWatchdog) {
+      hooks.onLog(JSON.stringify({ type: "exit", code, rateLimited: true }));
+      return;
+    }
+    drainTail(stderrState, "stderr");
+    if (endedByWatchdog) {
+      hooks.onLog(JSON.stringify({ type: "exit", code, rateLimited: true }));
+      return;
     }
     hooks.onLog(JSON.stringify({ type: "exit", code }));
     const cur = opts.getStatus();
@@ -304,7 +365,7 @@ export function spawnLogged(
   return {
     pid: child.pid,
     stop: () => {
-      if (stoppedByUser || endedByWatchdog) return;
+      if (closed || stoppedByUser || endedByWatchdog) return;
       stoppedByUser = true;
       // Cut pipes first so exit dumps cannot flood writeLog/SSE on this tick.
       cutPipesAndKill();

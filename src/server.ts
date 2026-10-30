@@ -2,9 +2,10 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { subscribe } from "./bus.js";
@@ -15,6 +16,8 @@ import {
   createDraft,
   moveTask,
   removeTasks,
+  presentBoardTask,
+  shutdownManager,
   startTask,
   stopTask,
   taskWithOutput,
@@ -26,14 +29,18 @@ import {
   getDefaultWorkspaceId,
   getWorkspace,
   initStore,
+  closePool,
   flushPersist,
+  isPersistDegraded,
+  persistFailureMessage,
   upsertWorkspace,
 } from "./store.js";
-import { redactDatabaseUrl } from "./db.js";
+import { redactDatabaseUrl, upsertMetaMany } from "./db.js";
 import type {
   AgentKind,
   BoardLane,
   CreateTaskInput,
+  BoardEvent,
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
   Workspace,
@@ -42,27 +49,27 @@ import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 import {
   CLI_COMMAND_KEYS,
-  clearCliPathOverrides,
-  getCliPathSettings,
-  setCliPathOverrides,
+  applyCliPathMemory,
+  getCliPathSettingsResolved,
+  planCliPathOverrides,
   type CliCommandKey,
 } from "./cliPaths.js";
 import {
   PROXY_ENV_KEYS,
-  clearProxyEnvOverrides,
+  applyProxyEnvMemory,
   getProxyEnvSettings,
-  setProxyEnvOverrides,
+  planProxyEnvOverrides,
   type ProxyEnvKey,
 } from "./proxyEnv.js";
 import {
-  clearQuickPrompts,
+  applyQuickPromptsMemory,
   getQuickPromptSettings,
-  setQuickPrompts,
+  planQuickPrompts,
 } from "./quickPrompts.js";
 import {
-  clearCodexSandbox,
+  applyCodexSandboxMemory,
   getCodexSandboxSettings,
-  setCodexSandbox,
+  planCodexSandbox,
 } from "./codexSandbox.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
@@ -78,8 +85,20 @@ import {
   normalizeAttachmentsInput,
   saveAttachmentFile,
   saveUploadFile,
+  sniffImageMime,
 } from "./uploads.js";
 import { Readable } from "node:stream";
+import { httpStatusOf, HttpError } from "./httpError.js";
+import {
+  assertTextLimit,
+  MAX_BATCH_IDS,
+  MAX_JSON_BODY_BYTES,
+  MAX_MODEL_CHARS,
+  MAX_PROMPT_CHARS,
+  MAX_TITLE_CHARS,
+  MAX_UPLOAD_OVERHEAD_BYTES,
+} from "./limits.js";
+import { resolveAllowedDirectory } from "./paths.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -89,7 +108,82 @@ const hostname = (process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
 
 const app = new Hono();
 
-app.get("/api/health", (c) => c.json({ ok: true }));
+const MAX_UPLOAD_REQUEST_BYTES = MAX_ATTACHMENT_BYTES + MAX_UPLOAD_OVERHEAD_BYTES;
+
+app.use("*", async (c, next) => {
+  await next();
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Referrer-Policy", "no-referrer");
+});
+
+app.use("*", async (c, next) => {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+    return next();
+  }
+  const len = c.req.header("content-length");
+  if (len != null && len !== "") {
+    const n = Number(len);
+    if (!Number.isFinite(n) || n < 0) {
+      return c.json({ error: "invalid content-length" }, 400);
+    }
+  }
+  const max =
+    c.req.path === "/api/uploads" ? MAX_UPLOAD_REQUEST_BYTES : MAX_JSON_BODY_BYTES;
+  return bodyLimit({
+    maxSize: max,
+    onError: (ctx) =>
+      ctx.json({ error: `request body too large (limit ${max} bytes)` }, 413),
+  })(c, next);
+});
+
+app.get("/api/health", (c) => {
+  if (isPersistDegraded()) {
+    return c.json(
+      { ok: false, db: { ok: false, error: persistFailureMessage() || "persist failed" } },
+      503,
+    );
+  }
+  return c.json({ ok: true, db: { ok: true } });
+});
+
+function errorJson(c: Context, err: unknown, fallback = 400) {
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = httpStatusOf(err, fallback);
+  return c.json({ error: msg }, status as 400);
+}
+
+async function readJsonObject(c: Context): Promise<Record<string, unknown>> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    throw new HttpError(400, "invalid JSON body");
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "body must be an object");
+  }
+  return body as Record<string, unknown>;
+}
+
+function requireString(body: Record<string, unknown>, key: string, opts?: { required?: boolean; max?: number }): string {
+  const v = body[key];
+  if (v == null || v === "") {
+    if (opts?.required) throw new HttpError(400, `${key} required`);
+    return "";
+  }
+  if (typeof v !== "string") throw new HttpError(400, `${key} must be a string`);
+  const trimmed = v.trim();
+  if (opts?.required && !trimmed) throw new HttpError(400, `${key} required`);
+  if (opts?.max) assertTextLimit(v, opts.max, key);
+  return opts?.required ? trimmed : v;
+}
+
+function parseStrictBool(v: unknown, key: string): boolean | undefined {
+  if (v == null) return undefined;
+  if (v === true) return true;
+  if (v === false) return false;
+  throw new HttpError(400, `${key} must be a boolean`);
+}
 
 
 function webhookSecret(): string | null {
@@ -117,13 +211,25 @@ type HookBody = {
   mode?: string;
 };
 
-function resolveHookStart(body: HookBody): boolean {
-  if (body.start === true) return true;
-  if (body.start === false) return false;
-  const lane = (body.lane || body.mode || "").toLowerCase();
+function resolveHookStart(body: Record<string, unknown>): boolean {
+  if ("start" in body && body.start != null) {
+    const start = parseStrictBool(body.start, "start");
+    if (start != null) return start;
+  }
+  const laneRaw = body.lane ?? body.mode;
+  const lane = typeof laneRaw === "string" ? laneRaw.toLowerCase() : "";
   if (lane === "todo") return true;
   if (lane === "draft") return false;
   return false;
+}
+
+function assertWorkspaceSettingsSize(settings: { systemPrompt?: string; skills?: string[]; mcp?: string } | undefined): void {
+  if (!settings) return;
+  if (settings.systemPrompt) assertTextLimit(settings.systemPrompt, MAX_PROMPT_CHARS, "systemPrompt");
+  if (settings.mcp) assertTextLimit(settings.mcp, MAX_PROMPT_CHARS, "mcp");
+  for (const skill of settings.skills || []) {
+    assertTextLimit(skill, 2_000, "skills");
+  }
 }
 
 
@@ -148,33 +254,51 @@ async function createTaskViaWebhook(c: Context) {
     return c.json({ error: "unauthorized" }, 401);
   }
 
-  let body: HookBody;
+  let body: Record<string, unknown>;
   try {
-    body = (await c.req.json()) as HookBody;
-  } catch {
-    return c.json({ error: "invalid JSON body" }, 400);
+    body = await readJsonObject(c);
+  } catch (e) {
+    return errorJson(c, e);
   }
 
-  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-  if (!prompt) return c.json({ error: "prompt required" }, 400);
+  let prompt = "";
+  let start = false;
+  try {
+    prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
+    if (body.title != null) requireString(body, "title", { max: MAX_TITLE_CHARS });
+    if (body.model != null) requireString(body, "model", { max: MAX_MODEL_CHARS });
+    start = resolveHookStart(body);
+  } catch (e) {
+    return errorJson(c, e);
+  }
 
-  const kindRaw = (body.agent || body.kind || "").toLowerCase();
+  const agent = body.agent ?? body.kind;
+  const kindRaw = typeof agent === "string" ? agent.toLowerCase() : "";
   if (!["pi", "claude", "cursor", "devin", "codex"].includes(kindRaw)) {
     return c.json({ error: "agent must be pi|claude|cursor|devin|codex (alias: kind)" }, 400);
   }
   const kind = kindRaw as AgentKind;
 
-  const workspaceId =
-    typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
+  const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
   const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
-  if (workspaceId) {
-    if (!getWorkspace(workspaceId)) {
-      return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+  if (body.workspaceId != null && typeof body.workspaceId !== "string") {
+    return c.json({ error: "workspaceId must be a string" }, 400);
+  }
+  if (body.cwd != null && typeof body.cwd !== "string") {
+    return c.json({ error: "cwd must be a string" }, 400);
+  }
+  try {
+    if (workspaceId) {
+      if (!getWorkspace(workspaceId)) {
+        return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+      }
+    } else if (cwd) {
+      resolveAllowedDirectory(cwd, "cwd");
+    } else {
+      return c.json({ error: "workspaceId or cwd required" }, 400);
     }
-  } else if (cwd) {
-    if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
-  } else {
-    return c.json({ error: "workspaceId or cwd required" }, 400);
+  } catch (e) {
+    return errorJson(c, e);
   }
 
   const input: CreateTaskInput = {
@@ -185,12 +309,11 @@ async function createTaskViaWebhook(c: Context) {
     title: typeof body.title === "string" ? body.title : undefined,
     model: typeof body.model === "string" ? body.model : undefined,
   };
-  const start = resolveHookStart(body);
   try {
-    const task = start ? createAndStart(input) : createDraft(input);
+    const task = start ? await createAndStart(input) : await createDraft(input);
     return c.json({ task, started: start }, 201);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    return errorJson(c, e, 500);
   }
 }
 
@@ -211,23 +334,25 @@ app.get("/api/workspaces", (c) =>
 );
 
 app.post("/api/workspaces", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as Partial<CreateWorkspaceInput>;
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  const path = typeof body.path === "string" ? body.path.trim() : "";
-  if (!name) return c.json({ error: "name required" }, 400);
-  if (!path) return c.json({ error: "path required" }, 400);
-  if (!existsSync(path)) return c.json({ error: `path not found: ${path}` }, 400);
-  const now = new Date().toISOString();
-  const ws: Workspace = {
-    id: nanoid(10),
-    name,
-    path,
-    createdAt: now,
-    updatedAt: now,
-  };
-  upsertWorkspace(ws);
-  publish({ type: "workspace_upsert", workspace: ws });
-  return c.json({ workspace: ws }, 201);
+  try {
+    const body = await readJsonObject(c);
+    const name = requireString(body, "name", { required: true, max: MAX_TITLE_CHARS });
+    const rawPath = requireString(body, "path", { required: true, max: 4_000 });
+    const path = resolveAllowedDirectory(rawPath, "path");
+    const now = new Date().toISOString();
+    const ws: Workspace = {
+      id: nanoid(10),
+      name,
+      path,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await upsertWorkspace(ws);
+    publish({ type: "workspace_upsert", workspace: ws });
+    return c.json({ workspace: ws }, 201);
+  } catch (e) {
+    return errorJson(c, e, 500);
+  }
 });
 
 app.get("/api/workspaces/:id", (c) => {
@@ -244,40 +369,51 @@ app.patch("/api/workspaces/:id", async (c) => {
   const id = c.req.param("id");
   const cur = getWorkspace(id);
   if (!cur) return c.json({ error: "not found" }, 404);
-  const body = (await c.req.json().catch(() => ({}))) as UpdateWorkspaceInput & {
-    settings?: unknown;
-  };
-  const name =
-    typeof body.name === "string" && body.name.trim() ? body.name.trim() : cur.name;
-  const path =
-    typeof body.path === "string" && body.path.trim() ? body.path.trim() : cur.path;
-  if (!existsSync(path)) return c.json({ error: `path not found: ${path}` }, 400);
-  // When `settings` is present, replace the whole settings object (empty = clear).
-  const settings =
-    "settings" in body
-      ? normalizeWorkspaceSettings(body.settings ?? {})
-      : cur.settings;
-  const ws: Workspace = {
-    ...cur,
-    name,
-    path,
-    settings,
-    updatedAt: new Date().toISOString(),
-  };
-  upsertWorkspace(ws);
-  publish({ type: "workspace_upsert", workspace: ws });
-  return c.json({ workspace: ws });
+  try {
+    const body = await readJsonObject(c);
+    const name =
+      typeof body.name === "string" && body.name.trim() ? body.name.trim() : cur.name;
+    if (body.name != null && typeof body.name !== "string") {
+      throw new HttpError(400, "name must be a string");
+    }
+    const rawPath =
+      typeof body.path === "string" && body.path.trim() ? body.path.trim() : cur.path;
+    if (body.path != null && typeof body.path !== "string") {
+      throw new HttpError(400, "path must be a string");
+    }
+    const path = resolveAllowedDirectory(rawPath, "path");
+    if (typeof name === "string") assertTextLimit(name, MAX_TITLE_CHARS, "name");
+    const settings =
+      "settings" in body
+        ? normalizeWorkspaceSettings(body.settings ?? {})
+        : cur.settings;
+    assertWorkspaceSettingsSize(settings);
+    const ws: Workspace = {
+      ...cur,
+      name,
+      path,
+      settings,
+      updatedAt: new Date().toISOString(),
+    };
+    await upsertWorkspace(ws);
+    publish({ type: "workspace_upsert", workspace: ws });
+    return c.json({ workspace: ws });
+  } catch (e) {
+    return errorJson(c, e, 500);
+  }
 });
 
-app.delete("/api/workspaces/:id", (c) => {
+app.delete("/api/workspaces/:id", async (c) => {
   const id = c.req.param("id");
   if (!getWorkspace(id)) return c.json({ error: "not found" }, 404);
   try {
-    deleteWorkspace(id);
+    await deleteWorkspace(id);
     publish({ type: "workspace_delete", workspaceIds: [id] });
     return c.json({ deleted: [id] });
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.startsWith("persist failed")) return errorJson(c, err, 500);
+    return c.json({ error: msg }, 400);
   }
 });
 
@@ -305,53 +441,47 @@ app.get("/api/tasks/:id/log", (c) => {
 });
 
 app.post("/api/tasks", async (c) => {
-  const body = (await c.req.json()) as Partial<CreateTaskInput> & { start?: boolean };
-  const kind = body.kind as AgentKind;
-  if (!kind || !["pi", "claude", "cursor", "devin", "codex"].includes(kind)) {
-    return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
-  }
-  if (!body.prompt?.trim()) {
-    return c.json({ error: "prompt required" }, 400);
-  }
-  const workspaceId =
-    typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
-  const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
-  if (workspaceId) {
-    if (!getWorkspace(workspaceId)) {
-      return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+  try {
+    const body = await readJsonObject(c);
+    const kindRaw = body.kind;
+    if (typeof kindRaw !== "string" || !["pi", "claude", "cursor", "devin", "codex"].includes(kindRaw)) {
+      return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
     }
-  } else if (cwd) {
-    if (!existsSync(cwd)) return c.json({ error: `cwd not found: ${cwd}` }, 400);
-  } else {
-    return c.json({ error: "workspaceId or cwd required" }, 400);
-  }
-  let attachments;
-  try {
-    attachments = normalizeAttachmentsInput(
-      (body as { attachments?: unknown }).attachments,
-    );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const status = typeof (e as { status?: number })?.status === "number"
-      ? (e as { status: number }).status
-      : 400;
-    return c.json({ error: msg }, status as 400);
-  }
-  const input: CreateTaskInput = {
-    kind,
-    workspaceId: workspaceId || undefined,
-    cwd: cwd || undefined,
-    prompt: body.prompt.trim(),
-    title: body.title,
-    model: body.model,
-    attachments: attachments.length ? attachments : undefined,
-  };
-  const start = Boolean(body.start);
-  try {
-    const task = start ? createAndStart(input) : createDraft(input);
+    const prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
+    const title = body.title == null ? undefined : requireString(body, "title", { max: MAX_TITLE_CHARS });
+    const model = body.model == null ? undefined : requireString(body, "model", { max: MAX_MODEL_CHARS });
+    const start = parseStrictBool(body.start, "start") === true;
+    const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
+    const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+    if (body.workspaceId != null && typeof body.workspaceId !== "string") {
+      throw new HttpError(400, "workspaceId must be a string");
+    }
+    if (body.cwd != null && typeof body.cwd !== "string") {
+      throw new HttpError(400, "cwd must be a string");
+    }
+    if (workspaceId) {
+      if (!getWorkspace(workspaceId)) {
+        return c.json({ error: `workspace not found: ${workspaceId}` }, 400);
+      }
+    } else if (cwd) {
+      resolveAllowedDirectory(cwd, "cwd");
+    } else {
+      return c.json({ error: "workspaceId or cwd required" }, 400);
+    }
+    const attachments = normalizeAttachmentsInput(body.attachments);
+    const input: CreateTaskInput = {
+      kind: kindRaw as AgentKind,
+      workspaceId: workspaceId || undefined,
+      cwd: cwd || undefined,
+      prompt,
+      title: title || undefined,
+      model: model || undefined,
+      attachments: attachments.length ? attachments : undefined,
+    };
+    const task = start ? await createAndStart(input) : await createDraft(input);
     return c.json({ task }, 201);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    return errorJson(c, e, 500);
   }
 });
 
@@ -360,139 +490,224 @@ app.post("/api/hooks/tasks", (c) => createTaskViaWebhook(c));
 app.post("/webhook/tasks", (c) => createTaskViaWebhook(c));
 
 app.post("/api/tasks/batch-delete", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { ids?: string[] };
-  const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string") : [];
-  if (!ids.length) return c.json({ error: "ids required" }, 400);
-  const result = removeTasks(ids);
-  if (!result.deleted.length && result.skipped.length) {
-    return c.json(
-      {
-        error: "Todo/进行中的任务不可删除",
-        ...result,
-      },
-      400,
-    );
+  try {
+    const body = await readJsonObject(c);
+    if (!Array.isArray(body.ids) || body.ids.some((x) => typeof x !== "string")) {
+      return c.json({ error: "ids must be an array of strings" }, 400);
+    }
+    const ids = body.ids as string[];
+    if (!ids.length) return c.json({ error: "ids required" }, 400);
+    if (ids.length > MAX_BATCH_IDS) {
+      return c.json({ error: `ids exceeds ${MAX_BATCH_IDS}` }, 413);
+    }
+    const result = await removeTasks(ids);
+    if (!result.deleted.length && result.skipped.length) {
+      return c.json(
+        {
+          error: "Todo/进行中的任务不可删除",
+          ...result,
+        },
+        400,
+      );
+    }
+    return c.json(result);
+  } catch (e) {
+    return errorJson(c, e, 500);
   }
-  return c.json(result);
 });
 
-app.post("/api/tasks/:id/start", (c) => {
+app.post("/api/tasks/:id/start", async (c) => {
   try {
-    const task = startTask(c.req.param("id"));
+    const task = await startTask(c.req.param("id"));
     return c.json({ task });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "not found" ? 404 : 400;
-    return c.json({ error: msg }, code);
+    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
+    return c.json({ error: msg }, code as 400);
   }
 });
 
 app.post("/api/tasks/:id/move", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { lane?: string };
-  const lane = body.lane as BoardLane;
-  if (!lane || !["draft", "todo", "running", "done", "archived"].includes(lane)) {
-    return c.json({ error: "lane must be draft|todo|running|done|archived" }, 400);
-  }
   try {
-    const task = moveTask(c.req.param("id"), lane);
+    const body = await readJsonObject(c);
+    const lane = body.lane;
+    if (typeof lane !== "string" || !["draft", "todo", "running", "done", "archived"].includes(lane)) {
+      return c.json({ error: "lane must be draft|todo|running|done|archived" }, 400);
+    }
+    const task = await moveTask(c.req.param("id"), lane as BoardLane);
     return c.json({ task });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "not found" ? 404 : 400;
-    return c.json({ error: msg }, code);
+    if (msg === "invalid JSON body" || msg === "body must be an object") {
+      return c.json({ error: msg }, 400);
+    }
+    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
+    return c.json({ error: msg }, code as 400);
   }
 });
 
-app.post("/api/tasks/:id/stop", (c) => {
+app.post("/api/tasks/:id/stop", async (c) => {
   try {
-    const task = stopTask(c.req.param("id"));
+    const task = await stopTask(c.req.param("id"));
     return c.json({ task });
-  } catch {
-    return c.json({ error: "not found" }, 404);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "not found") return c.json({ error: "not found" }, 404);
+    return errorJson(c, err, 500);
   }
 });
 
 app.post("/api/tasks/:id/continue", async (c) => {
   let prompt: string | undefined;
   try {
-    const body = (await c.req.json().catch(() => ({}))) as { prompt?: string };
-    prompt = body.prompt;
-  } catch {
-    prompt = undefined;
+    const body = await readJsonObject(c);
+    if (body.prompt != null) {
+      prompt = requireString(body, "prompt", { max: MAX_PROMPT_CHARS });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "invalid JSON body") {
+      prompt = undefined;
+    } else {
+      return errorJson(c, err);
+    }
   }
   try {
-    const task = continueTask(c.req.param("id"), prompt);
+    const task = await continueTask(c.req.param("id"), prompt);
     return c.json({ task });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "not found" ? 404 : 400;
-    return c.json({ error: msg }, code);
+    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
+    return c.json({ error: msg }, code as 400);
   }
 });
 
 app.get("/api/events", (c) => {
   return streamSSE(c, async (stream) => {
-    await stream.writeSSE({
-      event: "hello",
-      data: JSON.stringify({
-        type: "hello",
-        tasks: boardSnapshot(),
-        workspaces: workspaceSnapshot(),
-      }),
-    });
+    const MAX_QUEUED = 100;
+    const queued: { event: string; data: string }[] = [];
+    let closed = false;
+    let pumping = false;
+    let alive: ReturnType<typeof setInterval> | undefined;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      if (alive) clearInterval(alive);
+      unsub();
+    };
+    const pump = async () => {
+      if (pumping || closed) return;
+      pumping = true;
+      try {
+        while (queued.length && !closed) {
+          const item = queued.shift()!;
+          await stream.writeSSE(item);
+        }
+      } catch {
+        cleanup();
+      } finally {
+        pumping = false;
+        if (queued.length && !closed) void pump();
+      }
+    };
     const unsub = subscribe((ev) => {
-      void stream.writeSSE({ event: ev.type, data: JSON.stringify(ev) });
+      if (closed) return;
+      if (queued.length >= MAX_QUEUED) {
+        cleanup();
+        return;
+      }
+      queued.push({ event: ev.type, data: JSON.stringify(presentTaskEvent(ev)) });
+      void pump();
     });
-    const alive = setInterval(() => {
-      void stream.writeSSE({ event: "ping", data: "{}" });
-    }, 15000);
-    await new Promise<void>((resolve) => {
-      stream.onAbort(() => {
-        clearInterval(alive);
-        unsub();
-        resolve();
+    const signal = c.req.raw.signal;
+    if (signal?.aborted) {
+      cleanup();
+      return;
+    }
+    signal?.addEventListener("abort", cleanup, { once: true });
+    stream.onAbort(cleanup);
+    try {
+      await stream.writeSSE({
+        event: "hello",
+        data: JSON.stringify({
+          type: "hello",
+          tasks: boardSnapshot(),
+          workspaces: workspaceSnapshot(),
+        }),
       });
-    });
+      await pump();
+      if (closed) return;
+      alive = setInterval(() => {
+        if (closed) return;
+        void stream.writeSSE({ event: "ping", data: "{}" }).catch(() => cleanup());
+      }, 15000);
+      await new Promise<void>((resolve) => {
+        if (closed || signal?.aborted) {
+          cleanup();
+          resolve();
+          return;
+        }
+        const done = () => {
+          cleanup();
+          resolve();
+        };
+        signal?.addEventListener("abort", done, { once: true });
+        stream.onAbort(done);
+      });
+    } finally {
+      cleanup();
+    }
   });
 });
 
+function presentTaskEvent(ev: BoardEvent): BoardEvent {
+  if (ev.type === "task_upsert" && ev.task) {
+    return { ...ev, task: presentBoardTask(ev.task) };
+  }
+  return ev;
+}
 
 
-function fullSettings() {
+
+async function fullSettings() {
   return {
-    ...getCliPathSettings(),
+    ...(await getCliPathSettingsResolved()),
     ...getProxyEnvSettings(),
     ...getQuickPromptSettings(),
     ...getCodexSandboxSettings(),
   };
 }
 
-app.get("/api/settings", (c) => c.json(fullSettings()));
+app.get("/api/settings", async (c) => c.json(await fullSettings()));
 
 app.put("/api/settings", async (c) => {
-  let body: unknown;
+  let raw: Record<string, unknown>;
   try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "invalid JSON" }, 400);
+    raw = await readJsonObject(c);
+  } catch (e) {
+    return errorJson(c, e);
   }
-  if (!body || typeof body !== "object") {
-    return c.json({ error: "body must be an object" }, 400);
+
+  if ("clear" in raw && raw.clear != null && typeof raw.clear !== "boolean") {
+    return c.json({ error: "clear must be a boolean" }, 400);
   }
-  const raw = body as {
-    cliPaths?: unknown;
-    proxyEnv?: unknown;
-    quickPrompts?: unknown;
-    codexSandbox?: unknown;
-    clear?: unknown;
-  };
 
   if (raw.clear === true) {
-    await clearCliPathOverrides();
-    await clearProxyEnvOverrides();
-    await clearCodexSandbox();
-    // Keep custom quick prompts; they are user content, not CLI defaults.
-    return c.json(fullSettings());
+    try {
+      // Validate nothing else is required. One transaction, then swap memory.
+      // Quick prompts are user content and are kept.
+      await upsertMetaMany([
+        ["cli_paths", "{}"],
+        ["proxy_env", "{}"],
+        ["codex_sandbox", "true"],
+      ]);
+      applyCliPathMemory({});
+      applyProxyEnvMemory({});
+      applyCodexSandboxMemory(true);
+      return c.json(await fullSettings());
+    } catch (err) {
+      return errorJson(c, err, 500);
+    }
   }
 
   const hasCli = raw.cliPaths != null;
@@ -502,6 +717,9 @@ app.put("/api/settings", async (c) => {
   if (!hasCli && !hasProxy && !hasQuick && !hasCodexSandbox) {
     return c.json({ error: "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required (or clear: true)" }, 400);
   }
+
+  let cliPlan: ReturnType<typeof planCliPathOverrides> | undefined;
+  let proxyPlan: ReturnType<typeof planProxyEnvOverrides> | undefined;
 
   if (hasCli) {
     if (typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
@@ -517,7 +735,7 @@ app.put("/api/settings", async (c) => {
       }
       patch[k as CliCommandKey] = typeof v === "string" ? v : "";
     }
-    await setCliPathOverrides(patch);
+    cliPlan = planCliPathOverrides(patch);
   }
 
   if (hasProxy) {
@@ -548,37 +766,46 @@ app.put("/api/settings", async (c) => {
       }
       patch[kind as CliCommandKey] = kindPatch;
     }
-    await setProxyEnvOverrides(patch);
+    proxyPlan = planProxyEnvOverrides(patch);
   }
 
-  if (hasQuick) {
-    try {
-      await setQuickPrompts(raw.quickPrompts);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 400);
-    }
+  let quickPlan: ReturnType<typeof planQuickPrompts> | undefined;
+  let codexPlan: ReturnType<typeof planCodexSandbox> | undefined;
+  try {
+    if (hasQuick) quickPlan = planQuickPrompts(raw.quickPrompts);
+    if (hasCodexSandbox) codexPlan = planCodexSandbox(raw.codexSandbox);
+  } catch (err) {
+    return errorJson(c, err);
   }
 
-  if (hasCodexSandbox) {
-    try {
-      await setCodexSandbox(raw.codexSandbox);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 400);
-    }
+  const entries: Array<readonly [string, string]> = [];
+  if (cliPlan) entries.push(["cli_paths", cliPlan.json]);
+  if (proxyPlan) entries.push(["proxy_env", proxyPlan.json]);
+  if (quickPlan) entries.push(["quick_prompts", quickPlan.json]);
+  if (codexPlan) entries.push(["codex_sandbox", codexPlan.json]);
+  try {
+    await upsertMetaMany(entries);
+  } catch (err) {
+    return errorJson(c, err, 500);
   }
+  if (cliPlan) applyCliPathMemory(cliPlan.next);
+  if (proxyPlan) applyProxyEnvMemory(proxyPlan.next);
+  if (quickPlan) applyQuickPromptsMemory(quickPlan.next);
+  if (codexPlan) applyCodexSandboxMemory(codexPlan.next);
 
-  return c.json(fullSettings());
+  return c.json(await fullSettings());
 });
 
 app.post("/api/uploads", async (c) => {
   try {
     const body = await c.req.parseBody({ all: true });
+    const attachmentFlag = body["attachment"];
+    const attachmentText = typeof attachmentFlag === "string" ? attachmentFlag : "";
     const asAttachment =
       c.req.query("as") === "attachment" ||
       body["as"] === "attachment" ||
-      Boolean(body["attachment"]);
+      attachmentText === "true" ||
+      attachmentText === "1";
     const raw = body["file"] ?? body["attachment"] ?? body["image"];
     const file = Array.isArray(raw) ? raw[0] : raw;
     if (!(file instanceof File)) {
@@ -603,9 +830,9 @@ app.post("/api/uploads", async (c) => {
     const saved = await saveUploadFile(file);
     return c.json(saved, 201);
   } catch (err) {
-    const status = typeof (err as { status?: number })?.status === "number"
+    const status = httpStatusOf(err, typeof (err as { status?: number })?.status === "number"
       ? (err as { status: number }).status
-      : 500;
+      : 500);
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: msg }, status as 400 | 500);
   }
@@ -617,17 +844,35 @@ app.get("/uploads/:name", async (c) => {
   const abs = absoluteUploadPath(name);
   if (!abs || !existsSync(abs)) return c.notFound();
   const st = statSync(abs);
-  const mime = mimeForStoredName(name);
-  const download = c.req.query("download") === "1" || c.req.query("download") === "true";
   const filename = c.req.query("filename")?.trim() || name;
-  c.header("Content-Type", mime);
+  const safe = filename.replace(/["\r\n]/g, "_");
+  const download = c.req.query("download") === "1" || c.req.query("download") === "true";
+  let sniffed: string | null = null;
+  try {
+    const fd = openSync(abs, "r");
+    const head = Buffer.alloc(16);
+    readSync(fd, head, 0, 16, 0);
+    closeSync(fd);
+    sniffed = sniffImageMime(head);
+  } catch {
+    sniffed = null;
+  }
+  const inlineImage = Boolean(sniffed) && isSafeUploadName(name);
+  c.header("X-Content-Type-Options", "nosniff");
   c.header("Content-Length", String(st.size));
-  if (download) {
-    const safe = filename.replace(/["\r\n]/g, "_");
-    c.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`);
-    c.header("Cache-Control", "private, max-age=0, must-revalidate");
+  c.header("Content-Security-Policy", "sandbox; default-src 'none'");
+  if (inlineImage && !download) {
+    c.header("Content-Type", sniffed!);
+    c.header("Cache-Control", "private, max-age=3600");
   } else {
-    c.header("Cache-Control", "public, max-age=31536000, immutable");
+    // Non-images (and explicit downloads) are always attachments.
+    // A query flag cannot turn this off.
+    c.header("Content-Type", "application/octet-stream");
+    c.header(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`,
+    );
+    c.header("Cache-Control", "private, no-store");
   }
   const nodeStream = createReadStream(abs);
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
@@ -660,8 +905,25 @@ async function main() {
     console.log(`agent-board http://${hostname}:${info.port}`);
     console.log(`database ${redactDatabaseUrl()}`);
   });
+  let shuttingDown = false;
   const shutdown = async () => {
-    await flushPersist();
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      shutdownManager();
+    } catch (err) {
+      console.error("[shutdown] runners:", err);
+    }
+    try {
+      await flushPersist();
+    } catch (err) {
+      console.error("[db] flush on shutdown failed:", err);
+    }
+    try {
+      await closePool();
+    } catch (err) {
+      console.error("[db] close pool failed:", err);
+    }
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

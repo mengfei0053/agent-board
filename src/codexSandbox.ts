@@ -45,13 +45,24 @@ export function getCodexSandboxSettings(): { codexSandbox: boolean } {
 }
 
 async function persist(next: boolean): Promise<void> {
-  enabled = next;
   const p = getPool();
   await p.query(
     `INSERT INTO meta (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
     [META_KEY, JSON.stringify(next)],
   );
+  enabled = next;
+}
+
+export function planCodexSandbox(input: unknown): { next: boolean; json: string } {
+  if (typeof input !== "boolean") {
+    throw Object.assign(new Error("codexSandbox must be a boolean"), { status: 400, statusCode: 400 });
+  }
+  return { next: input, json: JSON.stringify(input) };
+}
+
+export function applyCodexSandboxMemory(next: boolean): void {
+  enabled = next;
 }
 
 export async function setCodexSandbox(

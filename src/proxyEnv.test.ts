@@ -66,6 +66,30 @@ describe("childProcessEnv / getProxyEnvSettings", () => {
     assert.equal(lastInjectedProxyKind, "pi");
   });
 
+  it("does not copy service secrets into the child env", () => {
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://postgres:secret@127.0.0.1/db";
+    try {
+      const env = childProcessEnv("pi");
+      assert.equal(env.DATABASE_URL, undefined);
+      assert.ok(env.PATH);
+    } finally {
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  it("redacts proxy credentials in settings", () => {
+    _resetProxyEnvOverridesForTests({
+      pi: { HTTP_PROXY: "http://user:s3cret@127.0.0.1:7890" },
+    });
+    const { proxyEnv } = getProxyEnvSettings();
+    assert.equal(proxyEnv.pi.HTTP_PROXY.override, "http://user:***@127.0.0.1:7890");
+    assert.equal(proxyEnv.pi.HTTP_PROXY.effective, "http://user:***@127.0.0.1:7890");
+    const env = childProcessEnv("pi");
+    assert.equal(env.HTTP_PROXY, "http://user:s3cret@127.0.0.1:7890");
+  });
+
   it("leaves process.env when no override for kind", () => {
     _resetProxyEnvOverridesForTests({
       codex: { ALL_PROXY: "socks5://x" },
