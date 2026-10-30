@@ -147,6 +147,14 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 }
 
+function displayTitleText(t) {
+  const prompt = String(t?.prompt || "");
+  const title = String(t?.title || "");
+  // Empty title was stored as prompt.slice(0, 48) — show ellipsis when truncated.
+  if (prompt.length > 48 && title === prompt.slice(0, 48)) return title + "...";
+  return title;
+}
+
 function iterationOf(t) {
   return typeof t?.iteration === "number" && t.iteration >= 1 ? t.iteration : 1;
 }
@@ -268,7 +276,7 @@ function makeCard(t) {
       <div class="card-top">
         <div class="card-heading">
           <span class="card-id" title="任务号">${escapeHtml(t.id)}</span>
-          <p class="card-title">${escapeHtml(t.title)}</p>
+          <p class="card-title" title="${escapeHtml(t.prompt || "")}">${escapeHtml(displayTitleText(t))}</p>
         </div>
         <span class="badge ${t.status}">${escapeHtml(statusText)}</span>
       </div>
@@ -638,7 +646,8 @@ function buildMetaJson(task) {
 function paintDetail(task) {
   const iter = iterationOf(task);
   const statusText = STATUS_LABEL[task.status] || task.status;
-  detailTitle.textContent = task.title;
+  detailTitle.textContent = displayTitleText(task);
+  detailTitle.title = task.prompt || "";
   detailSub.textContent = `${task.id} · ${task.kind} · ${statusText} · 迭代 ${iter}`;
   const taskIdEl = document.getElementById("detail-task-id");
   if (taskIdEl) taskIdEl.textContent = task.id || "";
