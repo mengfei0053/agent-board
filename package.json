@@ -7,11 +7,12 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm test:unit && pnpm test:e2e",
+    "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
     "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts",
     "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts",
     "coverage": "pnpm test:coverage",
-    "test:e2e": "node test/e2e/workspace-settings.mjs"
+    "test:e2e": "node test/e2e/workspace-settings.mjs",
+    "test:integration": "tsx --test --test-force-exit test/integration/*.integration.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
@@ -23,8 +24,15 @@
     "@types/node": "^22.13.10",
     "@types/pg": "^8.23.1",
     "c8": "^12.0.0",
+    "embedded-postgres": "18.4.0-beta.17",
     "puppeteer-core": "^24.43.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@embedded-postgres/linux-x64",
+      "embedded-postgres"
+    ]
   }
 }

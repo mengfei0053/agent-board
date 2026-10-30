@@ -125,20 +125,21 @@ pnpm dev
 
 ```bash
 pnpm install
-pnpm test            # 单元 + e2e
-pnpm test:unit       # node:test（workspace 配置归一化 / prompt 拼接）
-pnpm test:coverage   # 同上单元测试 + c8 覆盖率（text / html / lcov）
-pnpm coverage        # test:coverage 别名
-pnpm test:e2e        # puppeteer-core：侧栏右键菜单 + 空间设置页保存（自带 mock API，无需 Postgres）
+pnpm test              # 单元 + 集成 + e2e
+pnpm test:unit         # node:test 纯函数 / 解析（src/**/*.test.ts）
+pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I7）
+pnpm test:coverage     # 单元 + c8 覆盖率（text / html / lcov）
+pnpm coverage          # test:coverage 别名
+pnpm test:e2e          # puppeteer-core：侧栏右键 + 空间设置页（mock API，无需 Postgres）
 ```
 
-覆盖率报告（仅单元；e2e 走 mock+puppeteer，不并进同一报告）：
+集成测试会临时拉起 `embedded-postgres`（不碰生产 `DATABASE_URL`），用 Hono `app.request` 打真实路由，runner 换成内存 fake（不 spawn 本机 CLI）。首次需允许原生依赖构建：`pnpm` 的 `onlyBuiltDependencies` 已包含 `@embedded-postgres/linux-x64`。
+
+覆盖率报告（仅单元；集成/e2e 不并进同一报告）：
 
 - 终端：`pnpm test:coverage` 结束后打印各文件 %
 - HTML：打开 `coverage/index.html`
 - LCOV：`coverage/lcov.info`（可给 IDE / CI 用）
-
-当前单元主要覆盖 `src/workspaceApply.ts`（归一化 / merge / prompt 前缀 / 首次启动注入 / summary；语句与行约 100%）。
 
 ## 重新截图（可选）
 

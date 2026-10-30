@@ -616,3 +616,21 @@ export function createAndStart(input: CreateTaskInput): Task {
   const draft = createDraft(input);
   return startTask(draft.id);
 }
+
+
+/** Integration tests: drop live runner handles and pending patches. */
+export function clearHandlesForTests(): void {
+  for (const id of [...handles.keys()]) {
+    const h = handles.get(id);
+    handles.delete(id);
+    try {
+      h?.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const id of [...patchTimers.keys()]) {
+    flushPendingPatch(id);
+  }
+  pendingPatch.clear();
+}

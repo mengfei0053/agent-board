@@ -7,6 +7,7 @@ import {
   archiveJsonDb,
   dataDir,
   ensureSchema,
+  closePool,
   getPool,
   jsonDbExists,
   listJsonlLogFiles,
@@ -832,3 +833,21 @@ export function countTasksInWorkspace(workspaceId: string): number {
   }
   return n;
 }
+
+
+/** Integration tests: wipe PG + memory and re-init (keeps same DATABASE_URL pool). */
+export async function resetStoreForTests(): Promise<void> {
+  await flushPersist();
+  const p = getPool();
+  await p.query(
+    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, workspaces, meta RESTART IDENTITY CASCADE`,
+  );
+  tasks = new Map();
+  workspaces = new Map();
+  logs = new Map();
+  defaultWorkspaceId = null;
+  ready = false;
+  await initStore();
+}
+
+export { closePool, getPool };

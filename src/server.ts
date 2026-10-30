@@ -5,8 +5,8 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { subscribe } from "./bus.js";
 import {
   boardSnapshot,
@@ -668,7 +668,21 @@ async function main() {
   process.on("SIGTERM", () => void shutdown());
 }
 
-main().catch((err) => {
-  console.error("failed to start:", err);
-  process.exit(1);
-});
+export { app };
+
+function isDirectRun(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(resolve(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun()) {
+  main().catch((err) => {
+    console.error("failed to start:", err);
+    process.exit(1);
+  });
+}
