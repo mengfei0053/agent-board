@@ -3,6 +3,20 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentKind } from "../types.js";
 
+
+function readTomlModel(path: string): string | undefined {
+  try {
+    if (!existsSync(path)) return undefined;
+    const text = readFileSync(path, "utf8");
+    // Prefer top-level `model = "..."` (ignore [profiles.*] blocks roughly by first match)
+    const m = text.match(/^\s*model\s*=\s*"([^"]+)"/m);
+    if (m?.[1]?.trim()) return m[1].trim();
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
 function readJson(path: string): any | null {
   try {
     if (!existsSync(path)) return null;
@@ -32,6 +46,11 @@ export function resolveDefaultModel(kind: AgentKind): string | undefined {
     const s = readJson(join(home, ".config/devin/config.json"));
     const m = s?.agent?.model || s?.model;
     if (typeof m === "string" && m.trim()) return m.trim();
+  }
+
+  if (kind === "codex") {
+    const m = readTomlModel(join(home, ".codex/config.toml"));
+    if (m) return m;
   }
   if (kind === "claude") {
     const s = readJson(join(home, ".claude/settings.json"));

@@ -1,6 +1,6 @@
 # agent-board 架构（v0.1）
 
-本机 Web 看板：新建 / 观察 / 停止本地 Agent CLI 任务。第一版覆盖 **pi / Claude Code / Cursor CLI**。
+本机 Web 看板：新建 / 观察 / 停止本地 Agent CLI 任务。覆盖 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**。
 
 ## 目标
 
@@ -28,7 +28,8 @@
                         │    ├─ pi:    pi -p --mode json --no-session
                         │    ├─ claude: claude -p --output-format stream-json
                         │    ├─ cursor: agent -p --output-format stream-json
-                        │    └─ devin: devin -p --permission-mode accept-edits (plain stdout)
+                        │    ├─ devin:  devin -p --permission-mode accept-edits (plain stdout)
+                        │    └─ codex:  codex exec --json -s workspace-write --approve-for-me
                         └─ 每任务：子进程 + data/logs/<id>.jsonl
 ```
 
@@ -41,6 +42,7 @@
 - **pi**：`agent_start`/`tool_execution_start` → running；`ask_user_question` → blocked；`agent_settled` / 进程退出 → 终态
 - **claude / cursor**：收到 stream-json 事件 → running；进程 exit 0 → succeeded，非 0 → failed；未知事件只记日志
 - **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；session 在结束后用 `devin list --format json` / sessions.db 尽力回填，继续任务用 `-r <sid>` 或回退 `-c`
+- **codex**：`codex exec --json`（thread JSONL：`thread.started` / `turn.*` / `item.*`）→ running；exit 0 → succeeded；`thread_id` 写入 sessionId；继续任务用 `codex exec resume <id>`（无 id 时 `--last`）；非交互审批用 `-s workspace-write --approve-for-me`
 
 ## 后续扩展点
 
@@ -55,6 +57,7 @@
 - pi：`--session-id`（不再 `--no-session`）
 - Claude：首跑 `--session-id <uuid>`，续跑 `--resume <id>`（无 id 时回退 `-c`）
 - Cursor：首跑 `agent create-chat` + `--resume` + `--trust`，续跑 `--resume`（无 id 时回退 `--continue`）
+- Codex：首跑 `codex exec --json …`，从 `thread.started.thread_id` 记 session；续跑 `codex exec resume <thread_id> --json …`（无 id 时 `--last`）
 
 ## 批量删除
 
@@ -80,7 +83,7 @@
   | 字段 | 必填 | 说明 |
   |---|---|---|
   | `prompt` | ✅ | 任务内容 |
-  | `agent` | ✅ | `pi` \| `claude` \| `cursor` \| `devin`（也可用别名 `kind`） |
+  | `agent` | ✅ | `pi` | `claude` | `cursor` | `devin` | `codex`（也可用别名 `kind`） |
   | `cwd` | ✅ | 工作目录（须已存在） |
   | `model` | | 可选模型 |
   | `title` | | 可选标题 |

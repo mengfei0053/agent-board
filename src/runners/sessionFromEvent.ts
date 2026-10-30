@@ -5,12 +5,19 @@ export function sessionFromJsonLine(line: string): string | undefined {
     const bag: unknown[] = [
       ev.session_id,
       ev.sessionId,
+      ev.thread_id,
+      ev.threadId,
       ev.chatId,
       ev.chat_id,
       ev.conversation_id,
       ev.conversationId,
       // pi: {"type":"session","id":"..."}
       ev.type === "session" ? ev.id : undefined,
+      // Codex exec --json: {"type":"thread.started","thread_id":"..."}
+      ev.type === "thread.started" ? ev.thread_id : undefined,
+      // Codex rollout / session_meta payload
+      ev.payload?.session_id,
+      ev.payload?.id,
       ev.session?.id,
       ev.data?.session_id,
       ev.data?.sessionId,
