@@ -92,6 +92,30 @@ async function main() {
     await page.waitForSelector("#detail-modal:not(.hidden)");
     await page.waitForSelector("#continue-row:not([hidden])");
 
+    await page.waitForFunction(() => {
+      const el = document.querySelector("#detail-meta-grid [data-copy-cmd]");
+      const cmd = el?.getAttribute("data-copy-cmd") || "";
+      return cmd.includes("/tmp/e2e-fake-pi") && cmd.includes("--session-id") && cmd.includes("sess_e2e_1");
+    });
+    const resumeCmd = await page.$eval(
+      "#detail-meta-grid [data-copy-cmd]",
+      (el) => el.getAttribute("data-copy-cmd"),
+    );
+    assert.equal(
+      resumeCmd,
+      "cd /tmp/agent-board-default && /tmp/e2e-fake-pi --session-id sess_e2e_1",
+    );
+    const resumeShown = await page.$eval(
+      "#detail-meta-grid [data-copy-cmd] code",
+      (el) => el.textContent,
+    );
+    assert.equal(resumeShown, resumeCmd);
+    const resumeLabel = await page.$eval(
+      "#detail-meta-grid",
+      (grid) => [...grid.querySelectorAll(".meta-k")].some((el) => el.textContent === "继续会话"),
+    );
+    assert.equal(resumeLabel, true);
+
     // quick prompt buttons loaded from /api/settings
     await page.waitForFunction(() => {
       const box = document.getElementById("continue-quick-prompts");

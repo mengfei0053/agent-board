@@ -1,5 +1,6 @@
 import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask } from "./boardTaskMerge.js";
+import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
 
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
@@ -35,6 +36,8 @@ const createQuickPromptsEl = document.getElementById("create-quick-prompts");
 const continueQuickPromptsEl = document.getElementById("continue-quick-prompts");
 /** @type {{ id: string, label: string, content: string }[]} */
 let quickPrompts = [];
+/** @type {Record<string, { effective?: string, override?: string, default?: string }>} */
+let cliPathSettings = {};
 const bulkBar = document.getElementById("bulk-bar");
 const wsListEl = document.getElementById("ws-list");
 const wsEmptyEl = document.getElementById("ws-empty");
@@ -631,7 +634,12 @@ async function loadQuickPrompts() {
     if (!res.ok) return;
     const data = await res.json();
     quickPrompts = Array.isArray(data.quickPrompts) ? data.quickPrompts : [];
+    cliPathSettings = data.cliPaths && typeof data.cliPaths === "object" ? data.cliPaths : {};
     applyQuickPromptsToUi();
+    if (selectedId && detailModal && !detailModal.classList.contains("hidden")) {
+      const open = tasks.get(selectedId);
+      if (open) paintDetail(open);
+    }
   } catch {
     /* ignore */
   }
@@ -812,10 +820,28 @@ function canContinue(task) {
 }
 
 function metaItem(k, v, wide = false, opts = {}) {
-  const body = opts.markdown
-    ? `<div class="meta-v md-body prompt-md">${v ? renderMarkdown(v) : "—"}</div>`
-    : `<span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span>`;
+  let body;
+  if (opts.markdown) {
+    body = `<div class="meta-v md-body prompt-md">${v ? renderMarkdown(v) : "—"}</div>`;
+  } else if (opts.code && v) {
+    body = `<button type="button" class="meta-cmd-btn" data-copy-cmd="${escapeHtml(v)}" title="点击复制命令"><code class="meta-cmd">${escapeHtml(v)}</code></button>`;
+  } else if (opts.muted) {
+    body = `<span class="meta-v muted">${escapeHtml(v ?? "—")}</span>`;
+  } else {
+    body = `<span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span>`;
+  }
   return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span>${body}</div>`;
+}
+
+function resumeMetaItem(task) {
+  const view = resumeCommandView({
+    kind: task.kind,
+    sessionId: task.sessionId,
+    cwd: task.cwd,
+    bin: cliPathSettings[cliKeyForKind(task.kind)],
+  });
+  if (!view.command) return metaItem("继续会话", view.emptyLabel, true, { muted: true });
+  return metaItem("继续会话", view.command, true, { code: true });
 }
 
 function outputSignature(task) {
@@ -1058,6 +1084,7 @@ function paintDetail(task) {
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),
     metaItem("退出码", task.exitCode != null ? String(task.exitCode) : "—"),
     metaItem("会话", task.sessionId || "—", true),
+    resumeMetaItem(task),
     metaItem("工作区", (task.workspaceId && workspaces.get(task.workspaceId)?.name) || task.workspaceId || "—"),
     metaItem("工作目录", task.cwd, true),
     metaItem("初始提示词", task.prompt, true, { markdown: true }),
@@ -1199,6 +1226,40 @@ document.addEventListener("click", (e) => {
   fillPromptFromQuick(target, item.content);
 });
 void loadQuickPrompts();
+
+detailMetaGrid?.addEventListener("click", async (e) => {
+  const btn = e.target?.closest?.("[data-copy-cmd]");
+  if (!btn) return;
+  const text = btn.getAttribute("data-copy-cmd") || "";
+  if (!text) return;
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    copied = true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      copied = document.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    ta.remove();
+  }
+  if (!copied) return;
+  btn.classList.add("is-copied");
+  const prev = btn.getAttribute("title") || "点击复制命令";
+  btn.setAttribute("title", "已复制");
+  window.setTimeout(() => {
+    btn.classList.remove("is-copied");
+    if (btn.getAttribute("title") === "已复制") btn.setAttribute("title", prev);
+  }, 1200);
+});
 document.addEventListener("click", (e) => {
   const img = e.target?.closest?.("img.md-img, img.card-prompt-thumb");
   if (!img?.src) return;
