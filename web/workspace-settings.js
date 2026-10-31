@@ -1,3 +1,5 @@
+import { renderGitStatus } from "./git-status-view.js";
+
 const form = document.getElementById("ws-settings-form");
 const statusEl = document.getElementById("ws-settings-status");
 const subtitleEl = document.getElementById("ws-subtitle");
@@ -48,6 +50,7 @@ async function load() {
     if (!res.ok) throw new Error(data.error || res.statusText);
     fillForm(data.workspace);
     setStatus("已加载，修改后点保存", null);
+    void loadGitStatus(false);
   } catch (err) {
     setStatus(String(err.message || err), false);
   }
@@ -81,6 +84,7 @@ form.addEventListener("submit", async (e) => {
     if (!res.ok) throw new Error(data.error || res.statusText);
     fillForm(data.workspace);
     setStatus("已保存", true);
+    void loadGitStatus(true);
   } catch (err) {
     setStatus(String(err.message || err), false);
   }
@@ -110,6 +114,34 @@ btnClear.addEventListener("click", async () => {
   } catch (err) {
     setStatus(String(err.message || err), false);
   }
+});
+
+const gitStatusBody = document.getElementById("git-status-body");
+const gitStatusSummary = document.getElementById("git-status-summary");
+
+async function loadGitStatus(refresh) {
+  if (!workspaceId || !gitStatusBody) return;
+  if (gitStatusSummary) {
+    gitStatusSummary.textContent = "加载中…";
+    gitStatusSummary.classList.remove("bad");
+  }
+  gitStatusBody.replaceChildren();
+  try {
+    const q = refresh ? "?refresh=1" : "";
+    const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/git-status${q}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      renderGitStatus(gitStatusBody, gitStatusSummary, null, data.error || res.statusText || "加载失败");
+      return;
+    }
+    renderGitStatus(gitStatusBody, gitStatusSummary, data, null);
+  } catch (err) {
+    renderGitStatus(gitStatusBody, gitStatusSummary, null, String(err?.message || err));
+  }
+}
+
+document.getElementById("git-refresh")?.addEventListener("click", () => {
+  void loadGitStatus(true);
 });
 
 load();

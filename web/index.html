@@ -84,6 +84,18 @@
           </div>
         </div>
 
+        <section class="git-panel" id="git-panel" hidden aria-label="Git 状态">
+          <div class="git-panel-head">
+            <h2>Git</h2>
+            <span class="git-panel-summary muted" id="git-panel-summary">加载中…</span>
+            <div class="git-panel-actions">
+              <button type="button" class="secondary" id="git-refresh">刷新</button>
+              <button type="button" class="secondary" id="git-toggle" aria-expanded="true" aria-controls="git-panel-body">收起</button>
+            </div>
+          </div>
+          <div id="git-panel-body" class="git-panel-body"></div>
+        </section>
+
         <section class="swimlanes" id="swimlanes">
           <div class="lane" data-tab="draft">
             <div class="lane-head"><h2>草稿</h2><span class="count" id="count-draft">0</span></div>

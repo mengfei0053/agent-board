@@ -1,6 +1,7 @@
 import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask } from "./boardTaskMerge.js";
 import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
+import { renderGitStatus } from "./git-status-view.js";
 
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
@@ -1599,6 +1600,70 @@ function renderWorkspaces() {
   const canMutate = Boolean(cur);
   document.getElementById("ws-edit").disabled = !canMutate;
   document.getElementById("ws-delete").disabled = !canMutate;
+  void loadGitStatus(false);
+}
+
+const gitPanel = document.getElementById("git-panel");
+const gitPanelBody = document.getElementById("git-panel-body");
+const gitPanelSummary = document.getElementById("git-panel-summary");
+const gitToggle = document.getElementById("git-toggle");
+const GIT_COLLAPSE_KEY = "agent-board.gitPanelCollapsed";
+
+function applyGitCollapsed() {
+  if (!gitPanel || !gitToggle) return;
+  const collapsed = localStorage.getItem(GIT_COLLAPSE_KEY) === "1";
+  gitPanel.classList.toggle("is-collapsed", collapsed);
+  gitToggle.textContent = collapsed ? "展开" : "收起";
+  gitToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+applyGitCollapsed();
+gitToggle?.addEventListener("click", () => {
+  const collapsed = gitPanel?.classList.contains("is-collapsed");
+  localStorage.setItem(GIT_COLLAPSE_KEY, collapsed ? "0" : "1");
+  applyGitCollapsed();
+});
+document.getElementById("git-refresh")?.addEventListener("click", () => {
+  void loadGitStatus(true);
+});
+
+let gitShownKey = "";
+let gitLoadSeq = 0;
+
+async function loadGitStatus(force) {
+  if (!gitPanel) return;
+  const id = selectedWorkspaceId;
+  const ws = id ? workspaces.get(id) : null;
+  if (!ws) {
+    gitPanel.hidden = true;
+    gitShownKey = "";
+    gitLoadSeq += 1;
+    return;
+  }
+  const key = `${ws.id}\0${ws.path}`;
+  if (!force && key === gitShownKey) return;
+  gitShownKey = key;
+  const seq = ++gitLoadSeq;
+  gitPanel.hidden = false;
+  if (gitPanelSummary) {
+    gitPanelSummary.textContent = "加载中…";
+    gitPanelSummary.classList.remove("bad");
+  }
+  if (gitPanelBody) gitPanelBody.replaceChildren();
+  try {
+    const q = force ? "?refresh=1" : "";
+    const res = await fetch(`/api/workspaces/${encodeURIComponent(ws.id)}/git-status${q}`);
+    const data = await res.json().catch(() => ({}));
+    if (seq !== gitLoadSeq) return;
+    if (!res.ok) {
+      renderGitStatus(gitPanelBody, gitPanelSummary, null, data.error || res.statusText || "加载失败");
+      return;
+    }
+    renderGitStatus(gitPanelBody, gitPanelSummary, data, null);
+  } catch (err) {
+    if (seq !== gitLoadSeq) return;
+    renderGitStatus(gitPanelBody, gitPanelSummary, null, String(err?.message || err));
+  }
 }
 
 function openWsModal(mode, ws) {
