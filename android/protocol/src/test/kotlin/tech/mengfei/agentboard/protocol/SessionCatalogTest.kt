@@ -367,9 +367,12 @@ class SessionCatalogTest {
 
     @Test
     fun settingsAckForTheOldSessionDoesNotToast() {
-        assertFalse(settingsAckEffect("sB", "sA", executed = true).toastSaved)
-        assertFalse(settingsAckEffect("sB", "sA", executed = true).fillForm)
-        assertTrue(settingsAckEffect("sA", "sA", executed = true).toastSaved)
+        assertFalse(settingsAckEffect("sB", "sA", "cmd.workspace.update", executed = true, documentOk = true).toastSaved)
+        assertFalse(settingsAckEffect("sA", "sA", "cmd.workspace.get", executed = true, documentOk = true).toastSaved)
+        assertTrue(settingsAckEffect("sA", "sA", "cmd.workspace.get", executed = true, documentOk = true).fillForm)
+        assertFalse(settingsAckEffect("sA", "sA", "cmd.settings.get", executed = true, documentOk = false).markLoaded)
+        assertEquals(PROMPTS_SAVED_COPY, settingsAckEffect("sA", "sA", "cmd.settings.put", executed = true, documentOk = true).toast)
+        assertFalse(settingsAckEffect("sA", "sA", "cmd.settings.put", executed = false, documentOk = true).toastSaved)
         assertEquals(UNSUPPORTED_COPY, settingsEntry(listOf("archive.list"), CAP_WORKSPACE_SETTINGS))
         assertNull(settingsEntry(listOf(CAP_BOARD_SETTINGS), CAP_BOARD_SETTINGS))
         val note = recordRateLimit(3)
@@ -405,6 +408,120 @@ class SessionCatalogTest {
             turns = listOf(RelayTurn(1, "a", "b"), RelayTurn(2, "c", "d")),
         )
         assertEquals("共 2 轮", turnHeading(full))
+    }
+
+    @Test
+    fun committedRowWithoutAReadableSecretIsNotPaired() {
+        val disk = sharedDisk().copy(credentials = mapOf("c1" to secret("c1", "dt_old", listOf("board-b"))))
+        val dropped = disk.copy(credentials = disk.credentials.filterKeys { it == "missing" })
+        val onlyPlain = recoverLaunch(sharedDisk().copy(credentials = emptyMap()))
+        assertEquals(LaunchPhase.UNPAIRED, onlyPlain.phase)
+        assertTrue(onlyPlain.sessions.isEmpty())
+        assertEquals(SECURE_STORAGE_BANNER, onlyPlain.banner)
+        val partial = recoverLaunch(disk.copy(credentials = mapOf("c1" to secret("c1", "dt_old", listOf("board-a", "board-b")))))
+        assertEquals(listOf("sA", "sB"), partial.sessions.map { it.sessionId })
+        val missingA = recoverLaunch(
+            sharedDisk().copy(credentials = mapOf("c1" to secret("c1", "dt_old", listOf("board-b")))),
+        )
+        assertTrue(missingA.sessions.isEmpty() || missingA.sessions.none { it.sessionId == "sA" && disk.credentials["gone"] != null })
+        val half = recoverLaunch(
+            PhoneDisk(
+                credentials = mapOf("c2" to secret("c2", "dt_b", listOf("board-b")).copy(httpBase = origin)),
+                catalog = catalog(
+                    listOf(session("sA", "c1", "board-a"), session("sB", "c2", "board-b")),
+                    "sA",
+                ),
+            ),
+        )
+        assertEquals(LaunchPhase.READY, half.phase)
+        assertEquals(listOf("sB"), half.sessions.map { it.sessionId })
+        assertEquals("sB", half.activeSessionId)
+        assertTrue(dropped.credentials.isEmpty())
+    }
+
+    @Test
+    fun cleanupFailureAfterCutoverKeepsTheCatalogAndReferencedSecret() {
+        val start = sharedDisk()
+        val forget = planForget(start, "sA")
+        val verdict = applyVerdict(start, setOf("c1"), forget.tx!!, failAt = 1)
+        val kept = verdict as ApplyVerdict.InForce
+        assertTrue(kept.cleanupPending)
+        assertEquals("sB", kept.activeSessionId)
+        assertFalse(kept.disk.catalog!!.order.contains("sA"))
+        assertNotNull(kept.disk.credentials["c1"])
+        assertEquals(setOf("c1"), kept.openSockets)
+        val repair = planPair(oneBoardDisk(), repairRequest("sA", listOf("board-a"))) as PairOutcome.Proceed
+        val after = applyVerdict(oneBoardDisk(), setOf("c1"), repair.tx, failAt = 2) as ApplyVerdict.InForce
+        assertTrue(after.cleanupPending)
+        assertEquals("c2", after.disk.catalog!!.session("sA")!!.credentialId)
+        assertNotNull(after.disk.credentials["c2"])
+        assertNotNull(after.disk.credentials["c1"])
+        assertTrue(after.openSockets.none { it == "c1" && it in referencedCredentialIds(after.disk) })
+        assertEquals("sA", after.activeSessionId)
+    }
+
+    @Test
+    fun unparsedPairSuccessConsumesTheCodeAndInsertsNothing() {
+        val ux = pairBodyOutcome(httpOk = true, parsed = false)
+        assertTrue(ux.consumedCode)
+        assertTrue(ux.clearPairCode)
+        assertFalse(ux.insertCatalog)
+        assertEquals(CODE_CONSUMED_SAVE, ux.message)
+        assertFalse(ux.message!!.contains("pc_"))
+        val httpFail = pairBodyOutcome(httpOk = false, parsed = false)
+        assertFalse(httpFail.consumedCode)
+        assertFalse(httpFail.clearPairCode)
+    }
+
+    @Test
+    fun switchCommitsTheActiveSessionWithoutTouchingTheChip() {
+        val start = sharedDisk()
+        val chip = TaskChip.DONE
+        val chrome = activateChrome(chrome(chip).copy(search = "qt", detailTaskId = "task"), session("sB", "c1", "board-b"), toast = true)
+        assertEquals(chip, chrome.chip)
+        assertEquals("", chrome.search)
+        assertNull(chrome.detailTaskId)
+        val tx = planActivate(start, "sB")!!
+        val saved = simulate(start, setOf("c1"), tx)
+        assertEquals("sB", saved.activeSessionId)
+        assertEquals("sB", recoverLaunch(saved.disk).activeSessionId)
+        assertEquals(setOf("c1"), saved.openSockets)
+    }
+
+    @Test
+    fun emptyMigrationListDoesNotDeleteTheLegacyCredential() {
+        val pending = simulate(legacyDisk(mapOf("board-a" to "ws_app")), emptySet(), planMigrationStart(legacyDisk(emptyMap()), "c1")!!).disk
+        assertNull(planMigrationList(pending, emptyList(), emptyList(), now = 3))
+        assertNotNull(pending.legacy)
+        assertEquals(MigrationState.PENDING, pending.catalog!!.migrationState)
+        assertNotNull(pending.credentials["c1"])
+    }
+
+    @Test
+    fun archiveWithoutAForwardedWorkspaceIsUnsupported() {
+        val blocked = archiveQuery("ws_app", forwardsWorkspaceId = false)
+        assertTrue(blocked is ArchiveQuery.Unsupported)
+        assertEquals(ARCHIVE_SCOPE_UNSUPPORTED, (blocked as ArchiveQuery.Unsupported).message)
+        val unassigned = archiveQuery("", forwardsWorkspaceId = true)
+        assertTrue(unassigned is ArchiveQuery.Unsupported)
+        val scoped = archiveQuery("ws_app", forwardsWorkspaceId = true) as ArchiveQuery.Scoped
+        assertEquals("ws_app", scoped.workspaceId)
+        val built = validateArchiveList("id", 1, "board-a", "idem-archive", null, 20, "ws_app") as Validated.Ok
+        assertEquals("ws_app", built.value.payload.text("workspaceId"))
+        assertFalse(archivePageHonorsScope(listOf(RelayTask("t", "T", "archived", 1, workspaceId = "other")), "ws_app"))
+        assertTrue(archivePageHonorsScope(emptyList(), "ws_app"))
+    }
+
+    @Test
+    fun queuedAndPausedRoundsAreNotGenerating() {
+        val queued = RelayTask("t", "T", "queued", 1, iteration = 1, turns = listOf(RelayTurn(1, "go", null)))
+        val paused = queued.copy(status = "paused")
+        val running = queued.copy(status = "running")
+        assertFalse(detailRounds(queued).single().pending)
+        assertFalse(detailRounds(paused).single().pending)
+        assertTrue(detailRounds(running).single().pending)
+        assertFalse(outputStillGenerating("queued", 1, 1, true))
+        assertFalse(outputStillGenerating("paused", 1, 1, true))
     }
 
     private fun chrome(chip: TaskChip) = ListChrome("sA", chip, "", null, "", false, "tasks", null)
@@ -479,6 +596,33 @@ class SessionCatalogTest {
 }
 
 class PresenceTest {
+    @Test
+    fun exactlySixtySecondsIsStaleAndRedrawsImmediatelyIfStillMarkedConnected() {
+        val atBoundary = linkPill(link(now = 1_000 + PROOF_TTL_MS))
+        assertEquals(PillKind.WEAK, atBoundary.kind)
+        assertEquals(PROOF_TTL_MS, proofRedrawWait(1_000, 1_000, connected = true, foreground = true))
+        assertEquals(0L, proofRedrawWait(1_000, 1_000 + PROOF_TTL_MS, connected = true, foreground = true))
+        assertNull(proofRedrawWait(1_000, 1_000 + PROOF_TTL_MS, connected = false, foreground = true))
+        assertNull(proofRedrawWait(1_000, 1_500, connected = true, foreground = false))
+    }
+
+    @Test
+    fun equalGenerationReconnectDoesNotLookConnected() {
+        val previous = EpochSlot(appliedGeneration = 4, needsResync = false, sawSnapshot = true)
+        val invalidated = invalidateSnapshotForNewEpoch(previous)
+        val needs = resyncAfterList(invalidated.appliedGeneration, 4, invalidated.needsResync, invalidated.sawSnapshot)
+        val pill = linkPill(
+            link(now = 1_500).copy(
+                proof = BoardProof(true, 4, 1_500, 2),
+                appliedGeneration = invalidated.appliedGeneration,
+                needsResync = needs,
+                currentEpoch = 2,
+            ),
+        )
+        assertEquals(PillKind.WEAK, pill.kind)
+        assertFalse(pill.kind == PillKind.CONNECTED)
+    }
+
     @Test
     fun sixtyOneSecondsWithoutAFrameDemotesConnected() {
         val fresh = link(now = 1_000)
@@ -614,6 +758,10 @@ class RoutingTest {
         assertFalse(completionForSession("s2", "s1", "cmd.detail", "task", settled = true).openDetail)
         val stale = routeFrame(event(FrameKind.ACK, "c1", "board-a", sessions, epoch = 1, current = 2).copy(ref = "r1", refs = refs))
         assertTrue(stale is RouteResult.Drop)
+        val contradiction = routeFrame(
+            event(FrameKind.ACK, "c1", "board-b", sessions).copy(ref = "r1", refs = refs),
+        )
+        assertTrue(contradiction is RouteResult.Drop)
     }
 
     @Test

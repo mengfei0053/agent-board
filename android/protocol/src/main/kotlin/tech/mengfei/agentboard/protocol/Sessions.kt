@@ -19,6 +19,16 @@ const val CODE_CONSUMED_SAVE = "配对码已被使用，但没有保存成功。
 const val AT_CAP_BEFORE_POST = "已有 20 块看板。请先忘记一块，再用新的配对码添加。"
 const val CREATED_HIDDEN = "已创建，当前筛选里看不到"
 const val UNSUPPORTED_COPY = "当前中继或看板还不支持这项操作。"
+const val SAVED_COPY = "已保存"
+const val PROMPTS_SAVED_COPY = "快捷提示词已保存"
+const val ARCHIVE_SCOPE_UNSUPPORTED = "归档还不能按当前工作区筛选。在中继按工作区转发之前，这里不显示未筛选的归档。"
+
+/**
+ * The public relay rebuilds `cmd.archive.list` and drops `workspaceId`.
+ * A phone page is scoped only when that forward exists. Until then the archive
+ * chip must not present an unscoped page as this workspace.
+ */
+const val ARCHIVE_LIST_FORWARDS_WORKSPACE = false
 const val SECURE_STORAGE_BANNER = "Secure storage is unavailable, so this phone cannot keep a device token."
 
 enum class MigrationState { PENDING, COMMITTED }
@@ -268,6 +278,13 @@ fun decodeCredential(text: String): CredentialSecret? {
 
 fun workspacePrefId(sessionId: String): String = sessionId
 
+fun readableSessions(disk: PhoneDisk): List<PhoneSession> {
+    if (!disk.secretsReadable) return emptyList()
+    val catalog = disk.catalog ?: return emptyList()
+    if (catalog.migrationState != MigrationState.COMMITTED) return emptyList()
+    return catalog.ordered().filter { disk.credentials[it.credentialId] != null }
+}
+
 fun referencedCredentialIds(disk: PhoneDisk): Set<String> {
     val catalog = disk.catalog ?: return emptySet()
     val ids = catalog.sessions.map { it.credentialId }.toMutableSet()
@@ -423,17 +440,31 @@ fun recoverLaunch(disk: PhoneDisk): LaunchView {
             readingCopy = MIGRATION_READING,
         )
     }
-    val live = catalog.ordered()
-    val liveIds = live.map { it.sessionId }.toSet()
+    val ordered = catalog.ordered()
+    val readable = ordered.filter { disk.credentials[it.credentialId] != null }
+    val liveIds = ordered.map { it.sessionId }.toSet()
     val orphanLocals = (disk.workspaces.keys + disk.drafts.keys + disk.archiveCursors.keys)
         .filter { it !in liveIds }
         .map { DiskOp.ClearLocals(it) }
     val dropLegacy = if (disk.legacy != null) listOf(DiskOp.DeleteLegacy) else emptyList()
+    if (ordered.isNotEmpty() && readable.isEmpty()) {
+        return LaunchView(
+            phase = LaunchPhase.UNPAIRED,
+            banner = SECURE_STORAGE_BANNER,
+            sessions = emptyList(),
+            activeSessionId = null,
+            cleanup = dropSecrets + dropLegacy + orphanLocals,
+            migrationCredentialId = null,
+            readingCopy = null,
+        )
+    }
+    val active = catalog.activeSessionId?.takeIf { id -> readable.any { it.sessionId == id } }
+        ?: readable.firstOrNull()?.sessionId
     return LaunchView(
-        phase = if (live.isEmpty()) LaunchPhase.UNPAIRED else LaunchPhase.READY,
+        phase = if (readable.isEmpty()) LaunchPhase.UNPAIRED else LaunchPhase.READY,
         banner = null,
-        sessions = live,
-        activeSessionId = catalog.activeSessionId,
+        sessions = readable,
+        activeSessionId = active,
         cleanup = dropSecrets + dropLegacy + orphanLocals,
         migrationCredentialId = null,
         readingCopy = null,
@@ -489,6 +520,7 @@ fun planMigrationList(
     if (catalog.migrationState != MigrationState.PENDING) return null
     val credentialId = catalog.migrationCredentialId ?: return null
     val secret = disk.credentials[credentialId] ?: return null
+    if (rows.isEmpty()) return null
     val counts = rows.groupingBy { it.boardId }.eachCount()
     var minted = 0
     val sessions = rows.map { row ->
@@ -796,13 +828,105 @@ fun createKeepsChip(chip: TaskChip): TaskChip = chip
 
 fun createHiddenBanner(chip: TaskChip): String? = if (chip == TaskChip.DONE || chip == TaskChip.ARCHIVE) CREATED_HIDDEN else null
 
-data class SettingsAckEffect(val toastSaved: Boolean, val fillForm: Boolean)
+data class SettingsAckEffect(
+    val toastSaved: Boolean,
+    val fillForm: Boolean,
+    val markLoaded: Boolean,
+    val toast: String? = null,
+)
 
-fun settingsAckEffect(activeSessionId: String?, commandSessionId: String, executed: Boolean): SettingsAckEffect {
-    if (!executed || activeSessionId == null || activeSessionId != commandSessionId) {
-        return SettingsAckEffect(toastSaved = false, fillForm = false)
+fun settingsAckEffect(
+    activeSessionId: String?,
+    commandSessionId: String,
+    command: String,
+    executed: Boolean,
+    documentOk: Boolean,
+): SettingsAckEffect {
+    val same = executed && activeSessionId != null && activeSessionId == commandSessionId && documentOk
+    if (!same) return SettingsAckEffect(toastSaved = false, fillForm = false, markLoaded = false)
+    return when (command) {
+        "cmd.workspace.update" -> SettingsAckEffect(true, fillForm = true, markLoaded = false, toast = SAVED_COPY)
+        "cmd.settings.put" -> SettingsAckEffect(true, fillForm = true, markLoaded = true, toast = PROMPTS_SAVED_COPY)
+        "cmd.workspace.get" -> SettingsAckEffect(false, fillForm = true, markLoaded = false)
+        "cmd.settings.get" -> SettingsAckEffect(false, fillForm = true, markLoaded = true)
+        else -> SettingsAckEffect(false, fillForm = false, markLoaded = false)
     }
-    return SettingsAckEffect(toastSaved = true, fillForm = true)
+}
+
+data class PairBodyOutcome(
+    val consumedCode: Boolean,
+    val clearPairCode: Boolean,
+    val insertCatalog: Boolean,
+    val message: String?,
+)
+
+/** A 2xx body that does not parse already consumed the one-use code. Nothing is inserted. */
+fun pairBodyOutcome(httpOk: Boolean, parsed: Boolean): PairBodyOutcome {
+    if (!httpOk) return PairBodyOutcome(consumedCode = false, clearPairCode = false, insertCatalog = false, message = null)
+    if (!parsed) {
+        return PairBodyOutcome(consumedCode = true, clearPairCode = true, insertCatalog = false, message = CODE_CONSUMED_SAVE)
+    }
+    return PairBodyOutcome(consumedCode = true, clearPairCode = true, insertCatalog = true, message = null)
+}
+
+sealed interface ApplyVerdict {
+    val disk: PhoneDisk
+    val openSockets: Set<String>
+    val activeSessionId: String?
+
+    data class RolledBack(
+        override val disk: PhoneDisk,
+        override val openSockets: Set<String>,
+        override val activeSessionId: String?,
+    ) : ApplyVerdict
+
+    data class InForce(
+        override val disk: PhoneDisk,
+        override val openSockets: Set<String>,
+        override val activeSessionId: String?,
+        val cleanupPending: Boolean,
+    ) : ApplyVerdict
+}
+
+/** A failed step after the catalog commit leaves that catalog in force. It does not roll pairing back. */
+fun failedStepKeepsCatalog(cutoverIndex: Int, failedIndex: Int): Boolean = failedIndex > cutoverIndex
+
+fun applyVerdict(
+    disk: PhoneDisk,
+    openSockets: Set<String>,
+    tx: Transaction,
+    failAt: Int? = null,
+    rollbackCommitFails: Boolean = false,
+): ApplyVerdict {
+    val sim = simulate(disk, openSockets, tx, failAt, rollbackCommitFails)
+    if (!sim.cutover) {
+        return ApplyVerdict.RolledBack(sim.disk, sim.openSockets, sim.activeSessionId)
+    }
+    return ApplyVerdict.InForce(
+        disk = sim.disk,
+        openSockets = sim.openSockets,
+        activeSessionId = sim.activeSessionId,
+        cleanupPending = failAt != null && failedStepKeepsCatalog(tx.cutoverIndex, failAt),
+    )
+}
+
+sealed interface ArchiveQuery {
+    data class Scoped(val workspaceId: String) : ArchiveQuery
+    data class Unsupported(val message: String) : ArchiveQuery
+}
+
+fun archiveQuery(
+    selectedWorkspaceId: String?,
+    forwardsWorkspaceId: Boolean = ARCHIVE_LIST_FORWARDS_WORKSPACE,
+): ArchiveQuery {
+    if (!forwardsWorkspaceId || selectedWorkspaceId.isNullOrEmpty()) {
+        return ArchiveQuery.Unsupported(ARCHIVE_SCOPE_UNSUPPORTED)
+    }
+    return ArchiveQuery.Scoped(selectedWorkspaceId)
+}
+
+fun archivePageHonorsScope(tasks: List<RelayTask>, workspaceId: String): Boolean {
+    return tasks.all { it.workspaceId == workspaceId }
 }
 
 fun capabilityListed(capabilities: List<String>, name: String): Boolean = name in capabilities

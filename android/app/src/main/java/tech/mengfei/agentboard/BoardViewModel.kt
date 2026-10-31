@@ -15,7 +15,21 @@ import tech.mengfei.agentboard.data.SocketListener
 import tech.mengfei.agentboard.notify.DoneNotifier
 import tech.mengfei.agentboard.protocol.ARCHIVE_CAPABILITY
 import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
+import tech.mengfei.agentboard.protocol.ARCHIVE_SCOPE_UNSUPPORTED
 import tech.mengfei.agentboard.protocol.ApplyOutcome
+import tech.mengfei.agentboard.protocol.ApplyVerdict
+import tech.mengfei.agentboard.protocol.ArchiveQuery
+import tech.mengfei.agentboard.protocol.EpochSlot
+import tech.mengfei.agentboard.protocol.PROMPTS_SAVED_COPY
+import tech.mengfei.agentboard.protocol.SAVED_COPY
+import tech.mengfei.agentboard.protocol.archivePageHonorsScope
+import tech.mengfei.agentboard.protocol.archiveQuery
+import tech.mengfei.agentboard.protocol.failedStepKeepsCatalog
+import tech.mengfei.agentboard.protocol.invalidateSnapshotForNewEpoch
+import tech.mengfei.agentboard.protocol.pairBodyOutcome
+import tech.mengfei.agentboard.protocol.planActivate
+import tech.mengfei.agentboard.protocol.proofRedrawWait
+import tech.mengfei.agentboard.protocol.readableSessions
 import tech.mengfei.agentboard.protocol.BoardProof
 import tech.mengfei.agentboard.protocol.BoardReducer
 import tech.mengfei.agentboard.protocol.BoardView
@@ -367,17 +381,16 @@ class BoardViewModel(
             render()
             return
         }
-        if (!applyTx(tx)) {
-            banner = zh("没有忘记成功。", "Could not forget that board.")
-            render()
-            return
-        }
-        dropSessionMemory(sessionId)
-        val next = outcome.nextActiveId
-        if (sessionId == activeId && next != null) {
-            landOn(next, toast = true)
-        } else {
-            render()
+        when (val applied = applyTx(tx)) {
+            is ApplyVerdict.RolledBack -> {
+                banner = zh("没有忘记成功。", "Could not forget that board.")
+                render()
+            }
+            is ApplyVerdict.InForce -> {
+                dropSessionMemory(sessionId)
+                val next = applied.activeSessionId
+                if (sessionId == activeId && next != null) landOn(next, toast = true) else render()
+            }
         }
     }
 
@@ -389,12 +402,15 @@ class BoardViewModel(
             render()
             return
         }
-        discardSettings(activeId)
+        val previous = activeId
+        if (!persistActive(sessionId)) return
+        discardSettings(previous)
         landOn(sessionId, toast = true)
     }
 
     fun openNotification(sessionId: String?, taskId: String?) {
         val target = notificationTarget(sessions(), sessionId, taskId) ?: return
+        if (target.sessionId != activeId && !persistActive(target.sessionId)) return
         if (target.sessionId != activeId) landOn(target.sessionId, toast = false)
         openTask(taskId ?: return)
     }
@@ -464,7 +480,7 @@ class BoardViewModel(
         if (id.isNotEmpty() && view.workspaces.none { it.id == id }) return
         store.apply(DiskOp.PutWorkspace(sessionId, id))
         disk = store.readDisk()
-        render()
+        if (chip == TaskChip.ARCHIVE) loadArchive(reset = true) else render()
     }
 
     fun requestDeleteWorkspace() {
@@ -552,6 +568,11 @@ class BoardViewModel(
 
     fun saveWorkspaceSettings() {
         val session = session(activeId) ?: return
+        if (settingsEntry(capabilities(session), CAP_WORKSPACE_SETTINGS) != null) {
+            banner = UNSUPPORTED_COPY
+            render()
+            return
+        }
         val form = slot(session.sessionId)?.workspaceForm ?: return
         val workspaceId = _state.value.selectedWorkspaceId ?: return
         if (workspaceId.isEmpty() || !writesOk(session)) return
@@ -639,7 +660,16 @@ class BoardViewModel(
                     render()
                     return@launch
                 }
-                val paired = parsePairResponse(result.body)
+                val paired = try {
+                    parsePairResponse(result.body)
+                } catch (error: RelayFormatException) {
+                    val ux = pairBodyOutcome(httpOk = true, parsed = false)
+                    busy = false
+                    if (ux.clearPairCode) _state.updateCopy { copy(pairCode = "") }
+                    banner = ux.message
+                    render()
+                    return@launch
+                }
                 val outcome = planPair(
                     disk,
                     PairRequest(
@@ -659,16 +689,18 @@ class BoardViewModel(
                         banner = outcome.message
                         render()
                     }
-                    is PairOutcome.Proceed -> {
-                        if (!applyTx(outcome.tx)) {
+                    is PairOutcome.Proceed -> when (val applied = applyTx(outcome.tx)) {
+                        is ApplyVerdict.RolledBack -> {
                             banner = CODE_CONSUMED_SAVE
                             render()
                             return@launch
                         }
-                        _state.updateCopy { copy(pairCode = "", displayName = "") }
-                        backStack.clear()
-                        landOn(outcome.activeSessionId, toast = true)
-                        connectNewCredentials()
+                        is ApplyVerdict.InForce -> {
+                            _state.updateCopy { copy(pairCode = "", displayName = "") }
+                            backStack.clear()
+                            landOn(applied.activeSessionId ?: outcome.activeSessionId, toast = true)
+                            connectNewCredentials()
+                        }
                     }
                 }
             } catch (error: RelayFormatException) {
@@ -728,7 +760,7 @@ class BoardViewModel(
                     banner = say(parseRelayError(result.body))
                 } else {
                     val tx = planRefresh(disk, session.credentialId, parsePairResponse(result.body))
-                    if (tx != null && applyTx(tx)) {
+                    if (tx != null && applyTx(tx) is ApplyVerdict.InForce) {
                         banner = zh("登录已更新，正在重新连接。", "Sign-in refreshed. Reconnecting.")
                         connect(session.credentialId)
                     } else {
@@ -792,20 +824,45 @@ class BoardViewModel(
         render()
     }
 
-    private fun applyTx(tx: Transaction): Boolean {
+    private fun persistActive(sessionId: String): Boolean {
+        val tx = planActivate(disk, sessionId) ?: return false
+        if (tx.steps.isEmpty()) return true
+        return when (val applied = applyTx(tx)) {
+            is ApplyVerdict.RolledBack -> {
+                banner = zh("没有切换成功。", "Could not switch boards.")
+                render()
+                false
+            }
+            is ApplyVerdict.InForce -> applied.activeSessionId == sessionId || disk.catalog?.activeSessionId == sessionId
+        }
+    }
+
+    private fun applyTx(tx: Transaction): ApplyVerdict {
+        if (tx.steps.isEmpty()) {
+            return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = false)
+        }
         var cutover = false
         tx.steps.forEachIndexed { index, op ->
             if (!store.apply(op)) {
-                if (!cutover) tx.stagedCredentialIds.forEach { store.apply(DiskOp.DeleteCredential(it)) }
+                if (!failedStepKeepsCatalog(tx.cutoverIndex, index)) {
+                    tx.stagedCredentialIds.forEach { id ->
+                        if (id !in referencedCredentialIds(store.readDisk())) store.apply(DiskOp.DeleteCredential(id))
+                    }
+                    disk = store.readDisk()
+                    return ApplyVerdict.RolledBack(disk, openSocketIds(), disk.catalog?.activeSessionId)
+                }
                 disk = store.readDisk()
-                return false
+                closeUnreferenced()
+                return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = true)
             }
             if (index == tx.cutoverIndex) cutover = true
         }
         disk = store.readDisk()
         closeUnreferenced()
-        return true
+        return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = false)
     }
+
+    private fun openSocketIds(): Set<String> = lives.keys.filter { lives[it]?.phase != SocketPhase.CLOSED }.toSet()
 
     private fun connectNewCredentials() {
         referencedCredentialIds(disk).forEach { id ->
@@ -819,6 +876,15 @@ class BoardViewModel(
         live.job?.cancel()
         val epoch = live.epoch + 1
         live.epoch = epoch
+        sessionsOn(credentialId).forEach { session ->
+            val holder = slots[session.sessionId] ?: return@forEach
+            val invalidated = invalidateSnapshotForNewEpoch(
+                EpochSlot(holder.appliedGeneration, holder.view.needsResync, holder.view.sawSnapshot),
+            )
+            holder.appliedGeneration = invalidated.appliedGeneration
+            holder.view = holder.view.copy(needsResync = invalidated.needsResync)
+            holder.eligibilityFresh = false
+        }
         live.phase = if (live.phase == SocketPhase.AUTHENTICATED || live.phase == SocketPhase.RECONNECTING) {
             SocketPhase.RECONNECTING
         } else {
@@ -934,7 +1000,7 @@ class BoardViewModel(
         ) {
             val rows = boards.map { BoardListRow(it.boardId, it.online, it.generation) }
             val tx = planMigrationList(disk, rows, rows.map { newLocalId("s") }, now)
-            if (tx != null && applyTx(tx)) {
+            if (tx != null && applyTx(tx) is ApplyVerdict.InForce) {
                 disk.catalog?.activeSessionId?.let { landOn(it, toast = false) }
             }
         }
@@ -1023,11 +1089,17 @@ class BoardViewModel(
         } else if (message.text("stage") == "executed") {
             val page = readArchivePage(message.payload)
             if (page == null) holder.archiveError = say("Could not read the archive page.")
-            else {
+            else if (!archivePageHonorsScope(page.tasks, request.workspaceId)) {
+                holder.archiveTasks = emptyList()
+                holder.archiveCursor = null
+                holder.archiveLoaded = false
+                holder.archiveError = ARCHIVE_SCOPE_UNSUPPORTED
+            } else {
                 holder.archiveTasks = applyArchivePage(holder.archiveTasks, page, request.reset)
                 holder.archiveCursor = page.nextCursor
                 holder.archiveLoaded = true
                 holder.archiveStale = false
+                holder.archiveError = null
             }
         }
         render()
@@ -1036,31 +1108,43 @@ class BoardViewModel(
     private fun onSettings(sessionId: String, command: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         val holder = slot(sessionId)
         val executed = message.type == "ack" && message.text("stage") == "executed"
-        val effect = settingsAckEffect(activeId, sessionId, executed)
-        if (!executed) {
-            if (sessionId == activeId) {
+        val documentOk = when (command) {
+            "cmd.workspace.get", "cmd.workspace.update" -> readWorkspaceSettingsForm(message.payload) != null
+            "cmd.settings.get", "cmd.settings.put" -> readQuickPrompts(message.payload) != null
+            else -> false
+        }
+        val effect = settingsAckEffect(activeId, sessionId, command, executed, documentOk)
+        if (!executed || !documentOk) {
+            if (sessionId == activeId && !executed) {
                 formError = interpretCommand(message)?.summary?.let { say(it) } ?: UNSUPPORTED_COPY
                 if (message.text("code") == "unsupported" || message.text("code") == "bad_type") holder.settingsBlocked = UNSUPPORTED_COPY
             }
+            if (command == "cmd.settings.get" || command == "cmd.settings.put") holder.settingsLoaded = false
             render()
             return
         }
         when (command) {
             "cmd.workspace.get", "cmd.workspace.update" -> {
                 val form = readWorkspaceSettingsForm(message.payload)
-                if (form != null) {
+                if (form != null && effect.fillForm) {
                     holder.loadedWorkspace = form
-                    if (effect.fillForm) holder.workspaceForm = form
+                    holder.workspaceForm = form
                     holder.workspaceDirty = false
                 }
             }
             "cmd.settings.get", "cmd.settings.put" -> {
                 val prompts = readQuickPrompts(message.payload)
-                if (prompts != null) holder.quickPrompts = prompts
-                holder.settingsLoaded = true
+                if (prompts != null && effect.fillForm) holder.quickPrompts = prompts
+                holder.settingsLoaded = effect.markLoaded
             }
         }
-        if (effect.toastSaved) banner = zh("已保存", "Saved")
+        if (effect.toastSaved) {
+            banner = when (effect.toast) {
+                PROMPTS_SAVED_COPY -> zh(PROMPTS_SAVED_COPY, "Shortcuts saved")
+                SAVED_COPY -> zh(SAVED_COPY, "Saved")
+                else -> null
+            }
+        }
         render()
     }
 
@@ -1275,17 +1359,31 @@ class BoardViewModel(
         val holder = slot(session.sessionId)
         if (ARCHIVE_CAPABILITY !in holder.capabilities) {
             holder.archiveError = say("This board cannot list archived tasks yet.")
+            holder.archiveTasks = emptyList()
             render()
             return
         }
+        when (val query = archiveQuery(_state.value.selectedWorkspaceId)) {
+            is ArchiveQuery.Unsupported -> {
+                holder.archiveTasks = emptyList()
+                holder.archiveCursor = null
+                holder.archiveLoaded = false
+                holder.archiveBusy = false
+                holder.archiveError = query.message
+                render()
+                return
+            }
+            is ArchiveQuery.Scoped -> Unit
+        }
+        val scoped = (archiveQuery(_state.value.selectedWorkspaceId) as ArchiveQuery.Scoped).workspaceId
         val cursor = if (reset) null else holder.archiveCursor
         val requestId = ids()
-        val built = validateArchiveList(requestId, clock(), session.boardId, keys(), cursor, 20)
+        val built = validateArchiveList(requestId, clock(), session.boardId, keys(), cursor, 20, scoped)
         if (built is Validated.Ok) {
             val live = lives[session.credentialId]
             if (live != null && relay.send(session.credentialId, encodeEnvelope(built.value))) {
                 refs[requestId] = RefRecord(requestId, session.sessionId, session.credentialId, session.boardId, "cmd.archive.list", null, live.epoch)
-                holder.pendingArchive = ArchiveHold(requestId, reset)
+                holder.pendingArchive = ArchiveHold(requestId, reset, scoped)
                 holder.archiveBusy = true
             }
         }
@@ -1326,17 +1424,24 @@ class BoardViewModel(
     }
 
     private fun armProofs() {
+        val keep = mutableSetOf<String>()
         sessions().forEach { session ->
-            proofJobs[session.sessionId]?.cancel()
-            val holder = slot(session.sessionId)
-            val pill = pillFor(session)
-            val deadline = proofDeadline(holder.proof?.at, foreground, pill.kind == PillKind.CONNECTED) ?: return@forEach
-            val wait = deadline - clock()
-            proofJobs[session.sessionId] = viewModelScope.launch {
-                if (wait > 0) delay(wait)
+            val holder = slots[session.sessionId] ?: return@forEach
+            val at = holder.proof?.at ?: return@forEach
+            val connected = pillFor(session).kind == PillKind.CONNECTED
+            val wait = proofRedrawWait(at, clock(), connected, foreground) ?: return@forEach
+            if (wait == 0L) return@forEach
+            val sessionId = session.sessionId
+            keep += sessionId
+            if (proofJobs[sessionId]?.isActive == true) return@forEach
+            proofJobs[sessionId] = viewModelScope.launch {
+                delay(wait)
+                proofJobs.remove(sessionId)
                 render()
+                armProofs()
             }
         }
+        proofJobs.keys.toList().filter { it !in keep }.forEach { id -> proofJobs.remove(id)?.cancel() }
     }
 
     private fun armResync(sessionId: String) {
@@ -1595,7 +1700,7 @@ class BoardViewModel(
         else -> FrameKind.OTHER
     }
 
-    private fun sessions(): List<PhoneSession> = disk.catalog?.ordered().orEmpty()
+    private fun sessions(): List<PhoneSession> = readableSessions(disk)
     private fun sessionCount(): Int = sessions().size
     private fun session(id: String?): PhoneSession? = id?.let { disk.catalog?.session(it) }
     private fun sessionsOn(credentialId: String) = sessions().filter { it.credentialId == credentialId }
@@ -1674,7 +1779,7 @@ class BoardViewModel(
         val resync = ResyncScheduler()
     }
 
-    private data class ArchiveHold(val requestId: String, val reset: Boolean)
+    private data class ArchiveHold(val requestId: String, val reset: Boolean, val workspaceId: String)
     private data class Inflight(
         val action: String,
         val cmd: String,

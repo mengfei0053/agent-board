@@ -44,7 +44,7 @@ data class PillCopy(val primary: String, val extra: String?, val updated: String
 
 fun proofFresh(proof: BoardProof?, now: Long, epoch: Long): Boolean {
     if (proof == null || proof.epoch != epoch) return false
-    return now - proof.at <= PROOF_TTL_MS
+    return now - proof.at < PROOF_TTL_MS
 }
 
 /**
@@ -152,6 +152,28 @@ fun proofDeadline(proofAt: Long?, foreground: Boolean, connected: Boolean): Long
     if (!foreground || !connected || proofAt == null) return null
     return proofAt + PROOF_TTL_MS
 }
+
+/**
+ * Delay until the proof is no longer fresh. Exactly [PROOF_TTL_MS] is already stale,
+ * so a timer armed at the deadline must redraw instead of leaving 已连接 painted.
+ * A zero delay means redraw immediately. Null means there is nothing to schedule.
+ */
+fun proofRedrawWait(proofAt: Long, now: Long, connected: Boolean, foreground: Boolean): Long? {
+    if (!foreground || !connected) return null
+    return (proofAt + PROOF_TTL_MS - now).coerceAtLeast(0)
+}
+
+data class EpochSlot(
+    val appliedGeneration: Long?,
+    val needsResync: Boolean,
+    val sawSnapshot: Boolean,
+)
+
+/** A new socket has not applied a snapshot yet. An equal listed generation must not look live. */
+fun invalidateSnapshotForNewEpoch(slot: EpochSlot): EpochSlot = slot.copy(
+    appliedGeneration = null,
+    needsResync = true,
+)
 
 /** A command error names one board. Other sessions on the credential keep their proof. */
 fun proofAfterDisconnect(now: Long, epoch: Long, listedGeneration: Long?): BoardProof {

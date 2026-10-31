@@ -185,6 +185,7 @@ fun validateArchiveList(
     idempotencyKey: String,
     cursor: String?,
     limit: Int = 20,
+    workspaceId: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!visibleKey.matches(idempotencyKey)) {
@@ -192,11 +193,13 @@ fun validateArchiveList(
     }
     if (limit !in 1..50) return Validated.Invalid("limit is invalid")
     if (cursor != null && !archiveCursorPattern.matches(cursor)) return Validated.Invalid("cursor is invalid")
+    if (!workspaceId.isNullOrEmpty() && !isWorkspaceId(workspaceId)) return Validated.Invalid("workspaceId is invalid")
     return Validated.Ok(frame(id, ts, "cmd.archive.list", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
         put("limit", limit)
         if (!cursor.isNullOrBlank()) put("cursor", cursor)
+        if (!workspaceId.isNullOrEmpty()) put("workspaceId", workspaceId)
     }))
 }
 

@@ -153,4 +153,6 @@
     <string name="save">Save</string>
     <string name="default_model_sentence">The default model comes from each CLI on this machine. The board does not store one.</string>
     <string name="quick_prompts">Shortcuts</string>
+    <string name="queued_no_reply">This task has not started. This round has no reply yet.</string>
+    <string name="paused_no_reply">This task is waiting for confirmation. This round has no reply yet.</string>
 </resources>

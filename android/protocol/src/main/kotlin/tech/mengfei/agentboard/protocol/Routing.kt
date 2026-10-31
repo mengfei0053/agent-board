@@ -57,6 +57,7 @@ private fun routeAck(input: RouteInput): RouteResult {
     if (input.socketEpoch != input.currentEpoch) return RouteResult.Drop
     val session = input.sessions.find { it.sessionId == record.sessionId } ?: return RouteResult.Drop
     if (session.credentialId != input.credentialId || session.boardId != record.boardId) return RouteResult.Drop
+    if (!input.boardId.isNullOrBlank() && input.boardId != record.boardId) return RouteResult.Drop
     return RouteResult.ToSession(session.sessionId, record)
 }
 

@@ -473,7 +473,6 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val follow = if (english) "Continue" else "继续"
     val turns = task.turns
     if (!turns.isNullOrEmpty()) {
-        val live = task.status == "queued" || task.status == "running" || task.status == "paused"
         val current = task.iteration
         return turns.map { turn ->
             DetailRound(
@@ -481,7 +480,7 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
                 kindLabel = if (turn.iteration <= 1) initial else follow,
                 prompt = turn.prompt,
                 output = turn.output,
-                pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
+                pending = outputStillGenerating(task.status, turn.iteration, current, turn.output.isNullOrBlank()),
             )
         }
     }
@@ -489,8 +488,20 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val output = task.output ?: task.outputPreview
     if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
     val iteration = task.iteration ?: 1
-    val live = task.status == "queued" || task.status == "running" || task.status == "paused"
-    return listOf(DetailRound(iteration, if (iteration <= 1) initial else follow, prompt, output, live && output.isNullOrBlank()))
+    return listOf(
+        DetailRound(
+            iteration,
+            if (iteration <= 1) initial else follow,
+            prompt,
+            output,
+            outputStillGenerating(task.status, iteration, iteration, output.isNullOrBlank()),
+        ),
+    )
+}
+
+/** Only a running round with no reply is "generating". Queued and paused are not a live model. */
+fun outputStillGenerating(status: String, iteration: Int, current: Int?, outputBlank: Boolean): Boolean {
+    return status == "running" && outputBlank && current != null && iteration == current
 }
 
 fun detailError(task: RelayTask, english: Boolean = false): String? {

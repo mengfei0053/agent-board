@@ -153,4 +153,6 @@
     <string name="save">保存</string>
     <string name="default_model_sentence">默认模型来自各 CLI 的本机配置，看板不保存。</string>
     <string name="quick_prompts">快捷提示词</string>
+    <string name="queued_no_reply">任务尚未开始，本轮还没有回复。</string>
+    <string name="paused_no_reply">任务在等待确认，本轮还没有回复。</string>
 </resources>

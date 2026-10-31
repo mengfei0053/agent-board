@@ -330,16 +330,17 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
             TextButton(onClick = model::openBoardSettings) { Text(stringResource(R.string.board_settings)) }
         }
         if (state.chip != TaskChip.ARCHIVE) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = model::openWorkspaceCreate) { Text(stringResource(R.string.new_workspace)) }
-            TextButton(
-                onClick = model::requestDeleteWorkspace,
-                enabled = state.workspaces.any { it.id == state.selectedWorkspaceId },
-            ) { Text(stringResource(R.string.delete)) }
-        }
-        if (state.workspaceDeleteMode == "lookup") {
-            TextButton(onClick = model::startDifferentWorkspaceDelete, modifier = Modifier.padding(horizontal = 12.dp)) {
-                Text(stringResource(R.string.delete_new_key))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                TextButton(onClick = model::openWorkspaceCreate) { Text(stringResource(R.string.new_workspace)) }
+                TextButton(
+                    onClick = model::requestDeleteWorkspace,
+                    enabled = state.workspaces.any { it.id == state.selectedWorkspaceId },
+                ) { Text(stringResource(R.string.delete)) }
+            }
+            if (state.workspaceDeleteMode == "lookup") {
+                TextButton(onClick = model::startDifferentWorkspaceDelete, modifier = Modifier.padding(horizontal = 12.dp)) {
+                    Text(stringResource(R.string.delete_new_key))
+                }
             }
         }
         OutlinedTextField(
@@ -373,7 +374,6 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
             banner.detail?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
         }
         if (state.chip == TaskChip.ARCHIVE) {
             ArchiveList(state, model)
@@ -534,10 +534,11 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
             val rounds = detailRounds(task, english)
             if (rounds.isEmpty()) {
                 Text(
-                    if (task.status == "queued" || task.status == "running" || task.status == "paused") {
-                        stringResource(R.string.waiting_reply)
-                    } else {
-                        stringResource(R.string.no_reply)
+                    when (task.status) {
+                        "running" -> stringResource(R.string.waiting_reply)
+                        "queued" -> stringResource(R.string.queued_no_reply)
+                        "paused" -> stringResource(R.string.paused_no_reply)
+                        else -> stringResource(R.string.no_reply)
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
