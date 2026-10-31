@@ -134,7 +134,12 @@ export class ConnectorSession {
       this.fail(ref, "bad_request", "taskId is required");
       return;
     }
-    const task = await this.api.continueTask(taskId);
+    const prompt = readContinuePrompt(payload);
+    if (!prompt.ok) {
+      this.fail(ref, prompt.code, prompt.message);
+      return;
+    }
+    const task = await this.api.continueTask(taskId, prompt.prompt);
     this.known.set(task.id, task);
     this.emitAll(this.cursor.observe(task));
     this.ack(ref, task);
@@ -527,6 +532,18 @@ export class ConnectorSession {
     this.tail = run.then(() => undefined, () => undefined);
     return run;
   }
+}
+
+function readContinuePrompt(
+  payload: Record<string, unknown>,
+): { ok: true; prompt?: string } | { ok: false; code: string; message: string } {
+  if (!("prompt" in payload) || payload.prompt == null || payload.prompt === "") return { ok: true };
+  if (typeof payload.prompt !== "string") return { ok: false, code: "bad_request", message: "prompt must be a string" };
+  const prompt = payload.prompt.trim();
+  if (!prompt) return { ok: true };
+  if (prompt.length > 20_000) return { ok: false, code: "bad_request", message: "prompt is too long" };
+  if ([...prompt].some((ch) => ch === "\u0000")) return { ok: false, code: "bad_request", message: "prompt is invalid" };
+  return { ok: true, prompt };
 }
 
 function cryptoRandom(): string {

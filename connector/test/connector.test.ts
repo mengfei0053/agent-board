@@ -75,7 +75,16 @@ test("connector maps commands and emits one completion", { timeout: 20_000 }, as
       taskId,
       idempotencyKey: "idem-connector-3",
     });
-    assert.ok(board.requests.some((request) => request.path === `/api/tasks/${taskId}/continue`));
+    await client.request("cmd.continue", {
+      boardId: "thinkbook-main",
+      taskId,
+      idempotencyKey: "idem-connector-3b",
+      prompt: "keep this exact prompt",
+    });
+    const continues = board.requests.filter((request) => request.path === `/api/tasks/${taskId}/continue`);
+    assert.equal(continues.length, 2);
+    assert.equal(isRecord(continues[0]?.body) ? continues[0].body.prompt : "present", undefined);
+    assert.equal(isRecord(continues[1]?.body) ? continues[1].body.prompt : undefined, "keep this exact prompt");
 
     board.emit("task_log", { type: "task_log", taskId, line: "building", at: Date.now() });
     const log = await client.wait((message) => message.type === "evt.log" && message.payload?.taskId === taskId);

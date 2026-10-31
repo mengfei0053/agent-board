@@ -26,8 +26,13 @@ export const CMD_TYPES = [
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.workspace.get",
+  "cmd.workspace.update",
+  "cmd.settings.get",
+  "cmd.settings.put",
   "cmd.detail",
   "cmd.archive.list",
+  "cmd.archive",
 ] as const;
 export type CommandType = (typeof CMD_TYPES)[number];
 
@@ -48,8 +53,13 @@ const MESSAGE_KINDS = [
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.workspace.get",
+  "cmd.workspace.update",
+  "cmd.settings.get",
+  "cmd.settings.put",
   "cmd.detail",
   "cmd.archive.list",
+  "cmd.archive",
   "cmd.lookup",
   "evt.task",
   "evt.log",
@@ -143,7 +153,12 @@ export type Incoming =
   | { ok: true; kind: "cmd.workspace.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.workspace.delete"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.detail"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
-  | { ok: true; kind: "cmd.archive.list"; envelope: Envelope; boardId: string; idempotencyKey: string; limit: number; cursor?: string }
+  | { ok: true; kind: "cmd.workspace.get"; envelope: Envelope; boardId: string; idempotencyKey: string; workspaceId: string }
+  | { ok: true; kind: "cmd.workspace.update"; envelope: Envelope; boardId: string; idempotencyKey: string; workspaceId: string }
+  | { ok: true; kind: "cmd.settings.get"; envelope: Envelope; boardId: string; idempotencyKey: string }
+  | { ok: true; kind: "cmd.settings.put"; envelope: Envelope; boardId: string; idempotencyKey: string }
+  | { ok: true; kind: "cmd.archive.list"; envelope: Envelope; boardId: string; idempotencyKey: string; limit: number; cursor?: string; workspaceId?: string }
+  | { ok: true; kind: "cmd.archive"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.lookup"; envelope: Envelope; boardId: string; idempotencyKey: string; cmd: CommandType }
   | ({ ok: true; kind: "evt.task"; envelope: Envelope } & Cursor)
   | ({ ok: true; kind: "evt.log"; envelope: Envelope; taskId: string } & Cursor)
@@ -199,10 +214,20 @@ export function parseMessage(raw: unknown): Incoming {
       return parseCmdWorkspaceCreate(payload, id, ts);
     case "cmd.workspace.delete":
       return parseCmdWorkspaceDelete(payload, id, ts);
+    case "cmd.workspace.get":
+      return parseCmdWorkspaceGet(payload, id, ts);
+    case "cmd.workspace.update":
+      return parseCmdWorkspaceUpdate(payload, id, ts);
+    case "cmd.settings.get":
+      return parseCmdSettingsGet(payload, id, ts);
+    case "cmd.settings.put":
+      return parseCmdSettingsPut(payload, id, ts);
     case "cmd.detail":
       return parseCmdDetail(payload, id, ts);
     case "cmd.archive.list":
       return parseCmdArchiveList(payload, id, ts);
+    case "cmd.archive":
+      return parseCmdArchive(payload, id, ts);
     case "cmd.lookup":
       return parseLookup(payload, id, ts);
     case "evt.task":
@@ -410,8 +435,15 @@ function parseCmdArchiveList(payload: unknown, id: string, ts: number): Incoming
     if (!parsed.ok) return failure("bad_request", parsed.message, id);
     cursor = parsed.value;
   }
+  let workspaceId: string | undefined;
+  if (record.value.workspaceId !== undefined && record.value.workspaceId !== null && record.value.workspaceId !== "") {
+    const parsed = readWorkspaceId(record.value.workspaceId, "workspaceId");
+    if (!parsed.ok) return failure("bad_request", parsed.message, id);
+    workspaceId = parsed.value;
+  }
   const body: JsonObject = { boardId: boardId.value, idempotencyKey: key.value, limit };
   if (cursor) body.cursor = cursor;
+  if (workspaceId) body.workspaceId = workspaceId;
   return {
     ok: true,
     kind: "cmd.archive.list",
@@ -420,6 +452,7 @@ function parseCmdArchiveList(payload: unknown, id: string, ts: number): Incoming
     idempotencyKey: key.value,
     limit,
     ...(cursor ? { cursor } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
   };
 }
 
@@ -503,6 +536,110 @@ function parseCmdWorkspaceDelete(payload: unknown, id: string, ts: number): Inco
     }),
     boardId: boardId.value,
     idempotencyKey: key.value,
+  };
+}
+
+function parseCmdWorkspaceGet(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const target = readWorkspaceTarget(record.value, id);
+  if (!target.ok) return target.failure;
+  return {
+    ok: true,
+    kind: "cmd.workspace.get",
+    envelope: envelope("cmd.workspace.get", id, ts, target.body),
+    boardId: target.boardId,
+    idempotencyKey: target.idempotencyKey,
+    workspaceId: target.workspaceId,
+  };
+}
+
+function parseCmdWorkspaceUpdate(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const target = readWorkspaceTarget(record.value, id);
+  if (!target.ok) return target.failure;
+  const name = readText(record.value.name, "name", 1, 200);
+  if (!name.ok) return failure("bad_request", name.message, id);
+  const path = readAbsolutePath(record.value.path, "path");
+  if (!path.ok) return failure("bad_request", path.message, id);
+  const settings = readWorkspaceSettingsInput(record.value.settings);
+  if (!settings.ok) return failure("bad_request", settings.message, id);
+  const body: JsonObject = {
+    ...target.body,
+    name: name.value.trim(),
+    path: path.value,
+    settings: settings.value,
+  };
+  return {
+    ok: true,
+    kind: "cmd.workspace.update",
+    envelope: envelope("cmd.workspace.update", id, ts, body),
+    boardId: target.boardId,
+    idempotencyKey: target.idempotencyKey,
+    workspaceId: target.workspaceId,
+  };
+}
+
+function parseCmdSettingsGet(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const boardId = readBoardId(record.value.boardId, "boardId");
+  if (!boardId.ok) return failure("bad_request", boardId.message, id);
+  const key = readKey(record.value.idempotencyKey);
+  if (!key.ok) return failure("bad_request", key.message, id);
+  return {
+    ok: true,
+    kind: "cmd.settings.get",
+    envelope: envelope("cmd.settings.get", id, ts, { boardId: boardId.value, idempotencyKey: key.value }),
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+  };
+}
+
+/**
+ * The body may contain a new proxy password. Rebuild only the known groups and
+ * do not copy the value into an error string. `clear` is rejected before the
+ * command is stored.
+ */
+function parseCmdSettingsPut(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const boardId = readBoardId(record.value.boardId, "boardId");
+  if (!boardId.ok) return failure("bad_request", boardId.message, id);
+  const key = readKey(record.value.idempotencyKey);
+  if (!key.ok) return failure("bad_request", key.message, id);
+  if ("clear" in record.value && record.value.clear != null && typeof record.value.clear !== "boolean") {
+    return failure("bad_request", "clear must be a boolean", id);
+  }
+  if (record.value.clear === true) return failure("bad_request", "clear is not allowed", id);
+  const patch = readSettingsPatch(record.value);
+  if (!patch.ok) return failure("bad_request", patch.message, id);
+  return {
+    ok: true,
+    kind: "cmd.settings.put",
+    envelope: envelope("cmd.settings.put", id, ts, {
+      boardId: boardId.value,
+      idempotencyKey: key.value,
+      ...patch.value,
+    }),
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+  };
+}
+
+function parseCmdArchive(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const common = readCmdTarget(record.value, id);
+  if (!common.ok) return common.failure;
+  return {
+    ok: true,
+    kind: "cmd.archive",
+    envelope: envelope("cmd.archive", id, ts, common.body),
+    boardId: common.boardId,
+    idempotencyKey: common.idempotencyKey,
+    taskId: common.taskId,
   };
 }
 
@@ -667,7 +804,15 @@ function parseAck(payload: unknown, id: string, ts: number): Incoming {
     }
     body.stage = record.value.stage;
   }
-  if (record.value.task !== undefined) {
+  if (record.value.archived !== undefined && record.value.archived !== true) {
+    return failure("bad_request", "archived must be true", id);
+  }
+  if (record.value.archived === true) {
+    const taskId = readBoardId(record.value.taskId, "taskId");
+    if (!taskId.ok) return failure("bad_request", taskId.message, id);
+    body.archived = true;
+    body.taskId = taskId.value;
+  } else if (record.value.task !== undefined) {
     const task = readTask(record.value.task, false, true);
     if (!task.ok) return failure("bad_request", task.message, id);
     body.task = taskToJson(task.task);
@@ -678,9 +823,14 @@ function parseAck(payload: unknown, id: string, ts: number): Incoming {
     body.archive = archive.value;
   }
   if (record.value.workspace !== undefined) {
-    const workspace = readWorkspace(record.value.workspace, "workspace");
+    const workspace = readWorkspace(record.value.workspace, "workspace", true);
     if (!workspace.ok) return failure("bad_request", workspace.message, id);
     body.workspace = workspace.value;
+  }
+  if (record.value.settings !== undefined) {
+    const settings = readBoardSettings(record.value.settings);
+    if (!settings.ok) return failure("bad_request", settings.message, id);
+    body.settings = settings.value;
   }
   if (record.value.deleted !== undefined) {
     const deleted = readWorkspaceId(record.value.deleted, "deleted");
@@ -723,7 +873,7 @@ function parseAck(payload: unknown, id: string, ts: number): Incoming {
   }
   const ackMessage = optionalText(record.value, "message", 1, 500);
   if (!ackMessage.ok) return failure("bad_request", ackMessage.message, id);
-  if (ackMessage.value) body.message = ackMessage.value;
+  if (ackMessage.value) body.message = redactProxyCredential(ackMessage.value);
   if (record.value.boardIds !== undefined) {
     const ids = readBoardIdList(record.value.boardIds);
     if (!ids.ok) return failure("bad_request", ids.message, id);
@@ -742,7 +892,8 @@ function parseErr(payload: unknown, id: string, ts: number): Incoming {
   }
   const message = readText(record.value.message, "message", 1, 500);
   if (!message.ok) return failure("bad_request", message.message, id);
-  const body: JsonObject = { ref: ref.value, code: record.value.code, message: message.value };
+  const safeMessage = redactProxyCredential(message.value);
+  const body: JsonObject = { ref: ref.value, code: record.value.code, message: safeMessage };
   if (record.value.stage !== undefined) {
     if (typeof record.value.stage !== "string" || !isAckStage(record.value.stage)) {
       return failure("bad_request", "stage is invalid", id);
@@ -761,7 +912,7 @@ function parseErr(payload: unknown, id: string, ts: number): Incoming {
     envelope: envelope("err", id, ts, body),
     ref: ref.value,
     code: record.value.code,
-    errMessage: message.value,
+    errMessage: safeMessage,
   };
 }
 
@@ -860,6 +1011,357 @@ function readOptionalBoolean(
   return { ok: true, value: record[field] };
 }
 
+const CLI_KINDS = ["pi", "claude", "agent", "devin", "codex"] as const;
+const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"] as const;
+
+/** Same userinfo rule as the board (`src/proxyEnv.ts`). Idempotent on `user:***@`. */
+export function redactProxyCredential(value: string): string {
+  return value.replace(/\/\/([^/\s:@]+):([^/\s@]+)@/g, "//$1:***@");
+}
+
+function readWorkspaceTarget(
+  record: Record<string, unknown>,
+  id: string,
+): { ok: true; boardId: string; idempotencyKey: string; workspaceId: string; body: JsonObject } | { ok: false; failure: ParseFailure } {
+  const boardId = readBoardId(record.boardId, "boardId");
+  if (!boardId.ok) return { ok: false, failure: failure("bad_request", boardId.message, id) };
+  const key = readKey(record.idempotencyKey);
+  if (!key.ok) return { ok: false, failure: failure("bad_request", key.message, id) };
+  const workspaceId = readWorkspaceId(record.workspaceId, "workspaceId");
+  if (!workspaceId.ok) return { ok: false, failure: failure("bad_request", workspaceId.message, id) };
+  return {
+    ok: true,
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+    workspaceId: workspaceId.value,
+    body: { boardId: boardId.value, idempotencyKey: key.value, workspaceId: workspaceId.value },
+  };
+}
+
+function readAbsolutePath(value: unknown, field: string): { ok: true; value: string } | { ok: false; message: string } {
+  const parsed = readText(value, field, 1, 1024);
+  if (!parsed.ok) return parsed;
+  const path = parsed.value.trim();
+  if (!path) return { ok: false, message: `${field} is required` };
+  if (path.includes("://")) return { ok: false, message: `${field} must be a local path` };
+  if (!path.startsWith("/")) return { ok: false, message: `${field} must be an absolute path` };
+  return { ok: true, value: path };
+}
+
+function readWorkspaceSettingsInput(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings must be an object" };
+  for (const field of ["systemPrompt", "skills", "mcp"] as const) {
+    if (!(field in value)) return { ok: false, message: `settings.${field} is required` };
+  }
+  const systemPrompt = readLongText(value.systemPrompt, "settings.systemPrompt", 100_000, true);
+  if (!systemPrompt.ok) return systemPrompt;
+  const mcp = readLongText(value.mcp, "settings.mcp", 100_000, true);
+  if (!mcp.ok) return mcp;
+  const skills = readSkillsInput(value.skills);
+  if (!skills.ok) return skills;
+  return {
+    ok: true,
+    value: { systemPrompt: systemPrompt.value, skills: skills.value, mcp: mcp.value },
+  };
+}
+
+function readSkillsInput(value: unknown): { ok: true; value: Json } | { ok: false; message: string } {
+  if (typeof value === "string") {
+    if (value.length > 100_000 || !isMultiline(value)) return { ok: false, message: "settings.skills is invalid" };
+    const lines = value.split(/\r?\n/);
+    if (lines.length > 200) return { ok: false, message: "settings.skills exceeds 200 items" };
+    for (const line of lines) {
+      if (line.trim().length > 2_000) return { ok: false, message: "settings.skills entry is too long" };
+    }
+    return { ok: true, value };
+  }
+  if (!Array.isArray(value)) return { ok: false, message: "settings.skills must be an array of strings or a newline string" };
+  if (value.length > 200) return { ok: false, message: "settings.skills exceeds 200 items" };
+  const skills: Json[] = [];
+  for (const item of value) {
+    const skill = readLongText(item, "settings.skills", 2_000, true);
+    if (!skill.ok) return skill;
+    skills.push(skill.value);
+  }
+  return { ok: true, value: skills };
+}
+
+function readSettingsPatch(record: Record<string, unknown>): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  const body: JsonObject = {};
+  if (record.cliPaths !== undefined) {
+    const cliPaths = readCliPathPatch(record.cliPaths);
+    if (!cliPaths.ok) return cliPaths;
+    body.cliPaths = cliPaths.value;
+  }
+  if (record.proxyEnv !== undefined) {
+    const proxyEnv = readProxyPatch(record.proxyEnv);
+    if (!proxyEnv.ok) return proxyEnv;
+    body.proxyEnv = proxyEnv.value;
+  }
+  if (record.quickPrompts !== undefined) {
+    const quickPrompts = readQuickPromptPatch(record.quickPrompts);
+    if (!quickPrompts.ok) return quickPrompts;
+    body.quickPrompts = quickPrompts.value;
+  }
+  if (record.codexSandbox !== undefined) {
+    if (typeof record.codexSandbox !== "boolean") return { ok: false, message: "codexSandbox must be a boolean" };
+    body.codexSandbox = record.codexSandbox;
+  }
+  if (!body.cliPaths && !body.proxyEnv && !body.quickPrompts && body.codexSandbox === undefined) {
+    return { ok: false, message: "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required" };
+  }
+  return { ok: true, value: body };
+}
+
+function readCliPathPatch(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "cliPaths must be an object" };
+  const paths: JsonObject = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!(CLI_KINDS as readonly string[]).includes(key)) return { ok: false, message: `unknown cliPaths key: ${key}` };
+    const parsed = readLongText(raw, `cliPaths.${key}`, 1024, true, true);
+    if (!parsed.ok) return parsed;
+    paths[key] = parsed.value;
+  }
+  return { ok: true, value: paths };
+}
+
+function readProxyPatch(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "proxyEnv must be an object" };
+  const proxyEnv: JsonObject = {};
+  for (const [kind, raw] of Object.entries(value)) {
+    if (!(CLI_KINDS as readonly string[]).includes(kind)) return { ok: false, message: `unknown proxyEnv kind: ${kind}` };
+    if (!isRecord(raw)) return { ok: false, message: `proxyEnv.${kind} must be an object` };
+    const row: JsonObject = {};
+    for (const [key, item] of Object.entries(raw)) {
+      if (!(PROXY_KEYS as readonly string[]).includes(key)) return { ok: false, message: `unknown proxyEnv.${kind} key: ${key}` };
+      const parsed = readLongText(item, `proxyEnv.${kind}.${key}`, 2_048, true, true);
+      if (!parsed.ok) return parsed;
+      row[key] = parsed.value;
+    }
+    proxyEnv[kind] = row;
+  }
+  return { ok: true, value: proxyEnv };
+}
+
+function readQuickPromptPatch(value: unknown): { ok: true; value: Json[] } | { ok: false; message: string } {
+  if (!Array.isArray(value)) return { ok: false, message: "quickPrompts must be an array" };
+  if (value.length > 50) return { ok: false, message: "quickPrompts exceeds 50 items" };
+  const prompts: Json[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "quickPrompts entry must be an object" };
+    const row: JsonObject = {};
+    if (item.id !== undefined) {
+      const id = readVisible(item.id, "quickPrompts.id", 1, 32);
+      if (!id.ok) return id;
+      row.id = id.value;
+    }
+    if (item.label !== undefined) {
+      const label = readLongText(item.label, "quickPrompts.label", 40, true, true);
+      if (!label.ok) return label;
+      row.label = label.value;
+    }
+    if (item.content !== undefined) {
+      const content = readLongText(item.content, "quickPrompts.content", 100_000, true);
+      if (!content.ok) return content;
+      row.content = content.value;
+    }
+    prompts.push(row);
+  }
+  return { ok: true, value: prompts };
+}
+
+function readBoardSettings(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings must be an object" };
+  if (!("cliPaths" in value) || !("proxyEnv" in value) || !("quickPrompts" in value) || !("codexSandbox" in value)) {
+    return { ok: false, message: "settings is missing a required group" };
+  }
+  const cliPaths = readCliPathDocument(value.cliPaths);
+  if (!cliPaths.ok) return cliPaths;
+  const proxyEnv = readProxyDocument(value.proxyEnv);
+  if (!proxyEnv.ok) return proxyEnv;
+  const quickPrompts = readQuickPromptDocument(value.quickPrompts);
+  if (!quickPrompts.ok) return quickPrompts;
+  if (typeof value.codexSandbox !== "boolean") return { ok: false, message: "settings.codexSandbox must be a boolean" };
+  return {
+    ok: true,
+    value: {
+      cliPaths: cliPaths.value,
+      proxyEnv: proxyEnv.value,
+      quickPrompts: quickPrompts.value,
+      codexSandbox: value.codexSandbox,
+    },
+  };
+}
+
+function readCliPathDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings.cliPaths must be an object" };
+  const paths: JsonObject = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!(CLI_KINDS as readonly string[]).includes(key)) return { ok: false, message: `unknown settings.cliPaths key: ${key}` };
+    if (!isRecord(raw)) return { ok: false, message: `settings.cliPaths.${key} must be an object` };
+    const row: JsonObject = {};
+    for (const field of ["default", "override", "effective", "label"] as const) {
+      const parsed = readLongText(raw[field], `settings.cliPaths.${key}.${field}`, 1_024, true, true);
+      if (!parsed.ok) return parsed;
+      row[field] = parsed.value;
+    }
+    if (raw.resolved === null) row.resolved = null;
+    else {
+      const resolved = readLongText(raw.resolved, `settings.cliPaths.${key}.resolved`, 1_024, false, true);
+      if (!resolved.ok) return resolved;
+      row.resolved = resolved.value;
+    }
+    paths[key] = row;
+  }
+  return { ok: true, value: paths };
+}
+
+function readProxyDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings.proxyEnv must be an object" };
+  const proxyEnv: JsonObject = {};
+  for (const [kind, raw] of Object.entries(value)) {
+    if (!(CLI_KINDS as readonly string[]).includes(kind)) return { ok: false, message: `unknown settings.proxyEnv kind: ${kind}` };
+    if (!isRecord(raw)) return { ok: false, message: `settings.proxyEnv.${kind} must be an object` };
+    const row: JsonObject = {};
+    for (const [key, item] of Object.entries(raw)) {
+      if (!(PROXY_KEYS as readonly string[]).includes(key)) return { ok: false, message: `unknown settings.proxyEnv.${kind} key: ${key}` };
+      if (!isRecord(item)) return { ok: false, message: `settings.proxyEnv.${kind}.${key} must be an object` };
+      const override = readLongText(item.override, `settings.proxyEnv.${kind}.${key}.override`, 2_048, true, true);
+      if (!override.ok) return override;
+      const effective = readLongText(item.effective, `settings.proxyEnv.${kind}.${key}.effective`, 2_048, true, true);
+      if (!effective.ok) return effective;
+      if (typeof item.inherited !== "boolean" || typeof item.configured !== "boolean" || typeof item.hasCredential !== "boolean") {
+        return { ok: false, message: `settings.proxyEnv.${kind}.${key} flags are invalid` };
+      }
+      const shownOverride = redactProxyCredential(override.value);
+      const shownEffective = redactProxyCredential(effective.value);
+      row[key] = {
+        override: shownOverride,
+        effective: shownEffective,
+        inherited: item.inherited,
+        configured: item.configured,
+        hasCredential: item.hasCredential || shownOverride !== override.value || shownEffective !== effective.value,
+      };
+    }
+    proxyEnv[kind] = row;
+  }
+  return { ok: true, value: proxyEnv };
+}
+
+function readQuickPromptDocument(value: unknown): { ok: true; value: Json[] } | { ok: false; message: string } {
+  if (!Array.isArray(value)) return { ok: false, message: "settings.quickPrompts must be an array" };
+  if (value.length > 50) return { ok: false, message: "settings.quickPrompts exceeds 50 items" };
+  const prompts: Json[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "settings.quickPrompts entry must be an object" };
+    const id = readVisible(item.id, "settings.quickPrompts.id", 1, 32);
+    if (!id.ok) return id;
+    const label = readLongText(item.label, "settings.quickPrompts.label", 40, false, true);
+    if (!label.ok) return label;
+    const content = readLongText(item.content, "settings.quickPrompts.content", 100_000, false);
+    if (!content.ok) return content;
+    prompts.push({ id: id.value, label: label.value, content: content.value });
+  }
+  return { ok: true, value: prompts };
+}
+
+function readWorkspaceCardSettings(value: unknown, label: string): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: `${label} must be an object` };
+  for (const field of ["systemPrompt", "skills", "mcp"] as const) {
+    if (!(field in value)) return { ok: false, message: `${label}.${field} is required` };
+  }
+  const systemPrompt = readLongText(value.systemPrompt, `${label}.systemPrompt`, 100_000, true);
+  if (!systemPrompt.ok) return systemPrompt;
+  const mcp = readLongText(value.mcp, `${label}.mcp`, 100_000, true);
+  if (!mcp.ok) return mcp;
+  if (!Array.isArray(value.skills)) return { ok: false, message: `${label}.skills must be an array` };
+  if (value.skills.length > 200) return { ok: false, message: `${label}.skills exceeds 200 items` };
+  const skills: Json[] = [];
+  for (const item of value.skills) {
+    const skill = readLongText(item, `${label}.skills`, 2_000, false, true);
+    if (!skill.ok) return skill;
+    skills.push(skill.value);
+  }
+  return { ok: true, value: { systemPrompt: systemPrompt.value, skills, mcp: mcp.value } };
+}
+
+function readGitSummary(value: unknown, label: string): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: `${label} must be an object` };
+  const branch = readNullableText(value.branch, `${label}.branch`, 200, true);
+  if (!branch.ok) return branch;
+  if (typeof value.dirty !== "boolean") return { ok: false, message: `${label}.dirty must be a boolean` };
+  const ahead = readNullableCount(value.ahead, `${label}.ahead`);
+  if (!ahead.ok) return ahead;
+  const behind = readNullableCount(value.behind, `${label}.behind`);
+  if (!behind.ok) return behind;
+  if (typeof value.detached !== "boolean") return { ok: false, message: `${label}.detached must be a boolean` };
+  const repoCount = readInt(value.repoCount, `${label}.repoCount`, 0);
+  if (!repoCount.ok) return repoCount;
+  const error = readNullableText(value.error, `${label}.error`, 180, true);
+  if (!error.ok) return error;
+  return {
+    ok: true,
+    value: {
+      branch: branch.value,
+      dirty: value.dirty,
+      ahead: ahead.value,
+      behind: behind.value,
+      detached: value.detached,
+      repoCount: repoCount.value,
+      error: error.value,
+    },
+  };
+}
+
+function readLongText(
+  value: unknown,
+  field: string,
+  max: number,
+  allowEmpty: boolean,
+  singleLine = false,
+): { ok: true; value: string } | { ok: false; message: string } {
+  const readable = typeof value === "string" && (singleLine ? isReadable(value) : isMultiline(value));
+  if (typeof value !== "string" || value.length > max || (!allowEmpty && value.length < 1) || !readable) {
+    return { ok: false, message: allowEmpty ? `${field} must be at most ${max} characters` : `${field} must be 1-${max} characters` };
+  }
+  return { ok: true, value };
+}
+
+function readVisible(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+): { ok: true; value: string } | { ok: false; message: string } {
+  if (typeof value !== "string" || value.length < min || value.length > max || !isReadable(value)) {
+    return { ok: false, message: `${field} must be ${min}-${max} characters` };
+  }
+  return { ok: true, value };
+}
+
+function readNullableText(
+  value: unknown,
+  field: string,
+  max: number,
+  singleLine = false,
+): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  const parsed = readLongText(value, field, max, false, singleLine);
+  if (!parsed.ok) return parsed;
+  return { ok: true, value: parsed.value };
+}
+
+function readNullableCount(
+  value: unknown,
+  field: string,
+): { ok: true; value: number | null } | { ok: false; message: string } {
+  if (value === null) return { ok: true, value: null };
+  const parsed = readInt(value, field, 0);
+  if (!parsed.ok) return parsed;
+  if (parsed.value > 1_000_000) return { ok: false, message: `${field} is too large` };
+  return parsed;
+}
+
 function readSnapshotWorkspaces(value: unknown): { ok: true; value?: Json[] } | { ok: false; message: string } {
   if (value === undefined) return { ok: true };
   if (!Array.isArray(value)) return { ok: false, message: "workspaces must be an array" };
@@ -876,6 +1378,7 @@ function readSnapshotWorkspaces(value: unknown): { ok: true; value?: Json[] } | 
 function readWorkspace(
   value: unknown,
   label = "workspaces",
+  detail = false,
 ): { ok: true; value: JsonObject } | { ok: false; message: string } {
   if (!isRecord(value)) return { ok: false, message: "workspace must be an object" };
   const id = readWorkspaceId(value.id, `${label}.id`);
@@ -886,7 +1389,19 @@ function readWorkspace(
   if (!path.ok) return path;
   if (path.value.includes("://")) return { ok: false, message: `${label}.path must be a local path` };
   if (typeof value.isGit !== "boolean") return { ok: false, message: `${label}.isGit must be a boolean` };
-  return { ok: true, value: { id: id.value, name: name.value, path: path.value, isGit: value.isGit } };
+  const workspace: JsonObject = { id: id.value, name: name.value, path: path.value, isGit: value.isGit };
+  if (!detail) return { ok: true, value: workspace };
+  if (value.settings !== undefined) {
+    const settings = readWorkspaceCardSettings(value.settings, `${label}.settings`);
+    if (!settings.ok) return settings;
+    workspace.settings = settings.value;
+  }
+  if (value.git !== undefined) {
+    const git = readGitSummary(value.git, `${label}.git`);
+    if (!git.ok) return git;
+    workspace.git = git.value;
+  }
+  return { ok: true, value: workspace };
 }
 
 function readTask(
@@ -1258,9 +1773,9 @@ function acceptTaskStatus(value: string, allowArchived: boolean): value is Task[
 
 const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$/;
 /**
- * Register names the relay will store. Command types for the three new names
- * are not forwarded until the wave-2 command allowlist. A board that advertises
- * an unknown name is rejected, so this set must move with `board.register`.
+ * Register names the relay stores and the command types it forwards.
+ * A board that advertises an unknown name is rejected. Production 101 must
+ * run this allowlist before a board registers the names below.
  */
 const KNOWN_CAPABILITIES = new Set<string>([
   ARCHIVE_CAPABILITY,

@@ -22,7 +22,7 @@ Every WebSocket message is one JSON object:
 | `timeout` | The board did not answer in time. Call `cmd.lookup`. Do not send the command again with the same key. |
 | `unknown` | `cmd.lookup` found no record. |
 
-A command that fails before it is stored (`board_offline`, `forbidden`, `unauthorized`) is an `err` and does not consume the idempotency key.
+A command that fails before it is stored (`board_offline`, `forbidden`, `unauthorized`, `unsupported`, `bad_request`, `rate_limited`) is an `err` and does not consume the idempotency key.
 
 ## REST
 
@@ -75,7 +75,12 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `cmd.workspace.create` | phone | board | Create a workspace (`name` + `path`). |
 | `cmd.workspace.delete` | phone | board | Delete a workspace. Refuses the default workspace and any workspace that still has tasks. |
 | `cmd.detail` | phone | board | Read one task's detail card, including an archived task. Does not change the task. |
-| `cmd.archive.list` | phone | board | One page of archived tasks. Not part of `evt.snapshot`. |
+| `cmd.archive.list` | phone | board | One page of archived tasks. Not part of `evt.snapshot`. Optional `workspaceId` is forwarded. |
+| `cmd.archive` | phone | board | Archive one terminal task. Capability `archive.write`. |
+| `cmd.workspace.get` | phone | board | Read one workspace, including settings and a git summary. Capability `workspace.settings`. |
+| `cmd.workspace.update` | phone | board | Update name, path, and replacement settings. Same capability. |
+| `cmd.settings.get` | phone | board | Read `GET /api/settings`. Capability `board.settings`. |
+| `cmd.settings.put` | phone | board | Partial settings write. Rejects `clear: true`. The relay stores only the redacted ack. |
 | `cmd.lookup` | phone | relay | Read the stored result of an idempotency key. |
 | `evt.task` | board | task subscribers | Task state changed. |
 | `evt.log` | board | log subscribers | One log line. |
@@ -156,7 +161,7 @@ The relay answers `accepted` immediately, then `executed` when the board acks:
 }
 ```
 
-The board should ack when it accepts the work. Completion is `evt.task.done`, not this ack. The same key inside `IDEMPOTENCY_TTL_MS` returns the stored stage and does not forward again. After `timeout` or `failed`, call lookup instead of creating again:
+The board should ack when it accepts the work. Completion is `evt.task.done`, not this ack. The same key inside `IDEMPOTENCY_TTL_MS` (default 10 minutes after the command finishes) returns the stored stage and does not forward again, even when the new body differs. The relay does not keep the request body. After the TTL, `cmd.lookup` is `unknown` and the same key may be used again. After `timeout` or `failed`, call lookup instead of creating again:
 
 ```json
 {
@@ -194,7 +199,57 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 
 `cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task. An archived task uses the same card with `status: "archived"`. That status is rejected on `evt.snapshot` and `evt.task`, so old phones never see it in the hot list.
 
-`cmd.archive.list` is a read-only page. The phone sends it only after `board.list` shows `capabilities` containing `archive.list` (set on `board.register`). Boards that omit the capability get `err` `unsupported` and the command is not stored. The body is `boardId`, `idempotencyKey`, optional `limit` (1–50, default 20), and optional `cursor` (`updatedAt:id` or `updatedAt:id:revision`). The executed ack's `archive` is `{ tasks, nextCursor? }`. Rows are thin, newest `updatedAt` first, and every `status` is `archived`. A task that moves to archived is removed from the next `evt.snapshot` and does not emit `evt.task.done`. `board.register` may also advertise `archive.write`, `workspace.settings`, and `board.settings`. Those names are stored. The command types they gate (`cmd.archive`, `cmd.workspace.get`, `cmd.workspace.update`, `cmd.settings.get`, `cmd.settings.put`) and optional `workspaceId` on `cmd.archive.list` are not forwarded until the command allowlist includes them. An unknown command type is `bad_type` and is not stored.
+`cmd.archive.list` is a read-only page. The phone sends it only after `board.list` shows `capabilities` containing `archive.list` (set on `board.register`). Boards that omit the capability get `err` `unsupported` and the command is not stored. The body is `boardId`, `idempotencyKey`, optional `limit` (1–50, default 20), optional `cursor` (`updatedAt:id` or `updatedAt:id:revision`), and optional `workspaceId`. When `workspaceId` is present the relay forwards it and the board filters before the limit and the cursor. Omitting it keeps a board-wide page, so an old phone stays valid. The executed ack's `archive` is `{ tasks, nextCursor?, restarted? }`. Rows are thin, newest `updatedAt` first, and every `status` is `archived`. A task that moves to archived is removed from the next `evt.snapshot` and does not emit `evt.task.done`.
+
+`board.register` capabilities are `archive.list`, `archive.write`, `workspace.settings`, and `board.settings`. This relay forwards `cmd.archive`, `cmd.workspace.get`, `cmd.workspace.update`, `cmd.settings.get`, and `cmd.settings.put` only when the board advertised the matching capability. Otherwise the phone gets `err` `unsupported` and the command is not stored. `cmd.lookup` accepts those command names. Deploy this image to UCloud 101 before any ThinkBook idle sync that advertises the new names. An older 101 rejects the whole `board.register`. This change does not restart or sync the ThinkBook.
+
+`cmd.workspace.get` and `cmd.workspace.update` use the same ack layers. The executed `workspace` may include `settings` (`systemPrompt`, `skills`, `mcp`) and `git` (`branch`, `dirty`, `ahead`, `behind`, `detached`, `repoCount`, `error`). Snapshot workspaces stay `{ id, name, path, isGit }`. `cmd.settings.get` and `cmd.settings.put` ack `settings` as the redacted `GET /api/settings` document. `cmd.settings.put` rejects `clear: true` before the command is stored. The relay forwards a new proxy URL to the board, replaces userinfo with `***` on the ack, and does not log or retain the request body. A repeated key returns that redacted document and does not apply a different body. `***` is forwarded unchanged. `cmd.archive` acks `{ archived: true, taskId }` and has no `task`. An unknown command type is still `bad_type` and is not stored.
+
+```json
+{
+  "v": 1,
+  "id": "phone-arch-list-1",
+  "type": "cmd.archive.list",
+  "ts": 1761890005000,
+  "payload": {
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "idem-arch-list-1",
+    "workspaceId": "ws_app"
+  }
+}
+```
+
+```json
+{
+  "v": 1,
+  "id": "phone-settings-put-1",
+  "type": "cmd.settings.put",
+  "ts": 1761890007100,
+  "payload": {
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "idem-settings-01",
+    "proxyEnv": { "codex": { "HTTP_PROXY": "http://user:***@127.0.0.1:8899" } },
+    "codexSandbox": true
+  }
+}
+```
+
+```json
+{
+  "v": 1,
+  "id": "board-ack-archive",
+  "type": "ack",
+  "ts": 1761890006100,
+  "payload": {
+    "ref": "phone-archive-1",
+    "stage": "executed",
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "idem-archive-01",
+    "archived": true,
+    "taskId": "task_01"
+  }
+}
+```
 
 ```json
 {
@@ -229,7 +284,7 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 
 Selecting a workspace is not a frame. The phone keeps the selection locally, the same way the web board keeps `selectedWorkspaceId`. That selection filters the task list and is the default path for `cmd.create`. The board does not learn about the switch.
 
-`cmd.workspace.create` and `cmd.workspace.delete` use the same ack layers and idempotency key as `cmd.create`. `cmd.lookup` accepts `cmd` `cmd.workspace.create` or `cmd.workspace.delete`.
+`cmd.workspace.create` and `cmd.workspace.delete` use the same ack layers and idempotency key as `cmd.create`. `cmd.lookup` accepts every command type in this document, including `cmd.workspace.get`, `cmd.workspace.update`, `cmd.settings.get`, `cmd.settings.put`, and `cmd.archive`.
 
 Create matches `POST /api/workspaces`: `name` (1–200 characters) and an absolute local `path`. The board resolves the path and assigns the id. The executed ack includes `workspace`: `{ id, name, path, isGit }`. `isGit` is the same eligibility bit as on a snapshot. A repeated key returns that workspace and does not create another.
 
@@ -400,7 +455,7 @@ The same task object may carry the web detail card. All of these fields are opti
 | `detail` | `"full"` on `evt.task` and `cmd.detail`. The phone keeps a previously loaded full card when a later snapshot omits it. |
 | `prompt`, `output`, `turns`, `sideJobs` | Full card only. `turns` is at most 12 `{ iteration, prompt?, output?, at? }` rows. `sideJobs` is at most 20 `{ id, kind, title, status, summary?, toolName? }`. Text is clipped; `promptTruncated` / `outputTruncated` say so. Newlines are allowed. |
 
-Delete, archive, and draft start stay on the web board. The phone detail uses stop, continue, the resume command, the progress rounds, and the live log tail.
+Delete and draft start stay on the web board. Archiving a terminal task is `cmd.archive`. Restoring an archived task (`lane: "done"`) stays on the web. The phone detail uses stop, continue, the resume command, the progress rounds, and the live log tail.
 
 ```json
 {

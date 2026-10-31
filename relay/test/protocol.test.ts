@@ -209,7 +209,7 @@ function frame(type: string, id: string, payload: Record<string, unknown>) {
   return { v: 1, id, type, ts: 1761890000000, payload };
 }
 
-test("board.register accepts wave-1 capability names and still rejects unknown commands", () => {
+test("board.register accepts the capability names and lookup accepts the new commands", () => {
   const parsed = parseMessage({
     v: 1,
     id: "reg-caps",
@@ -237,31 +237,193 @@ test("board.register accepts wave-1 capability names and still rejects unknown c
     payload: { boardId: "thinkbook-main", token: "board-token", capabilities: ["archive.list", "nope"] },
   });
   assert.equal(unknown.ok, false);
-  const command = parseMessage({
+  const command = parseMessage(frame("cmd.settings.get", "settings-get", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "settings-get-1",
+    note: "drop",
+  }));
+  assert.equal(command.ok, true);
+  if (!command.ok || command.kind !== "cmd.settings.get") return;
+  assert.equal(command.envelope.payload?.note, undefined);
+  for (const cmd of ["cmd.workspace.get", "cmd.workspace.update", "cmd.settings.get", "cmd.settings.put", "cmd.archive"]) {
+    const lookup = parseMessage(frame("cmd.lookup", `look-${cmd}`, {
+      boardId: "thinkbook-main",
+      idempotencyKey: "settings-get-1",
+      cmd,
+    }));
+    assert.equal(lookup.ok, true, cmd);
+    if (!lookup.ok || lookup.kind !== "cmd.lookup") return;
+    assert.equal(lookup.cmd, cmd);
+  }
+  const oldList = parseMessage(frame("cmd.archive.list", "arch-old", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "archive-key-01",
+    limit: 20,
+  }));
+  assert.equal(oldList.ok, true);
+  if (!oldList.ok || oldList.kind !== "cmd.archive.list") return;
+  assert.equal(oldList.workspaceId, undefined);
+  assert.equal(oldList.envelope.payload?.workspaceId, undefined);
+  const scoped = parseMessage(frame("cmd.archive.list", "arch-scope", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "archive-key-02",
+    workspaceId: "ws_app",
+    note: "drop",
+  }));
+  assert.equal(scoped.ok, true);
+  if (!scoped.ok || scoped.kind !== "cmd.archive.list") return;
+  assert.equal(scoped.workspaceId, "ws_app");
+  assert.equal(scoped.envelope.payload?.workspaceId, "ws_app");
+  assert.equal(scoped.envelope.payload?.note, undefined);
+  const blankScope = parseMessage(frame("cmd.archive.list", "arch-blank", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "archive-key-03",
+    workspaceId: "",
+  }));
+  assert.equal(blankScope.ok, true);
+  if (!blankScope.ok || blankScope.kind !== "cmd.archive.list") return;
+  assert.equal(blankScope.envelope.payload?.workspaceId, undefined);
+  const cleared = parseMessage(frame("cmd.settings.put", "settings-clear", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "settings-clear-1",
+    clear: true,
+    codexSandbox: false,
+  }));
+  assert.equal(cleared.ok, false);
+  if (cleared.ok) return;
+  assert.equal(cleared.code, "bad_request");
+  assert.equal(cleared.message, "clear is not allowed");
+  const secret = "s3cret-pass";
+  const put = parseMessage(frame("cmd.settings.put", "settings-put", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "settings-put-01",
+    proxyEnv: { codex: { HTTP_PROXY: `http://user:${secret}@127.0.0.1:8899` } },
+    note: "drop",
+  }));
+  assert.equal(put.ok, true);
+  if (!put.ok || put.kind !== "cmd.settings.put") return;
+  assert.equal(put.envelope.payload?.note, undefined);
+  const forwarded = put.envelope.payload?.proxyEnv as { codex: { HTTP_PROXY: string } };
+  assert.equal(forwarded.codex.HTTP_PROXY, `http://user:${secret}@127.0.0.1:8899`);
+  const placeholder = parseMessage(frame("cmd.settings.put", "settings-star", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "settings-put-02",
+    proxyEnv: { codex: { HTTP_PROXY: "http://user:***@127.0.0.1:8899" } },
+  }));
+  assert.equal(placeholder.ok, true);
+  if (!placeholder.ok || placeholder.kind !== "cmd.settings.put") return;
+  const kept = placeholder.envelope.payload?.proxyEnv as { codex: { HTTP_PROXY: string } };
+  assert.equal(kept.codex.HTTP_PROXY, "http://user:***@127.0.0.1:8899");
+  const ack = parseMessage(frame("ack", "ack-settings", {
+    ref: "settings-put",
+    stage: "executed",
+    settings: {
+      cliPaths: { codex: { default: "codex", override: "", effective: "codex", resolved: null, label: "codex" } },
+      proxyEnv: {
+        codex: {
+          HTTP_PROXY: {
+            override: `http://user:${secret}@127.0.0.1:8899`,
+            effective: `http://user:${secret}@127.0.0.1:8899`,
+            inherited: false,
+            configured: true,
+            hasCredential: false,
+          },
+        },
+      },
+      quickPrompts: [],
+      codexSandbox: true,
+      leaked: secret,
+    },
+  }));
+  assert.equal(ack.ok, true);
+  if (!ack.ok) return;
+  const settings = ack.envelope.payload?.settings as {
+    leaked?: string;
+    proxyEnv: { codex: { HTTP_PROXY: { override: string; hasCredential: boolean } } };
+  };
+  assert.equal(settings.leaked, undefined);
+  assert.equal(settings.proxyEnv.codex.HTTP_PROXY.override, "http://user:***@127.0.0.1:8899");
+  assert.equal(settings.proxyEnv.codex.HTTP_PROXY.hasCredential, true);
+  assert.equal(JSON.stringify(ack.envelope).includes(secret), false);
+  const archiveAck = parseMessage(frame("ack", "ack-archive", {
+    ref: "phone-archive-1",
+    stage: "executed",
+    archived: true,
+    taskId: "task_01",
+    task: { id: "task_01", title: "Fix login flake", status: "archived", updatedAt: 10 },
+  }));
+  assert.equal(archiveAck.ok, true);
+  if (!archiveAck.ok) return;
+  assert.equal(archiveAck.envelope.payload?.archived, true);
+  assert.equal(archiveAck.envelope.payload?.taskId, "task_01");
+  assert.equal(archiveAck.envelope.payload?.task, undefined);
+  const card = parseMessage(frame("ack", "ack-ws-card", {
+    ref: "phone-ws-get-1",
+    stage: "executed",
+    workspace: {
+      id: "ws_app",
+      name: "App",
+      path: "/home/me/src/app",
+      isGit: true,
+      settings: { systemPrompt: "keep", skills: ["skill-a"], mcp: "" },
+      git: { branch: "main", dirty: false, ahead: null, behind: 0, detached: false, repoCount: 1, error: null },
+      files: ["secret.txt"],
+    },
+  }));
+  assert.equal(card.ok, true);
+  if (!card.ok) return;
+  const workspace = card.envelope.payload?.workspace as { settings?: { systemPrompt: string }; git?: { ahead: null }; files?: string[] };
+  assert.equal(workspace.settings?.systemPrompt, "keep");
+  assert.equal(workspace.git?.ahead, null);
+  assert.equal(workspace.files, undefined);
+  const snapshot = parseMessage({
     v: 1,
-    id: "settings-get",
-    type: "cmd.settings.get",
-    ts: 1,
-    payload: { boardId: "thinkbook-main", idempotencyKey: "settings-get-1" },
+    id: "snap-thin",
+    type: "evt.snapshot",
+    ts: 10,
+    payload: {
+      boardId: "thinkbook-main",
+      generation: 1,
+      seq: 1,
+      eventId: "evt-1",
+      version: 1,
+      capturedAt: 10,
+      tasks: [],
+      workspaces: [{
+        id: "ws_app",
+        name: "App",
+        path: "/home/me/src/app",
+        isGit: true,
+        settings: { systemPrompt: "hidden" },
+      }],
+    },
   });
-  assert.equal(command.ok, false);
-  if (command.ok) return;
-  assert.equal(command.code, "bad_type");
+  assert.equal(snapshot.ok, true);
+  if (!snapshot.ok || snapshot.kind !== "evt.snapshot") return;
+  const rows = snapshot.envelope.payload?.workspaces as Array<{ settings?: unknown; isGit?: boolean }>;
+  assert.equal(rows[0]?.isGit, true);
+  assert.equal(rows[0]?.settings, undefined);
+  const unknownType = parseMessage(frame("cmd.not-a-command", "nope", {}));
+  assert.equal(unknownType.ok, false);
+  if (unknownType.ok) return;
+  assert.equal(unknownType.code, "bad_type");
 });
 
 test("PROTOCOL.md websocket examples parse", () => {
-  const text = readFileSync(path.join(root, "PROTOCOL.md"), "utf8");
-  const blocks = [...text.matchAll(/```json\n([\s\S]*?)```/g)];
-  assert.ok(blocks.length >= 8);
-  let checked = 0;
-  for (const block of blocks) {
-    const value = JSON.parse(block[1] ?? "") as { v?: number; type?: string };
-    if (value.v !== 1 || typeof value.type !== "string") continue;
-    const parsed = parseMessage(value);
-    assert.equal(parsed.ok, true, parsed.ok ? value.type : `${value.type}: ${parsed.message}`);
-    checked += 1;
+  for (const file of [path.join(root, "PROTOCOL.md"), path.join(root, "..", "PROTOCOL.md")]) {
+    const text = readFileSync(file, "utf8");
+    const blocks = [...text.matchAll(/```json\n([\s\S]*?)```/g)];
+    assert.ok(blocks.length >= 8, file);
+    let checked = 0;
+    for (const block of blocks) {
+      const value = JSON.parse(block[1] ?? "") as { v?: number; type?: string };
+      if (value.v !== 1 || typeof value.type !== "string") continue;
+      const parsed = parseMessage(value);
+      assert.equal(parsed.ok, true, parsed.ok ? value.type : `${file} ${value.type}: ${parsed.message}`);
+      checked += 1;
+    }
+    assert.ok(checked >= 8, file);
   }
-  assert.ok(checked >= 8);
 });
 
 function done(status: string) {

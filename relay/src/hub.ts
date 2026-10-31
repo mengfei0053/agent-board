@@ -3,6 +3,9 @@ import type { AuthStore } from "./auth.js";
 import type { LogFields } from "./log.js";
 import {
   ARCHIVE_CAPABILITY,
+  ARCHIVE_WRITE_CAPABILITY,
+  BOARD_SETTINGS_CAPABILITY,
+  WORKSPACE_SETTINGS_CAPABILITY,
   makeAck,
   makeErr,
   parseMessage,
@@ -28,6 +31,11 @@ type CommandRecord = {
   task?: JsonObject;
   archive?: JsonObject;
   workspace?: JsonObject;
+  /** Redacted board settings document. The request body, including a new proxy password, is not stored. */
+  settings?: JsonObject;
+  /** `cmd.archive` ack. No hot-list task is kept with this flag. */
+  archived?: true;
+  archivedTaskId?: string;
   deleted?: string;
   errorCode?: string;
   errorMessage?: string;
@@ -61,8 +69,13 @@ const PHONE_KINDS = new Set([
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.workspace.get",
+  "cmd.workspace.update",
+  "cmd.settings.get",
+  "cmd.settings.put",
   "cmd.detail",
   "cmd.archive.list",
+  "cmd.archive",
   "cmd.lookup",
 ]);
 
@@ -176,8 +189,13 @@ export class RelayHub {
       case "cmd.stop":
       case "cmd.workspace.create":
       case "cmd.workspace.delete":
+      case "cmd.workspace.get":
+      case "cmd.workspace.update":
+      case "cmd.settings.get":
+      case "cmd.settings.put":
       case "cmd.detail":
       case "cmd.archive.list":
+      case "cmd.archive":
         this.forwardCmd(conn, parsed);
         return;
       default:
@@ -419,10 +437,7 @@ export class RelayHub {
     this.deliver(conn.send, this.recordMessage(record, parsed.envelope.id, true));
   }
 
-  private forwardCmd(
-    conn: PhoneConn,
-    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" | "cmd.detail" | "cmd.archive.list" }>,
-  ): void {
+  private forwardCmd(conn: PhoneConn, parsed: ForwardedCommand): void {
     if (!this.allow(conn, parsed.boardId, parsed.envelope.id)) return;
     const key = this.commandKey(parsed.kind, parsed.boardId, parsed.idempotencyKey);
     const existing = this.liveCommand(parsed.kind, parsed.boardId, parsed.idempotencyKey);
@@ -443,8 +458,9 @@ export class RelayHub {
       }));
       return;
     }
-    if (parsed.kind === "cmd.archive.list" && !board.capabilities.includes(ARCHIVE_CAPABILITY)) {
-      this.deliver(conn.send, makeErr(this.now(), "archive list is not available", {
+    const required = capabilityFor(parsed.kind);
+    if (required && !board.capabilities.includes(required)) {
+      this.deliver(conn.send, makeErr(this.now(), unsupportedMessage(parsed.kind), {
         code: "unsupported",
         ref: parsed.envelope.id,
         stage: "failed",
@@ -477,6 +493,7 @@ export class RelayHub {
     }, this.opts.cmdTimeoutMs);
     timer.unref?.();
     record.timer = timer;
+    // Do not log `payload`. `cmd.settings.put` can carry a proxy password; only the redacted ack is kept.
     this.deliver(board.send, {
       v: 1,
       id: commandId,
@@ -514,12 +531,17 @@ export class RelayHub {
       const task = result.envelope.payload?.task;
       const archive = result.envelope.payload?.archive;
       const workspace = result.envelope.payload?.workspace;
+      const settings = result.envelope.payload?.settings;
       const deleted = result.envelope.payload?.deleted;
+      const archived = result.envelope.payload?.archived === true;
+      const archivedTaskId = result.envelope.payload?.taskId;
       this.finishCommand(record, {
         stage: "executed",
-        ...(isJsonObject(task) ? { task } : {}),
+        ...(archived ? {} : isJsonObject(task) ? { task } : {}),
         ...(isJsonObject(archive) ? { archive } : {}),
         ...(isJsonObject(workspace) ? { workspace } : {}),
+        ...(isJsonObject(settings) ? { settings } : {}),
+        ...(archived && typeof archivedTaskId === "string" ? { archived: true, archivedTaskId } : {}),
         ...(typeof deleted === "string" ? { deleted } : {}),
       });
       return;
@@ -530,7 +552,16 @@ export class RelayHub {
   private finishCommand(
     record: CommandRecord,
     update:
-      | { stage: "executed"; task?: JsonObject; archive?: JsonObject; workspace?: JsonObject; deleted?: string }
+      | {
+          stage: "executed";
+          task?: JsonObject;
+          archive?: JsonObject;
+          workspace?: JsonObject;
+          settings?: JsonObject;
+          archived?: true;
+          archivedTaskId?: string;
+          deleted?: string;
+        }
       | { stage: "failed" | "timeout"; errorCode: string; errorMessage: string },
   ): void {
     if (record.timer) clearTimeout(record.timer);
@@ -538,9 +569,16 @@ export class RelayHub {
     record.stage = update.stage;
     record.expiresAt = this.now() + (this.opts.idempotencyTtlMs ?? 600_000);
     if (update.stage === "executed") {
-      if (update.task) record.task = update.task;
+      if (update.archived) {
+        record.archived = true;
+        record.archivedTaskId = update.archivedTaskId;
+        record.task = undefined;
+      } else if (update.task) {
+        record.task = update.task;
+      }
       if (update.archive) record.archive = update.archive;
       if (update.workspace) record.workspace = update.workspace;
+      if (update.settings) record.settings = update.settings;
       if (update.deleted) record.deleted = update.deleted;
     } else {
       record.errorCode = update.errorCode;
@@ -768,9 +806,15 @@ export class RelayHub {
       boardId: record.boardId,
     };
     if (duplicate) base.duplicate = true;
-    if (record.task) base.task = record.task;
+    if (record.archived) {
+      base.archived = true;
+      if (record.archivedTaskId) base.taskId = record.archivedTaskId;
+    } else if (record.task) {
+      base.task = record.task;
+    }
     if (record.archive) base.archive = record.archive;
     if (record.workspace) base.workspace = record.workspace;
+    if (record.settings) base.settings = record.settings;
     if (record.deleted) base.deleted = record.deleted;
     if (record.errorCode) base.code = record.errorCode;
     if (record.errorMessage) base.message = record.errorMessage;
@@ -797,6 +841,59 @@ export class RelayHub {
 
   private now(): number {
     return this.opts.now?.() ?? Date.now();
+  }
+}
+
+type ForwardedCommand = Extract<
+  Incoming,
+  {
+    kind:
+      | "cmd.create"
+      | "cmd.continue"
+      | "cmd.stop"
+      | "cmd.workspace.create"
+      | "cmd.workspace.delete"
+      | "cmd.workspace.get"
+      | "cmd.workspace.update"
+      | "cmd.settings.get"
+      | "cmd.settings.put"
+      | "cmd.detail"
+      | "cmd.archive.list"
+      | "cmd.archive";
+  }
+>;
+
+function capabilityFor(kind: ForwardedCommand["kind"]): string | undefined {
+  switch (kind) {
+    case "cmd.archive.list":
+      return ARCHIVE_CAPABILITY;
+    case "cmd.archive":
+      return ARCHIVE_WRITE_CAPABILITY;
+    case "cmd.workspace.get":
+    case "cmd.workspace.update":
+      return WORKSPACE_SETTINGS_CAPABILITY;
+    case "cmd.settings.get":
+    case "cmd.settings.put":
+      return BOARD_SETTINGS_CAPABILITY;
+    default:
+      return undefined;
+  }
+}
+
+function unsupportedMessage(kind: ForwardedCommand["kind"]): string {
+  switch (kind) {
+    case "cmd.archive.list":
+      return "archive list is not available";
+    case "cmd.archive":
+      return "archive write is not available";
+    case "cmd.workspace.get":
+    case "cmd.workspace.update":
+      return "workspace settings are not available";
+    case "cmd.settings.get":
+    case "cmd.settings.put":
+      return "board settings are not available";
+    default:
+      return "command is not available";
   }
 }
 
