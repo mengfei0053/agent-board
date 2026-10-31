@@ -212,6 +212,75 @@ describe("connector session", () => {
     assert.equal(facade.listeners.size, 0);
   });
 
+  it("does not rate-limit or close when non-commands arrive on a full live queue", async () => {
+    const facade = memoryFacade();
+    const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();
+    facade.createImpl = async (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "held",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const { frames, send } = sentFrames();
+    const logs: string[] = [];
+    let overflows = 0;
+    const session = new ConnectorSession({
+      generation: 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {
+        overflows += 1;
+      },
+      onFatal: () => {},
+      log: (_level, message) => logs.push(message),
+    });
+    await session.bootstrap();
+    session.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
+    await waitFor(() => facade.creates === 1);
+    for (let i = 0; i < RELAY_LIMITS.maxLiveCommands - 1; i += 1) {
+      session.handleCommand(createCmd({ idempotencyKey: `flood-key-${i}` }));
+    }
+    const queued = session.queuedCommandCount();
+    assert.equal(queued, RELAY_LIMITS.maxLiveCommands - 1);
+    const before = frames.length;
+    session.handleCommand(frame("err", { code: "bad_request", message: "nope", ref: "upstream" }, "relay-err-1"));
+    session.handleCommand(frame("ack", { ref: "upstream", stage: "executed" }, "relay-ack-1"));
+    session.handleCommand(frame("evt.snapshot", { boardId: "thinkbook" }, "relay-evt-1"));
+    session.handleCommand(frame("evt.task", { boardId: "thinkbook", taskId: "t1" }, "relay-evt-2"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(overflows, 0);
+    assert.equal(session.queuedCommandCount(), queued);
+    assert.equal(frames.slice(before).some((item) => item.type === "err"), false);
+    assert.equal(logs.some((line) => line.includes("rate_limited") || line.includes("unsupported command")), false);
+
+    session.handleCommand(frame("cmd.create", {
+      boardId: "thinkbook",
+      idempotencyKey: "overflow-key-1",
+      title: "Too many",
+      prompt: "do it",
+      agent: "pi",
+      cwd: "/tmp/repo",
+    }, "cmd-overflow"));
+    assert.equal(overflows, 1);
+    const rejected = frames.filter((item) => item.type === "err" && item.payload.code === "rate_limited");
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0]?.payload.ref, "cmd-overflow");
+    gate.resolve(facade.tasks[0]!);
+    await waitFor(() => session.queuedCommandCount() === 0);
+    assert.equal(facade.creates, 1);
+    session.close();
+    assert.equal(facade.listeners.size, 0);
+  });
+
   it("drops queued commands on close across generations without a second create", async () => {
     const facade = memoryFacade();
     const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();

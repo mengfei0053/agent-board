@@ -64,7 +64,12 @@ describe("embedded relay run", { concurrency: 1 }, () => {
       assert.equal((snapshot?.payload.tasks as Array<{ status: string }>)[0]?.status, "succeeded");
       assert.equal(relay.received.some((frame) => frame.type === "evt.task.done"), false);
       relay.drop();
-      await waitFor(() => delays.length >= 1 && relay.generation >= 3);
+      await waitFor(() => {
+        const snapshots = relay.received.filter((frame) => frame.type === "evt.snapshot");
+        return delays.length >= 1
+          && relay.generation >= 3
+          && snapshots.some((frame) => frame.payload.generation === 2);
+      });
       assert.equal(delays[0], 40);
       const second = relay.received.filter((frame) => frame.type === "evt.snapshot");
       assert.equal(second[1]?.payload.generation, 2);

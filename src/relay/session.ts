@@ -80,6 +80,7 @@ export class ConnectorSession {
 
   handleCommand(message: Envelope): void {
     if (this.closed || this.overflowed) return;
+    if (!isLiveCommand(message.type)) return;
     if (this.pendingCommands >= RELAY_LIMITS.maxLiveCommands) {
       this.fail(message, new RelayCommandError("rate_limited", "relay command queue is full"));
       this.overflowed = true;
@@ -220,13 +221,7 @@ export class ConnectorSession {
 
   private async applyCommand(message: Envelope): Promise<void> {
     if (this.closed || this.overflowed) return;
-    if (
-      message.type !== "cmd.create"
-      && message.type !== "cmd.continue"
-      && message.type !== "cmd.stop"
-    ) {
-      return;
-    }
+    if (!isLiveCommand(message.type)) return;
     try {
       if (message.type === "cmd.create") {
         await this.applyCreate(message);
@@ -302,6 +297,10 @@ export class ConnectorSession {
     if (this.closed) return;
     this.opts.send(frame.type, frame.payload);
   }
+}
+
+function isLiveCommand(type: string): boolean {
+  return type === "cmd.create" || type === "cmd.continue" || type === "cmd.stop";
 }
 
 function wireMapped(task: MappedTask): Record<string, unknown> {
