@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -131,6 +132,8 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
 export class MockRelay {
   port = 0;
   received: ClientFrame[] = [];
+  /** Frames this mock sent to the board, including register ack and err. */
+  sent: ClientFrame[] = [];
   clients: WebSocket[] = [];
   /** Next register ack generation. Incremented after each ack. */
   generation = 1;
@@ -157,7 +160,12 @@ export class MockRelay {
         if (msg.type !== "board.register") return;
         if (this.silent || this.rejectCode) {
           if (this.rejectCode) {
-            this.send(ws, "err", { code: this.rejectCode, message: "board token rejected" }, msg.id);
+            this.send(
+              ws,
+              "err",
+              { code: this.rejectCode, message: "board token rejected", ref: msg.id },
+              randomUUID(),
+            );
             ws.close();
           }
           return;
@@ -165,7 +173,7 @@ export class MockRelay {
         this.beforeAck?.(ws, msg.id);
         const generation = this.generation;
         this.generation += 1;
-        this.send(ws, "ack", { stage: "executed", generation }, msg.id);
+        this.send(ws, "ack", { stage: "executed", generation, ref: msg.id }, randomUUID());
       });
       ws.on("close", () => {
         this.clients = this.clients.filter((client) => client !== ws);
@@ -185,7 +193,9 @@ export class MockRelay {
   }
 
   send(ws: WebSocket, type: string, payload: Record<string, unknown>, id = `m${Date.now()}`): void {
-    ws.send(JSON.stringify({ v: 1, id, type, ts: Date.now(), payload }));
+    const frame: ClientFrame = { v: 1, id, type, ts: Date.now(), payload };
+    this.sent.push(frame);
+    ws.send(JSON.stringify(frame));
   }
 
   drop(): void {

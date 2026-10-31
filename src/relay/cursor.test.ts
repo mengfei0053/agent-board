@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { RelayCursor } from "./cursor.js";
+import { RELAY_LIMITS } from "./limits.js";
 import { mapBoardTask } from "./map.js";
 import { makeTask } from "./harness.js";
 
@@ -38,6 +39,39 @@ describe("relay cursor", () => {
     const frames = cursor.observeTask("thinkbook", succeededA);
     assert.deepEqual(frames.map((frame) => frame.type), ["evt.task", "evt.task.done"]);
     assert.equal(frames[1]?.payload.taskId, "A");
+  });
+
+  it("stamps a snapshot with eventId, capturedAt, and version equal to seq", () => {
+    const cursor = new RelayCursor(7);
+    const before = Date.now();
+    const running = mapBoardTask(makeTask({ status: "running" }))!;
+    const snap = cursor.buildSnapshot("thinkbook", [running], []);
+    const after = Date.now();
+    assert.equal(typeof snap.payload.eventId, "string");
+    assert.ok(String(snap.payload.eventId).length > 0);
+    assert.equal(typeof snap.payload.capturedAt, "number");
+    assert.equal(Number.isFinite(snap.payload.capturedAt), true);
+    assert.ok((snap.payload.capturedAt as number) >= before);
+    assert.ok((snap.payload.capturedAt as number) <= after);
+    assert.equal(snap.payload.version, snap.payload.seq);
+    assert.equal(snap.payload.seq, 1);
+    assert.equal(snap.payload.generation, 7);
+  });
+
+  it("caps a snapshot at the live relay task limit and keeps the newest tasks", () => {
+    assert.equal(RELAY_LIMITS.maxSnapshotTasks, 200);
+    const cursor = new RelayCursor(1);
+    const count = RELAY_LIMITS.maxSnapshotTasks + 1;
+    const tasks = Array.from({ length: count }, (_, index) => mapBoardTask(makeTask({
+      id: `t${index}`,
+      title: `Task ${index}`,
+      updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+    }))!);
+    const snap = cursor.buildSnapshot("thinkbook", tasks, []);
+    const wire = snap.payload.tasks as Array<{ id: string }>;
+    assert.equal(wire.length, 200);
+    assert.equal(wire.some((task) => task.id === "t0"), false);
+    assert.equal(wire[0]?.id, `t${count - 1}`);
   });
 
   it("does not emit done for a task that was already terminal in the snapshot", () => {

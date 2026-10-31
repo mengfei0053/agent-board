@@ -6,8 +6,9 @@ export const RELAY_LIMITS = {
   /** Pre-session inbound relay frames buffered before the session can take commands. */
   maxPendingFrames: 32,
   /**
-   * Live `cmd.*` jobs waiting on the session serial tail, including the one
-   * currently running. The next frame is rejected and the socket is closed.
+   * Live `cmd.create` / `cmd.continue` / `cmd.stop` jobs on the session serial
+   * tail, including the one currently running. The next command is rejected
+   * and the socket is closed. Other inbound frames are ignored.
    */
   maxLiveCommands: 32,
   /** Max inbound or outbound frame size in bytes. */
@@ -18,8 +19,8 @@ export const RELAY_LIMITS = {
   maxBusBuffer: 200,
   /** Workspaces included in `evt.snapshot` (phone rejects lists longer than this). */
   maxWorkspaces: 50,
-  /** Tasks included in one snapshot, newest `updatedAt` first when capped. */
-  maxSnapshotTasks: 500,
+  /** Tasks in one snapshot. The live relay rejects lists longer than 200. Newest `updatedAt` first when capped. */
+  maxSnapshotTasks: 200,
   /** `evt.log` line length before truncation. */
   maxLogChars: 2_000,
   /** Successful create results remembered for the life of the dialer. */

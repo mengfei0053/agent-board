@@ -80,6 +80,7 @@ export class ConnectorSession {
 
   handleCommand(message: Envelope): void {
     if (this.closed || this.overflowed) return;
+    if (!isLiveCommand(message.type)) return;
     if (this.pendingCommands >= RELAY_LIMITS.maxLiveCommands) {
       this.fail(message, new RelayCommandError("rate_limited", "relay command queue is full"));
       this.overflowed = true;
@@ -220,6 +221,7 @@ export class ConnectorSession {
 
   private async applyCommand(message: Envelope): Promise<void> {
     if (this.closed || this.overflowed) return;
+    if (!isLiveCommand(message.type)) return;
     try {
       if (message.type === "cmd.create") {
         await this.applyCreate(message);
@@ -250,6 +252,7 @@ export class ConnectorSession {
     });
     if (this.closed) return;
     this.opts.send("ack", {
+      ref: message.id,
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: key,
@@ -270,6 +273,7 @@ export class ConnectorSession {
     if (!mapped) throw new RelayCommandError("board_http", "board request failed");
     if (this.closed) return;
     this.opts.send("ack", {
+      ref: message.id,
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: parsed.key,
@@ -282,6 +286,7 @@ export class ConnectorSession {
     const safe = relayErrorFrom(err);
     this.opts.log?.("warn", `relay command ${message.type} failed: ${safe.code}`);
     this.opts.send("err", {
+      ref: message.id,
       code: safe.code,
       message: safe.message,
       boardId: this.opts.boardId,
@@ -292,6 +297,10 @@ export class ConnectorSession {
     if (this.closed) return;
     this.opts.send(frame.type, frame.payload);
   }
+}
+
+function isLiveCommand(type: string): boolean {
+  return type === "cmd.create" || type === "cmd.continue" || type === "cmd.stop";
 }
 
 function wireMapped(task: MappedTask): Record<string, unknown> {

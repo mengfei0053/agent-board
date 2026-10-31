@@ -16,6 +16,31 @@ import {
 } from "./harness.js";
 
 describe("embedded relay run", { concurrency: 1 }, () => {
+  it("accepts a register ack when the envelope id differs and payload.ref is the register id", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const dialer = startEmbeddedRelay({
+      config: enabledConfig(relay.url),
+      facade,
+      log: () => {},
+    });
+    try {
+      await dialer.ready;
+      const register = relay.received.find((frame) => frame.type === "board.register");
+      const ack = relay.sent.find((frame) => frame.type === "ack" && frame.payload.ref === register?.id);
+      assert.ok(register);
+      assert.ok(ack);
+      assert.notEqual(ack.id, register.id);
+      assert.equal(ack.payload.ref, register.id);
+      assert.equal(ack.payload.generation, 1);
+    } finally {
+      await dialer.close();
+      await relay.close();
+    }
+    assert.equal(facade.listeners.size, 0);
+  });
+
   it("registers, sends a snapshot, and resets backoff after a registered session", async () => {
     const relay = new MockRelay();
     await relay.listen();
@@ -39,7 +64,12 @@ describe("embedded relay run", { concurrency: 1 }, () => {
       assert.equal((snapshot?.payload.tasks as Array<{ status: string }>)[0]?.status, "succeeded");
       assert.equal(relay.received.some((frame) => frame.type === "evt.task.done"), false);
       relay.drop();
-      await waitFor(() => delays.length >= 1 && relay.generation >= 3);
+      await waitFor(() => {
+        const snapshots = relay.received.filter((frame) => frame.type === "evt.snapshot");
+        return delays.length >= 1
+          && relay.generation >= 3
+          && snapshots.some((frame) => frame.payload.generation === 2);
+      });
       assert.equal(delays[0], 40);
       const second = relay.received.filter((frame) => frame.type === "evt.snapshot");
       assert.equal(second[1]?.payload.generation, 2);

@@ -212,6 +212,75 @@ describe("connector session", () => {
     assert.equal(facade.listeners.size, 0);
   });
 
+  it("does not rate-limit or close when non-commands arrive on a full live queue", async () => {
+    const facade = memoryFacade();
+    const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();
+    facade.createImpl = async (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "held",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const { frames, send } = sentFrames();
+    const logs: string[] = [];
+    let overflows = 0;
+    const session = new ConnectorSession({
+      generation: 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {
+        overflows += 1;
+      },
+      onFatal: () => {},
+      log: (_level, message) => logs.push(message),
+    });
+    await session.bootstrap();
+    session.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
+    await waitFor(() => facade.creates === 1);
+    for (let i = 0; i < RELAY_LIMITS.maxLiveCommands - 1; i += 1) {
+      session.handleCommand(createCmd({ idempotencyKey: `flood-key-${i}` }));
+    }
+    const queued = session.queuedCommandCount();
+    assert.equal(queued, RELAY_LIMITS.maxLiveCommands - 1);
+    const before = frames.length;
+    session.handleCommand(frame("err", { code: "bad_request", message: "nope", ref: "upstream" }, "relay-err-1"));
+    session.handleCommand(frame("ack", { ref: "upstream", stage: "executed" }, "relay-ack-1"));
+    session.handleCommand(frame("evt.snapshot", { boardId: "thinkbook" }, "relay-evt-1"));
+    session.handleCommand(frame("evt.task", { boardId: "thinkbook", taskId: "t1" }, "relay-evt-2"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(overflows, 0);
+    assert.equal(session.queuedCommandCount(), queued);
+    assert.equal(frames.slice(before).some((item) => item.type === "err"), false);
+    assert.equal(logs.some((line) => line.includes("rate_limited") || line.includes("unsupported command")), false);
+
+    session.handleCommand(frame("cmd.create", {
+      boardId: "thinkbook",
+      idempotencyKey: "overflow-key-1",
+      title: "Too many",
+      prompt: "do it",
+      agent: "pi",
+      cwd: "/tmp/repo",
+    }, "cmd-overflow"));
+    assert.equal(overflows, 1);
+    const rejected = frames.filter((item) => item.type === "err" && item.payload.code === "rate_limited");
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0]?.payload.ref, "cmd-overflow");
+    gate.resolve(facade.tasks[0]!);
+    await waitFor(() => session.queuedCommandCount() === 0);
+    assert.equal(facade.creates, 1);
+    session.close();
+    assert.equal(facade.listeners.size, 0);
+  });
+
   it("drops queued commands on close across generations without a second create", async () => {
     const facade = memoryFacade();
     const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();
@@ -381,6 +450,64 @@ describe("connector session", () => {
     session.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
     await waitFor(() => frames.some((frame) => frame.type === "ack"));
     assert.equal(facade.creates, 2);
+    session.close();
+  });
+
+  it("ignores inbound err, ack, and evt frames instead of failing them as unsupported commands", async () => {
+    const facade = memoryFacade();
+    const logs: string[] = [];
+    const { frames, send } = sentFrames();
+    const session = new ConnectorSession({
+      generation: 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {},
+      onFatal: () => {},
+      log: (_level, message) => logs.push(message),
+    });
+    await session.bootstrap();
+    session.handleCommand(frame("err", { code: "bad_request", message: "nope", ref: "upstream" }, "relay-err-1"));
+    session.handleCommand(frame("ack", { ref: "upstream", stage: "executed" }, "relay-ack-1"));
+    session.handleCommand(frame("evt.snapshot", { boardId: "thinkbook" }, "relay-evt-1"));
+    session.handleCommand(frame("evt.task", { boardId: "thinkbook", taskId: "t1" }, "relay-evt-2"));
+    session.handleCommand(createCmd());
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.ref === "cmd-1"));
+    assert.equal(frames.some((item) => item.type === "err"), false);
+    assert.equal(logs.some((line) => line.includes("unsupported command")), false);
+    assert.equal(facade.creates, 1);
+    session.close();
+  });
+
+  it("puts payload.ref on command ack and err", async () => {
+    const facade = memoryFacade({ tasks: [makeTask({ id: "t1", status: "running" })] });
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+
+    session.handleCommand(createCmd());
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "create-key-1"));
+    const createAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "create-key-1");
+    assert.equal(createAck?.payload.ref, "cmd-1");
+
+    session.handleCommand(frame("cmd.stop", {
+      boardId: "thinkbook",
+      idempotencyKey: "stop-key-01",
+      taskId: "t1",
+    }, "cmd-stop-1"));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "stop-key-01"));
+    const stopAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "stop-key-01");
+    assert.equal(stopAck?.payload.ref, "cmd-stop-1");
+
+    session.handleCommand(frame("cmd.continue", {
+      boardId: "thinkbook",
+      idempotencyKey: "continue-bad",
+    }, "cmd-continue-bad"));
+    await waitFor(() => frames.some((item) => item.type === "err" && item.payload.ref === "cmd-continue-bad"));
+    const err = frames.find((item) => item.type === "err" && item.payload.ref === "cmd-continue-bad");
+    assert.equal(err?.payload.code, "bad_request");
+    assert.equal(err?.id, "cmd-continue-bad");
     session.close();
   });
 

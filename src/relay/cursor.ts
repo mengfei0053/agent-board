@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { RELAY_LIMITS } from "./limits.js";
 import {
   isTerminalStatus,
@@ -59,6 +60,7 @@ export class RelayCursor {
   private snapshotFrame(boardId: string, tasks: MappedTask[], workspaces: ThinWorkspace[]): RelayFrame {
     return this.event("evt.snapshot", {
       boardId,
+      capturedAt: Date.now(),
       tasks: tasks.map(wireTask),
       workspaces,
     });
@@ -117,6 +119,9 @@ export class RelayCursor {
         generation: this.generation,
         seq: this.seq,
         version: this.seq,
+        eventId: typeof payload.eventId === "string" && payload.eventId
+          ? payload.eventId
+          : randomUUID(),
       },
     };
   }
