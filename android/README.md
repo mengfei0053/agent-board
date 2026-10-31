@@ -61,13 +61,13 @@ The APK is `android/app/build/outputs/apk/release/app-release-unsigned.apk`.
 
 ## GitHub Release
 
-Publishing a GitHub Release builds that unsigned APK and attaches it to the release.
+Publishing a GitHub Release builds a debug-signed APK and attaches it to the release. The Android Gradle Plugin creates the debug keystore in CI, so the APK has an APK Signature Block and can be sideloaded. `assembleRelease` stays unsigned and is not what this workflow ships.
 
 1. Push the commit you want to ship.
 2. On GitHub, open **Releases → Draft a new release**, choose or create a tag such as `v0.2.0`, and publish it.
-3. `.github/workflows/release-apk.yml` runs on `release: types: [published]`. It sets up JDK 17 and Android SDK 35, then runs `./gradlew :app:assembleRelease` in `android/`.
-4. The workflow uploads `agent-board-<tag>.apk` to that release with `GITHUB_TOKEN`.
+3. `.github/workflows/release-apk.yml` runs on `release: types: [published]` and on pull requests. It sets up JDK 17 and Android SDK 35, then runs `./gradlew :app:assembleDebug` in `android/`.
+4. The workflow checks the APK with `apksigner` (API 30+) and uploads `agent-board-<tag>-<sha>-debug.apk` to that release with `GITHUB_TOKEN`. On `main`, the artifact name is `agent-board-<sha>-debug.apk`.
 
 `workflow_dispatch` builds the same APK and stores it as an Actions artifact. It does not attach a release asset.
 
-No signing secrets are required. `ANDROID_KEYSTORE_*` is unused. Store signing is out of scope until a keystore is added on purpose.
+No signing secrets are required. `ANDROID_KEYSTORE_*` is unused. Store signing is out of scope until a release keystore is added on purpose. A phone that already has this app installed under a different debug key must uninstall it before this APK will replace it.
