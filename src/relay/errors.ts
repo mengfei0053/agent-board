@@ -1,4 +1,5 @@
 import { HttpError } from "../httpError.js";
+import { ArchivedReadonlyError } from "../taskErrors.js";
 
 /** Error returned to the relay as an `err` frame. `message` is already safe to send. */
 export class RelayCommandError extends Error {
@@ -18,20 +19,35 @@ function clip(message: string): string {
 
 function stableHttpMessage(err: HttpError): string {
   const msg = err.message;
-  if (/exceeds \d+ characters/.test(msg) && !msg.includes("/") && !msg.includes("\\")) return msg;
+  if (/exceeds \d+ characters/.test(msg) && isSafeClientMessage(msg)) return msg;
   if (/cwd required|path required/i.test(msg)) return "cwd is required";
   if (/must be an absolute path/i.test(msg)) return "cwd must be an absolute path";
   if (/not a directory/i.test(msg)) return "cwd is not a directory";
   if (/outside allowed roots/i.test(msg)) return "cwd is outside allowed roots";
   if (/not found/i.test(msg)) return "cwd not found";
   if (err.statusCode >= 500) return "board request failed";
+  if (isSafeClientMessage(msg)) return msg;
   return "bad request";
 }
 
-/** Map manager / HTTP failures onto relay codes. Never includes paths or stack traces. */
+function safeText(message: string): string {
+  return isSafeClientMessage(message) ? message : "bad request";
+}
+
+/** Visible ASCII that cannot carry a filesystem path or a URL userinfo secret. */
+function isSafeClientMessage(msg: string): boolean {
+  if (!msg || msg.length > 180) return false;
+  if (/[\\/@]|:\/\//.test(msg)) return false;
+  return /^[\x20-\x7e]+$/.test(msg);
+}
+
+/** Map manager / HTTP failures onto relay codes. Never includes paths, proxy secrets, or stack traces. */
 export function relayErrorFrom(err: unknown): RelayCommandError {
   if (err instanceof RelayCommandError) {
-    return new RelayCommandError(err.code, clip(err.message) || "bad request");
+    return new RelayCommandError(err.code, clip(safeText(err.message)) || "bad request");
+  }
+  if (err instanceof ArchivedReadonlyError) {
+    return new RelayCommandError(err.code, err.message);
   }
   if (err instanceof Error && err.message === "not found") {
     return new RelayCommandError("task_not_found", "task not found");

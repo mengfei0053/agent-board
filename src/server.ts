@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { subscribe } from "./bus.js";
 import {
+  archiveTerminalTask,
   boardSnapshot,
   continueTask,
   createAndStart,
@@ -37,7 +38,7 @@ import {
   persistFailureMessage,
   upsertWorkspace,
 } from "./store.js";
-import { redactDatabaseUrl, upsertMetaMany } from "./db.js";
+import { redactDatabaseUrl } from "./db.js";
 import type {
   AgentKind,
   BoardLane,
@@ -47,34 +48,12 @@ import type {
   UpdateWorkspaceInput,
   Workspace,
 } from "./types.js";
-import { normalizeWorkspaceSettings } from "./workspaceApply.js";
+import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
+import { ArchivedReadonlyError } from "./taskErrors.js";
+import { applyWorkspacePatch } from "./workspaceRecord.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 import { workspaceGitStatus } from "./gitStatus.js";
 import { getGitWorktreeEligibility } from "./gitWorktree.js";
-import {
-  CLI_COMMAND_KEYS,
-  applyCliPathMemory,
-  getCliPathSettingsResolved,
-  planCliPathOverrides,
-  type CliCommandKey,
-} from "./cliPaths.js";
-import {
-  PROXY_ENV_KEYS,
-  applyProxyEnvMemory,
-  getProxyEnvSettings,
-  planProxyEnvOverrides,
-  type ProxyEnvKey,
-} from "./proxyEnv.js";
-import {
-  applyQuickPromptsMemory,
-  getQuickPromptSettings,
-  planQuickPrompts,
-} from "./quickPrompts.js";
-import {
-  applyCodexSandboxMemory,
-  getCodexSandboxSettings,
-  planCodexSandbox,
-} from "./codexSandbox.js";
 import { nanoid } from "nanoid";
 import { publish } from "./bus.js";
 import {
@@ -104,7 +83,6 @@ import {
   MAX_UPLOAD_OVERHEAD_BYTES,
 } from "./limits.js";
 import { resolveAllowedDirectory } from "./paths.js";
-import { withSettingsLock } from "./settingsLock.js";
 import { maybeStartEmbeddedRelay, type EmbeddedRelay } from "./relay/index.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -244,13 +222,13 @@ function resolveHookStart(body: Record<string, unknown>): boolean {
   return false;
 }
 
-function assertWorkspaceSettingsSize(settings: { systemPrompt?: string; skills?: string[]; mcp?: string } | undefined): void {
-  if (!settings) return;
-  if (settings.systemPrompt) assertTextLimit(settings.systemPrompt, MAX_PROMPT_CHARS, "systemPrompt");
-  if (settings.mcp) assertTextLimit(settings.mcp, MAX_PROMPT_CHARS, "mcp");
-  for (const skill of settings.skills || []) {
-    assertTextLimit(skill, 2_000, "skills");
+function taskMutationError(c: Context, err: unknown, fallback = 400) {
+  if (err instanceof ArchivedReadonlyError) {
+    return c.json({ error: err.message, code: err.code }, err.statusCode as 409);
   }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg === "not found") return c.json({ error: "not found" }, 404);
+  return errorJson(c, err, fallback);
 }
 
 
@@ -419,36 +397,10 @@ app.get("/api/workspaces/:id/git-worktree-eligibility", async (c) => {
 
 app.patch("/api/workspaces/:id", async (c) => {
   const id = c.req.param("id");
-  const cur = getWorkspace(id);
-  if (!cur) return c.json({ error: "not found" }, 404);
+  if (!getWorkspace(id)) return c.json({ error: "not found" }, 404);
   try {
     const body = await readJsonObject(c);
-    const name =
-      typeof body.name === "string" && body.name.trim() ? body.name.trim() : cur.name;
-    if (body.name != null && typeof body.name !== "string") {
-      throw new HttpError(400, "name must be a string");
-    }
-    const rawPath =
-      typeof body.path === "string" && body.path.trim() ? body.path.trim() : cur.path;
-    if (body.path != null && typeof body.path !== "string") {
-      throw new HttpError(400, "path must be a string");
-    }
-    const path = resolveAllowedDirectory(rawPath, "path");
-    if (typeof name === "string") assertTextLimit(name, MAX_TITLE_CHARS, "name");
-    const settings =
-      "settings" in body
-        ? normalizeWorkspaceSettings(body.settings)
-        : cur.settings;
-    assertWorkspaceSettingsSize(settings);
-    const ws: Workspace = {
-      ...cur,
-      name,
-      path,
-      settings,
-      updatedAt: new Date().toISOString(),
-    };
-    await upsertWorkspace(ws);
-    publish({ type: "workspace_upsert", workspace: ws });
+    const ws = await applyWorkspacePatch(id, body);
     return c.json({ workspace: ws });
   } catch (e) {
     return errorJson(c, e, 500);
@@ -575,9 +527,7 @@ app.post("/api/tasks/:id/start", async (c) => {
     const task = await startTask(c.req.param("id"));
     return c.json({ task });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
-    return c.json({ error: msg }, code as 400);
+    return taskMutationError(c, err);
   }
 });
 
@@ -595,8 +545,7 @@ app.post("/api/tasks/:id/move", async (c) => {
     if (msg === "invalid JSON body" || msg === "body must be an object") {
       return c.json({ error: msg }, 400);
     }
-    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
-    return c.json({ error: msg }, code as 400);
+    return taskMutationError(c, err);
   }
 });
 
@@ -605,9 +554,17 @@ app.post("/api/tasks/:id/stop", async (c) => {
     const task = await stopTask(c.req.param("id"));
     return c.json({ task });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "not found") return c.json({ error: "not found" }, 404);
-    return errorJson(c, err, 500);
+    return taskMutationError(c, err, 500);
+  }
+});
+
+/** Phone archive. Terminal statuses only. Web `lane: "archived"` still stops an active card. */
+app.post("/api/tasks/:id/archive", async (c) => {
+  try {
+    const archived = await archiveTerminalTask(c.req.param("id"));
+    return c.json({ archived: true, taskId: archived.taskId });
+  } catch (err) {
+    return taskMutationError(c, err);
   }
 });
 
@@ -637,9 +594,7 @@ app.post("/api/tasks/:id/continue", async (c) => {
     const task = await continueTask(c.req.param("id"), prompt);
     return c.json({ task });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = msg === "not found" ? 404 : httpStatusOf(err, 400);
-    return c.json({ error: msg }, code as 400);
+    return taskMutationError(c, err);
   }
 });
 
@@ -742,16 +697,7 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 
 
 
-async function fullSettings() {
-  return {
-    ...(await getCliPathSettingsResolved()),
-    ...getProxyEnvSettings(),
-    ...getQuickPromptSettings(),
-    ...getCodexSandboxSettings(),
-  };
-}
-
-app.get("/api/settings", async (c) => c.json(await fullSettings()));
+app.get("/api/settings", async (c) => c.json(await readSettingsDocument()));
 
 app.put("/api/settings", async (c) => {
   let raw: Record<string, unknown>;
@@ -760,115 +706,11 @@ app.put("/api/settings", async (c) => {
   } catch (e) {
     return errorJson(c, e);
   }
-
-  return withSettingsLock(async () => {
-  if ("clear" in raw && raw.clear != null && typeof raw.clear !== "boolean") {
-    return c.json({ error: "clear must be a boolean" }, 400);
-  }
-
-  if (raw.clear === true) {
-    try {
-      // Validate nothing else is required. One transaction, then swap memory.
-      // Quick prompts are user content and are kept.
-      await upsertMetaMany([
-        ["cli_paths", "{}"],
-        ["proxy_env", "{}"],
-        ["codex_sandbox", "true"],
-      ]);
-      applyCliPathMemory({});
-      applyProxyEnvMemory({});
-      applyCodexSandboxMemory(true);
-      return c.json(await fullSettings());
-    } catch (err) {
-      return errorJson(c, err, 500);
-    }
-  }
-
-  const hasCli = raw.cliPaths != null;
-  const hasProxy = raw.proxyEnv != null;
-  const hasQuick = raw.quickPrompts != null;
-  const hasCodexSandbox = raw.codexSandbox != null;
-  if (!hasCli && !hasProxy && !hasQuick && !hasCodexSandbox) {
-    return c.json({ error: "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required (or clear: true)" }, 400);
-  }
-
-  let cliPlan: ReturnType<typeof planCliPathOverrides> | undefined;
-  let proxyPlan: ReturnType<typeof planProxyEnvOverrides> | undefined;
-
-  if (hasCli) {
-    if (typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
-      return c.json({ error: "cliPaths must be an object" }, 400);
-    }
-    const patch: Partial<Record<CliCommandKey, string>> = {};
-    for (const [k, v] of Object.entries(raw.cliPaths as Record<string, unknown>)) {
-      if (!(CLI_COMMAND_KEYS as readonly string[]).includes(k)) {
-        return c.json({ error: `unknown cliPaths key: ${k}` }, 400);
-      }
-      if (v != null && typeof v !== "string") {
-        return c.json({ error: `cliPaths.${k} must be a string` }, 400);
-      }
-      patch[k as CliCommandKey] = typeof v === "string" ? v : "";
-    }
-    cliPlan = planCliPathOverrides(patch);
-  }
-
-  if (hasProxy) {
-    if (typeof raw.proxyEnv !== "object" || Array.isArray(raw.proxyEnv)) {
-      return c.json({ error: "proxyEnv must be an object" }, 400);
-    }
-    const patch: Partial<
-      Record<CliCommandKey, Partial<Record<ProxyEnvKey, string>>>
-    > = {};
-    for (const [kind, kindVal] of Object.entries(
-      raw.proxyEnv as Record<string, unknown>,
-    )) {
-      if (!(CLI_COMMAND_KEYS as readonly string[]).includes(kind)) {
-        return c.json({ error: `unknown proxyEnv kind: ${kind}` }, 400);
-      }
-      if (kindVal == null || typeof kindVal !== "object" || Array.isArray(kindVal)) {
-        return c.json({ error: `proxyEnv.${kind} must be an object` }, 400);
-      }
-      const kindPatch: Partial<Record<ProxyEnvKey, string>> = {};
-      for (const [k, v] of Object.entries(kindVal as Record<string, unknown>)) {
-        if (!(PROXY_ENV_KEYS as readonly string[]).includes(k)) {
-          return c.json({ error: `unknown proxyEnv.${kind} key: ${k}` }, 400);
-        }
-        if (v != null && typeof v !== "string") {
-          return c.json({ error: `proxyEnv.${kind}.${k} must be a string` }, 400);
-        }
-        kindPatch[k as ProxyEnvKey] = typeof v === "string" ? v : "";
-      }
-      patch[kind as CliCommandKey] = kindPatch;
-    }
-    proxyPlan = planProxyEnvOverrides(patch);
-  }
-
-  let quickPlan: ReturnType<typeof planQuickPrompts> | undefined;
-  let codexPlan: ReturnType<typeof planCodexSandbox> | undefined;
   try {
-    if (hasQuick) quickPlan = planQuickPrompts(raw.quickPrompts);
-    if (hasCodexSandbox) codexPlan = planCodexSandbox(raw.codexSandbox);
-  } catch (err) {
-    return errorJson(c, err);
+    return c.json(await writeSettingsDocument(raw, { allowClear: true }));
+  } catch (e) {
+    return errorJson(c, e, 500);
   }
-
-  const entries: Array<readonly [string, string]> = [];
-  if (cliPlan) entries.push(["cli_paths", cliPlan.json]);
-  if (proxyPlan) entries.push(["proxy_env", proxyPlan.json]);
-  if (quickPlan) entries.push(["quick_prompts", quickPlan.json]);
-  if (codexPlan) entries.push(["codex_sandbox", codexPlan.json]);
-  try {
-    await upsertMetaMany(entries);
-  } catch (err) {
-    return errorJson(c, err, 500);
-  }
-  if (cliPlan) applyCliPathMemory(cliPlan.next);
-  if (proxyPlan) applyProxyEnvMemory(proxyPlan.next);
-  if (quickPlan) applyQuickPromptsMemory(quickPlan.next);
-  if (codexPlan) applyCodexSandboxMemory(codexPlan.next);
-
-  return c.json(await fullSettings());
-  });
 });
 
 app.post("/api/uploads", async (c) => {

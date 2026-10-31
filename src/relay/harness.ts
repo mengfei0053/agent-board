@@ -140,6 +140,21 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       facade.publish({ type: "workspace_upsert", workspace: { ...ws } });
       return ws;
     },
+    getWorkspace: async () => {
+      throw new RelayCommandError("bad_request", "not implemented");
+    },
+    updateWorkspace: async () => {
+      throw new RelayCommandError("bad_request", "not implemented");
+    },
+    getSettings: async () => {
+      throw new RelayCommandError("bad_request", "not implemented");
+    },
+    putSettings: async () => {
+      throw new RelayCommandError("bad_request", "not implemented");
+    },
+    archive: async () => {
+      throw new RelayCommandError("bad_request", "not implemented");
+    },
     deleteWorkspace: async (id: string) => {
       const index = workspaces.findIndex((workspace) => workspace.id === id);
       if (index < 0) throw new RelayCommandError("not_found", "workspace not found");

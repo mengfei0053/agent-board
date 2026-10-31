@@ -700,6 +700,111 @@ describe("connector session", () => {
     assert.equal((detail?.payload.task as { detail?: string }).detail, "full");
     session.close();
   });
+
+  it("accepts an archive cursor that includes the revision", async () => {
+    const tasks = [
+      makeTask({ id: "c", status: "archived", updatedAt: "2026-10-31T03:00:00.000Z" }),
+      makeTask({ id: "b", status: "archived", updatedAt: "2026-10-31T02:00:00.000Z" }),
+      makeTask({ id: "a", status: "archived", workspaceId: "w2", updatedAt: "2026-10-31T01:00:00.000Z" }),
+    ];
+    const facade = memoryFacade({ tasks });
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+    session.handleCommand(frame("cmd.archive.list", {
+      boardId: "thinkbook",
+      idempotencyKey: "archive-page-1",
+      limit: 1,
+    }, "arch-page-1"));
+    await waitFor(() => frames.some((item) => item.payload.ref === "arch-page-1"));
+    const first = frames.find((item) => item.payload.ref === "arch-page-1");
+    const page = first?.payload.archive as { tasks: Array<{ id: string }>; nextCursor?: string };
+    assert.equal(page.tasks[0]?.id, "c");
+    assert.match(page.nextCursor ?? "", /^[0-9]+:c:[a-f0-9]{8}$/);
+    session.handleCommand(frame("cmd.archive.list", {
+      boardId: "thinkbook",
+      idempotencyKey: "archive-page-2",
+      limit: 1,
+      cursor: page.nextCursor,
+    }, "arch-page-2"));
+    await waitFor(() => frames.some((item) => item.payload.ref === "arch-page-2"));
+    const second = frames.find((item) => item.payload.ref === "arch-page-2");
+    assert.equal(second?.type, "ack");
+    const next = second?.payload.archive as { tasks: Array<{ id: string }> };
+    assert.equal(next.tasks[0]?.id, "b");
+    session.handleCommand(frame("cmd.archive.list", {
+      boardId: "thinkbook",
+      idempotencyKey: "archive-scope-1",
+      limit: 10,
+      workspaceId: "w1",
+    }, "arch-scope"));
+    await waitFor(() => frames.some((item) => item.payload.ref === "arch-scope"));
+    const scoped = frames.find((item) => item.payload.ref === "arch-scope");
+    const scopedTasks = (scoped?.payload.archive as { tasks: Array<{ id: string; workspaceId?: string }> }).tasks;
+    assert.deepEqual(scopedTasks.map((task) => task.id), ["c", "b"]);
+    assert.equal(scopedTasks.every((task) => task.workspaceId === "w1"), true);
+    session.close();
+  });
+
+  it("acks archive without a hot-list task and redacts settings puts", async () => {
+    const secret = "s3cret-pass";
+    const logs: string[] = [];
+    const facade = memoryFacade();
+    let puts = 0;
+    facade.archive = async (id: string) => ({ taskId: id });
+    facade.putSettings = async () => {
+      puts += 1;
+      return {
+        proxyEnv: { codex: { HTTP_PROXY: { override: "http://user:***@127.0.0.1:8899", hasCredential: true } } },
+      } as Awaited<ReturnType<MemoryFacade["putSettings"]>>;
+    };
+    const { frames, send } = sentFrames();
+    const session = new ConnectorSession({
+      generation: 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {},
+      onFatal: () => {},
+      log: (_level, message) => logs.push(message),
+    });
+    await session.bootstrap();
+    session.handleCommand(frame("cmd.archive", {
+      boardId: "thinkbook",
+      idempotencyKey: "archive-write-1",
+      taskId: "task_01",
+    }, "arch-write"));
+    session.handleCommand(frame("cmd.settings.put", {
+      boardId: "thinkbook",
+      idempotencyKey: "settings-put-1",
+      proxyEnv: { codex: { HTTP_PROXY: `http://user:${secret}@127.0.0.1:8899` } },
+    }, "settings-put"));
+    session.handleCommand(frame("cmd.settings.put", {
+      boardId: "thinkbook",
+      idempotencyKey: "settings-put-1",
+      proxyEnv: { codex: { HTTP_PROXY: `http://user:${secret}@127.0.0.1:8899` } },
+    }, "settings-put-replay"));
+    session.handleCommand(frame("cmd.settings.put", {
+      boardId: "thinkbook",
+      idempotencyKey: "settings-clear-1",
+      clear: true,
+    }, "settings-clear"));
+    await waitFor(() => frames.filter((item) => item.type === "ack" || item.type === "err").length >= 4);
+    const archiveAck = frames.find((item) => item.payload.ref === "arch-write");
+    assert.equal(archiveAck?.payload.archived, true);
+    assert.equal(archiveAck?.payload.taskId, "task_01");
+    assert.equal("task" in (archiveAck?.payload ?? {}), false);
+    const putAck = frames.find((item) => item.payload.ref === "settings-put");
+    assert.equal(JSON.stringify(putAck).includes(secret), false);
+    assert.equal(puts, 1);
+    const clear = frames.find((item) => item.payload.ref === "settings-clear");
+    assert.equal(clear?.payload.code, "bad_request");
+    assert.equal(clear?.payload.message, "clear is not allowed");
+    assert.equal(JSON.stringify(frames).includes(secret), false);
+    assert.equal(logs.join("\n").includes(secret), false);
+    session.close();
+  });
 });
 
 function openSession(facade: MemoryFacade, send: RelaySender, idempotency: CreateIdempotency): ConnectorSession {

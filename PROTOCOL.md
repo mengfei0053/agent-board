@@ -75,7 +75,12 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `cmd.workspace.create` | phone | board | Create a workspace (`name` + `path`). |
 | `cmd.workspace.delete` | phone | board | Delete a workspace. Refuses the default workspace and any workspace that still has tasks. |
 | `cmd.detail` | phone | board | Read one task's detail card, including an archived task. Does not change the task. |
-| `cmd.archive.list` | phone | board | One page of archived tasks. Not part of `evt.snapshot`. |
+| `cmd.archive.list` | phone | board | One page of archived tasks. Not part of `evt.snapshot`. Optional `workspaceId` is applied by the board before the page. |
+| `cmd.archive` | phone | board | Archive one terminal task. Capability `archive.write`. The public relay does not forward this type until the wave-2 command allowlist. |
+| `cmd.workspace.get` | phone | board | Read one workspace, including settings and a git summary. Capability `workspace.settings`. Not forwarded by the public relay until wave 2. |
+| `cmd.workspace.update` | phone | board | Update name, path, and replacement settings. Same capability. Not forwarded until wave 2. |
+| `cmd.settings.get` | phone | board | Read `GET /api/settings`. Capability `board.settings`. Not forwarded until wave 2. |
+| `cmd.settings.put` | phone | board | Partial settings write. Rejects `clear: true`. Not forwarded until wave 2. |
 | `cmd.lookup` | phone | relay | Read the stored result of an idempotency key. |
 | `evt.task` | board | task subscribers | Task state changed. |
 | `evt.log` | board | log subscribers | One log line. |
@@ -194,7 +199,54 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 
 `cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task. An archived task uses the same card with `status: "archived"`. That status is rejected on `evt.snapshot` and `evt.task`, so old phones never see it in the hot list.
 
-`cmd.archive.list` is a read-only page. The phone sends it only after `board.list` shows `capabilities` containing `archive.list` (set on `board.register`). Boards that omit the capability get `err` `unsupported` and the command is not stored. The body is `boardId`, `idempotencyKey`, optional `limit` (1–50, default 20), and optional `cursor` (`updatedAt:id` of the last row already shown). The executed ack's `archive` is `{ tasks, nextCursor? }`. Rows are thin, newest `updatedAt` first, and every `status` is `archived`. A task that moves to archived is removed from the next `evt.snapshot` and does not emit `evt.task.done`.
+`cmd.archive.list` is a read-only page. The phone sends it only after `board.list` shows `capabilities` containing `archive.list` (set on `board.register`). Boards that omit the capability get `err` `unsupported` and the command is not stored. The body is `boardId`, `idempotencyKey`, optional `limit` (1–50, default 20), optional `cursor`, and optional `workspaceId`. The cursor is `updatedAt:id` or `updatedAt:id:revision` (`revision` is 8 hex characters). The embedded dialer accepts both; a cursor from another workspace, or a set that changed, restarts at page 1 (`restarted: true`) instead of skipping rows. When `workspaceId` is present the board filters to that workspace before the limit and the cursor. Omitting it keeps a board-wide page. The executed ack's `archive` is `{ tasks, nextCursor?, restarted? }`. Rows are thin, newest `updatedAt` first, and every `status` is `archived`. A task that moves to archived is removed from the next `evt.snapshot` and does not emit `evt.task.done`. The public relay currently rebuilds this payload and drops `workspaceId` until the wave-2 allowlist forwards it.
+
+`board.register` capabilities are `archive.list`, `archive.write`, `workspace.settings`, and `board.settings`. The public relay accepts those names on register. It does not yet accept the new command types below; a phone that sends them to today's relay gets `bad_type` and the command is not stored. `err` code `archived_readonly` means the task is archived and the board refused continue, stop, start, or a second archive. The web restore path (`POST /api/tasks/:id/move` with `lane: "done"`) stays on the web.
+
+## Board commands added for the phone
+
+These handlers run in the embedded dialer (`src/relay/`) and the standalone connector. They are not in the public relay command allowlist yet.
+
+`cmd.workspace.get` payload: `boardId`, `idempotencyKey`, `workspaceId`. The executed `workspace` is `{ id, name, path, isGit, settings, git }`. `settings` always has `systemPrompt` (string), `skills` (array), and `mcp` (string); empty means unset. `git` is `{ branch, dirty, ahead, behind, detached, repoCount, error }` for the root repository. `ahead` and `behind` are numbers, or null when there is no upstream. A git failure still returns name, path, and settings, with `git.error` set and `isGit` false when the worktree probe fails. There is no file list.
+
+`cmd.workspace.update` payload: `boardId`, `idempotencyKey`, `workspaceId`, `name`, `path`, and `settings` with all three keys. The board uses the same checks as `PATCH /api/workspaces/:id`: a present `settings` object replaces the stored object, and existing tasks keep `task.cwd`. The ack is the same workspace object as get. A failed save does not invent a success.
+
+`cmd.settings.get` payload: `boardId`, `idempotencyKey`. The ack `settings` is the `GET /api/settings` document. Proxy userinfo is `***` and `hasCredential` is set. Do not log that document.
+
+`cmd.settings.put` payload: `boardId`, `idempotencyKey`, plus the same partial body as `PUT /api/settings` (`cliPaths`, `proxyEnv`, `quickPrompts`, `codexSandbox`). `clear: true` is rejected with `bad_request` and writes nothing. A value containing `***` as the URL userinfo keeps the stored secret. The ack is the committed redacted document, not a synthetic success. The board does not write the raw proxy URL into logs, error messages, or the idempotency cache. Omitted groups are left unchanged.
+
+`cmd.archive` payload: `boardId`, `idempotencyKey`, `taskId`. The board allows it only when the status is `succeeded`, `failed`, or `stopped`, under the same task lock as move. `running`, `queued`, and `blocked` return `bad_request` (`task is still running`). `draft` returns `bad_request` (`draft cannot be archived`). An archived task returns `archived_readonly`. The check is repeated inside the lock, so a continue that won the lock is not archived. The executed ack is `{ archived: true, taskId }` and has no `task` field. The next snapshot drops the card. Web `lane: "archived"` can still stop an active card; the phone command cannot.
+
+```text
+{
+  "v": 1,
+  "id": "phone-archive-1",
+  "type": "cmd.archive",
+  "ts": 1761890006000,
+  "payload": {
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "idem-archive-01",
+    "taskId": "task_01"
+  }
+}
+```
+
+```text
+{
+  "v": 1,
+  "id": "board-ack-archive",
+  "type": "ack",
+  "ts": 1761890006100,
+  "payload": {
+    "ref": "phone-archive-1",
+    "stage": "executed",
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "idem-archive-01",
+    "archived": true,
+    "taskId": "task_01"
+  }
+}
+```
 
 ```json
 {

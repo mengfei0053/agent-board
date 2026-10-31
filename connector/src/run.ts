@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import { BoardClient } from "./board.js";
+import { BOARD_CAPABILITIES } from "./capabilities.js";
 import type { ConnectorConfig } from "./config.js";
 import { ConnectorSession } from "./session.js";
 
@@ -119,7 +120,7 @@ export function startConnector(
           boardId: config.boardId,
           token: config.boardToken,
           label: config.label,
-          capabilities: ["archive.list"],
+          capabilities: [...BOARD_CAPABILITIES],
         },
       }));
       const ack = await registered;

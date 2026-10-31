@@ -12,6 +12,7 @@ import {
   redactWsUrl,
   type Envelope,
 } from "./envelope.js";
+import { BOARD_CAPABILITIES } from "./capabilities.js";
 import { RELAY_LIMITS } from "./limits.js";
 
 export type RelayLog = (level: "info" | "warn" | "error", message: string) => void;
@@ -244,7 +245,7 @@ async function runOnce(opts: {
         boardId: opts.config.boardId,
         token: opts.config.boardToken,
         label: opts.config.boardLabel,
-        capabilities: ["archive.list"],
+        capabilities: [...BOARD_CAPABILITIES],
       }, registerId)) {
         fail(new Error("register send failed"));
       }

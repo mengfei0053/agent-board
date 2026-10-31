@@ -8,6 +8,9 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 /** Read-only archive pages. Never a hot-snapshot or `evt.task` status. */
 export const ARCHIVE_STATUS = "archived" as const;
 export const ARCHIVE_CAPABILITY = "archive.list";
+export const ARCHIVE_WRITE_CAPABILITY = "archive.write";
+export const WORKSPACE_SETTINGS_CAPABILITY = "workspace.settings";
+export const BOARD_SETTINGS_CAPABILITY = "board.settings";
 export const ARCHIVE_PAGE_DEFAULT = 20;
 export const ARCHIVE_PAGE_MAX = 50;
 
@@ -1254,7 +1257,17 @@ function acceptTaskStatus(value: string, allowArchived: boolean): value is Task[
 }
 
 const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$/;
-const KNOWN_CAPABILITIES = new Set<string>([ARCHIVE_CAPABILITY]);
+/**
+ * Register names the relay will store. Command types for the three new names
+ * are not forwarded until the wave-2 command allowlist. A board that advertises
+ * an unknown name is rejected, so this set must move with `board.register`.
+ */
+const KNOWN_CAPABILITIES = new Set<string>([
+  ARCHIVE_CAPABILITY,
+  ARCHIVE_WRITE_CAPABILITY,
+  WORKSPACE_SETTINGS_CAPABILITY,
+  BOARD_SETTINGS_CAPABILITY,
+]);
 
 function readCapabilities(value: unknown): { ok: true; value: string[] } | { ok: false; message: string } {
   if (value === undefined) return { ok: true, value: [] };
