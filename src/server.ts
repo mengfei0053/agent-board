@@ -105,6 +105,7 @@ import {
 } from "./limits.js";
 import { resolveAllowedDirectory } from "./paths.js";
 import { withSettingsLock } from "./settingsLock.js";
+import { maybeStartEmbeddedRelay, type EmbeddedRelay } from "./relay/index.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -973,14 +974,21 @@ app.use("/*", serveStatic({ root: webRoot }));
 async function main() {
   ensureUploadsDir();
   await initStore();
+  let relay: EmbeddedRelay | null = null;
   const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
     console.log(`agent-board http://${hostname}:${info.port}`);
     console.log(`database ${redactDatabaseUrl()}`);
+    relay = maybeStartEmbeddedRelay();
   });
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    try {
+      if (relay) await relay.close();
+    } catch (err) {
+      console.error("[shutdown] relay:", err);
+    }
     beginDraining();
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 2_000);

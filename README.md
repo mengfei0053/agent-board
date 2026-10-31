@@ -139,12 +139,48 @@ pnpm dev
 
 发布 APK：在 GitHub 上 **Publish a release**。`.github/workflows/release-apk.yml` 会用 JDK 17 和 Android SDK 35 跑 `./gradlew :app:assembleRelease`，并把未签名包 `agent-board-<tag>.apk` 挂到该 Release。不需要签名密钥。说明见 [android/README.md](./android/README.md)。
 
+## 手机遥控 / Relay
+
+看板进程可以自己拨出公网中继，手机 APK 不再需要 ThinkBook 上另起一个 connector 进程。**默认关闭**。未设置中继环境变量时，看板仍只提供本机 HTTP/SSE。
+
+三个变量都有效才拨号。缺任何一个、URL 不合法，或 `RELAY_ENABLED=0|false|off`，都只记一条日志并跳过，**不会让进程退出**。
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `RELAY_WS_URL` | 启用时 | `ws://` 或 `wss://`。ThinkBook：`wss://relay.mengfei.tech/v1/ws`。不要把账号密码写进 URL |
+| `BOARD_ID` | 启用时 | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
+| `BOARD_TOKEN` | 启用时 | Bitwarden 条目 `agent-board-relay 101`。不要写进仓库、不要打进日志 |
+| `BOARD_LABEL` | 否 | 默认 `ThinkBook` |
+| `RELAY_RECONNECT_MIN_MS` | 否 | 默认 `500`。也接受 `RECONNECT_MIN_MS`。须 `> 0` |
+| `RELAY_RECONNECT_MAX_MS` | 否 | 默认 `15000`。须 `>=` 最小值。退避是 min → 翻倍 → 封顶；注册成功后回到 min |
+| `RELAY_ENABLED` | 否 | `0` / `false` / `off` 强制关闭。`1` 但缺字段时告警并跳过 |
+
+主名称优先。`AGENT_BOARD_RELAY_WS_URL`、`AGENT_BOARD_ID`、`AGENT_BOARD_RELAY_TOKEN` 仅在对应主变量**未出现**时作为别名。主变量设成空字符串不会回落到别名。
+
+拨号在 HTTP 开始监听之后启动。`SIGINT` / `SIGTERM` 时先关掉拨号（停掉重连，不调用 `stopTask`），再进入原有的排空、关端口、停 runner、刷库。ThinkBook 上仍要等没有运行中的任务再重启进程。
+
+同一 `BOARD_ID` 只能有一个注册方。启用嵌入拨号之前：确认没有运行中的任务，先停掉独立 connector（如果曾经启动过），再带上面的环境变量重启看板。不要两个一起跑。
+
+启用示例（密钥来自密码库，不要写进 shell 历史文件以外的仓库）：
+
+```bash
+export RELAY_WS_URL='wss://relay.mengfei.tech/v1/ws'
+export BOARD_ID='your-board-id'
+export BOARD_TOKEN='your-board-token'
+export BOARD_LABEL='ThinkBook'
+pnpm start   # tsx src/server.ts，不要用 watch
+```
+
+嵌入拨号的队列上限（超出则断开并重连，不拖垮看板）：待处理入站帧 32、单帧 256KiB、出站缓冲 2MiB、总线事件缓冲 200、快照工作区 50、快照任务 500、日志行 2000 字符、创建幂等缓存 500。同一次进程内，相同 `idempotencyKey` 的成功创建只会执行一次；失败不写入缓存。跨进程重启不保证幂等。
+
+独立 connector 仓库在手机实机烟测通过之前仍是参考实现，不是 ThinkBook 的运行路径。烟测通过后再把它标成弃用；这里不写占位 commit。
+
 ## 测试
 
 ```bash
 pnpm install
 pnpm test              # 单元 + 集成 + e2e
-pnpm test:unit         # node:test 纯函数 / 解析（src/**/*.test.ts）
+pnpm test:unit         # node:test 纯函数 / 解析（src/*.test.ts、src/runners/*.test.ts、src/relay/*.test.ts）
 pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I12）
 pnpm test:coverage     # 单元 + c8（含 runners buildArgs / db；不含 server/store/manager）
 pnpm test:coverage:full # 同上但 all=true，报告写入 coverage-full/（全仓诚实视图）
