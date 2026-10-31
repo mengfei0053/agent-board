@@ -124,7 +124,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   output TEXT,
   last_event TEXT,
   error TEXT,
-  exit_code INT
+  exit_code INT,
+  worktree JSONB
 );
 
 CREATE TABLE IF NOT EXISTS task_logs (
@@ -209,6 +210,7 @@ export async function ensureSchema(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`,
   );
   await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attachments JSONB`);
+  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worktree JSONB`);
   await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS settings JSONB`);
 }
 

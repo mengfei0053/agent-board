@@ -375,6 +375,7 @@ type TaskRow = {
   error: string | null;
   exit_code: number | null;
   attachments?: unknown;
+  worktree?: unknown;
 };
 
 function rowToWorkspace(row: WorkspaceRow): Workspace {
@@ -408,6 +409,29 @@ function parseAttachments(raw: unknown): Task["attachments"] {
   return out.length ? out : undefined;
 }
 
+function parseWorktree(raw: unknown): Task["worktree"] {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  if (rec.owned !== true) return undefined;
+  if (typeof rec.path !== "string" || !rec.path) return undefined;
+  if (typeof rec.branch !== "string" || !rec.branch) return undefined;
+  if (typeof rec.baseHead !== "string" || !rec.baseHead) return undefined;
+  return {
+    path: rec.path,
+    branch: rec.branch,
+    baseHead: rec.baseHead,
+    owned: true,
+  };
+}
+
 function rowToTask(
   row: TaskRow,
   outputs: OutputTurn[] | undefined,
@@ -439,6 +463,7 @@ function rowToTask(
     prompts: prompts?.length ? prompts : undefined,
     sideJobs: sideJobs?.length ? sideJobs : undefined,
     attachments: parseAttachments(row.attachments),
+    worktree: parseWorktree(row.worktree),
   });
 }
 
@@ -474,11 +499,11 @@ async function persistTask(task: Task): Promise<void> {
       `INSERT INTO tasks (
         id, title, kind, cwd, workspace_id, prompt, model, session_id, iteration, status,
         created_at, updated_at, started_at, ended_at, pid, summary, output,
-        last_event, error, exit_code, attachments
+        last_event, error, exit_code, attachments, worktree
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
         $11::timestamptz,$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,$16,$17,
-        $18,$19,$20,$21::jsonb
+        $18,$19,$20,$21::jsonb,$22::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
@@ -500,7 +525,8 @@ async function persistTask(task: Task): Promise<void> {
         last_event = EXCLUDED.last_event,
         error = EXCLUDED.error,
         exit_code = EXCLUDED.exit_code,
-        attachments = EXCLUDED.attachments`,
+        attachments = EXCLUDED.attachments,
+        worktree = EXCLUDED.worktree`,
       [
         task.id,
         task.title,
@@ -523,6 +549,7 @@ async function persistTask(task: Task): Promise<void> {
         task.error ?? null,
         task.exitCode ?? null,
         JSON.stringify(task.attachments || []),
+        task.worktree ? JSON.stringify(task.worktree) : null,
       ],
     );
 

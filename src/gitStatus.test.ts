@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 import {
   GIT_STATUS_LIMITS,
+  GIT_STATUS_SKIP_DIRS,
   clearGitStatusCacheForTests,
   discoverGitRepos,
   gitFileLabel,
@@ -286,6 +287,28 @@ describe("workspaceGitStatus", () => {
     assert.equal(status.caps.maxDepth, GIT_STATUS_LIMITS.maxDepth);
     assert.equal(status.caps.maxRepos, 32);
     assert.equal(status.caps.maxDirs, 4_000);
+  });
+
+  it("does not discover repositories under .agent-board", async () => {
+    const root = scratch();
+    git(root, ["init", "-b", "main"]);
+    writeFileSync(join(root, "README.md"), "hi\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-m", "init"]);
+    const nested = join(root, ".agent-board", "worktrees", "nested");
+    mkdirSync(nested, { recursive: true });
+    git(nested, ["init", "-b", "main"]);
+    writeFileSync(join(nested, "inside.txt"), "x\n");
+    git(nested, ["add", "inside.txt"]);
+    git(nested, ["commit", "-m", "nested"]);
+    git(root, ["worktree", "add", "-b", "agent-board/skipme", join(root, ".agent-board", "worktrees", "skipme"), "HEAD"]);
+
+    const found = await discoverGitRepos(root);
+    assert.equal(found.repos.length, 1);
+    assert.equal(found.repos.some((repo) => repo.includes(".agent-board")), false);
+    const status = await workspaceGitStatus(root, { refresh: true });
+    assert.equal(status.repos.some((repo) => repo.relPath.includes(".agent-board")), false);
+    assert.ok(GIT_STATUS_SKIP_DIRS.includes(".agent-board"));
   });
 
   it("truncates the per-repo file list", async () => {

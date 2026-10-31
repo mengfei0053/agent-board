@@ -1118,6 +1118,32 @@ a.btn-link.secondary { background: var(--panel-2); }
   line-height: 1.45;
 }
 
+.create-worktree-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+.create-worktree-field[hidden] { display: none; }
+.create-worktree-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.create-worktree-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.create-worktree-note[hidden] { display: none; }
+
 label {
   display: block;
   margin-bottom: 12px;

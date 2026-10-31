@@ -257,6 +257,22 @@ export function createMockServer(state, extra) {
         updatedAt: createdAt,
         prompts: [{ iteration: 1, prompt: plain, at: createdAt }],
       };
+      if (body.useGitWorktree === true) {
+        if (!ws.gitWorktreeEligible) {
+          return json(res, 400, { error: "cwd is not a git work tree root" });
+        }
+        const wtPath = `${ws.path}/.agent-board/worktrees/${id}`;
+        task = {
+          ...task,
+          cwd: wtPath,
+          worktree: {
+            path: wtPath,
+            branch: `agent-board/${id}`,
+            baseHead: "abc123",
+            owned: true,
+          },
+        };
+      }
       if (body.start) {
         task = {
           ...task,
@@ -451,6 +467,17 @@ export function createMockServer(state, extra) {
         prompts: [...(t.prompts || []), { iteration: iter, prompt, at: now }],
       });
       return json(res, 200, { task: t });
+    }
+
+    const worktreeElig = pathname.match(/^\/api\/workspaces\/([^/]+)\/git-worktree-eligibility$/);
+    if (worktreeElig && req.method === "GET") {
+      const id = decodeURIComponent(worktreeElig[1]);
+      const cur = state.workspaces.get(id);
+      if (!cur) return json(res, 404, { error: "not found" });
+      if (cur.gitWorktreeEligible) {
+        return json(res, 200, { ok: true, root: cur.path, head: "abc123" });
+      }
+      return json(res, 200, { ok: false, reason: "cwd is not a git work tree root" });
     }
 
     const gitStatus = pathname.match(/^\/api\/workspaces\/([^/]+)\/git-status$/);

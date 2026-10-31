@@ -23,7 +23,8 @@
 | 能力 | 说明 |
 | --- | --- |
 | 工作区 | 左侧增删改查；右键菜单（设置 / 编辑 / 删除）；空间设置页可配提示词 / skills / MCP；cwd = 工作区 path。选中工作区后显示该路径下全部 Git 仓库的分支、领先/落后与变更文件（只读） |
-| 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态 |
+| 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态。工作区是带可用 HEAD 的 git 根目录时，新建弹窗可选「在 git worktree 中启动」（默认关） |
+| Git worktree | 勾选后在 `<工作区>/.agent-board/worktrees/<任务 id>` 创建分支 `agent-board/<任务 id>`，任务 cwd 指向该目录。删除任务时移除干净的 worktree 目录；有未提交改动则保留并提示。请自行将 `.agent-board/` 写入 `.gitignore` 或本机 excludesfile，看板不会修改仓库的 ignore 文件 |
 | 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
 | 继续任务 | 终态任务可按 CLI session 续跑，迭代次数 +1 |
 | Webhook | `POST /api/hooks/tasks`（需 `AGENT_BOARD_WEBHOOK_SECRET`） |
