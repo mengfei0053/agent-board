@@ -1,342 +1,440 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { WebSocketServer, type WebSocket } from "ws";
-import {
-  PRE_STORE_CODES,
-  encode,
-  frame,
-  parseEnvelope,
-  text,
-  validBoardId,
-  validKey,
-  validateCreate,
-  type Envelope,
-} from "./protocol.js";
-import { RelayStore, type BoardRecord, type Device, type StoredCommand } from "./store.js";
+import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
+import { AuthStore } from "./auth.js";
+import { RelayHub, type BoardConn, type PhoneConn } from "./hub.js";
+import { log as defaultLog, type LogFields } from "./log.js";
+import { makeErr, PROTOCOL_VERSION, type Envelope } from "./protocol.js";
+import { RateLimiter } from "./rate-limit.js";
 
-const MAX_FRAME = 256 * 1024;
+type LogFn = (level: "info" | "warn" | "error", message: string, fields?: LogFields) => void;
 
-export type RelayServer = {
-  port: number;
-  close: () => Promise<void>;
-  store: RelayStore;
+export type ServerOptions = {
+  host?: string;
+  port?: number;
+  adminToken: string;
+  boardToken: string;
+  tokenTtlMs?: number;
+  pairTtlMs?: number;
+  cmdTimeoutMs?: number;
+  idempotencyTtlMs?: number;
+  pairAttemptLimit?: number;
+  pairWindowMs?: number;
+  wsMessagesPerSec?: number;
+  now?: () => number;
+  log?: LogFn;
+  maxConnections?: number;
 };
 
-type Phone = { ws: WebSocket; device: Device; boards: Set<string>; logs: Set<string> };
-type Connector = { ws: WebSocket; board: BoardRecord };
+export type StartedServer = {
+  host: string;
+  port: number;
+  httpUrl: string;
+  wsUrl: string;
+  close: () => Promise<void>;
+};
 
-export function startRelay(opts: { port?: number; setupToken: string; now?: () => number }): Promise<RelayServer> {
-  const store = new RelayStore(opts.now);
-  const phones = new Set<Phone>();
-  const connectors = new Map<string, Connector>();
+const MAX_BODY = 64 * 1024;
+const MAX_FRAME = 256 * 1024;
 
-  const http = createServer((req, res) => {
-    void handleHttp(req, res, store, opts.setupToken).catch(() => sendJson(res, 500, { error: { code: "bad_request", message: "failed" } }));
+export async function startServer(options: ServerOptions): Promise<StartedServer> {
+  const host = options.host ?? "127.0.0.1";
+  const port = options.port ?? 0;
+  const writeLog = options.log ?? defaultLog;
+  const now = options.now ?? Date.now;
+  const auth = new AuthStore({
+    adminToken: options.adminToken,
+    boardToken: options.boardToken,
+    tokenTtlMs: options.tokenTtlMs ?? 7 * 24 * 60 * 60 * 1000,
+    pairTtlMs: options.pairTtlMs ?? 300_000,
+    pairAttemptLimit: options.pairAttemptLimit,
+    pairWindowMs: options.pairWindowMs,
+    now,
   });
-  const wss = new WebSocketServer({ server: http, path: "/v1/ws", maxPayload: MAX_FRAME });
+  const hub = new RelayHub(auth, {
+    cmdTimeoutMs: options.cmdTimeoutMs ?? 8_000,
+    idempotencyTtlMs: options.idempotencyTtlMs,
+    now,
+    log: writeLog,
+  });
+  const startedAt = Date.now();
+  const sockets = new Set<WebSocket>();
+  const maxConnections = options.maxConnections ?? 200;
+  const wsLimit = options.wsMessagesPerSec ?? 40;
+  const adminLimiter = new RateLimiter(60, 60_000, now);
 
-  wss.on("connection", (ws) => {
-    let phone: Phone | undefined;
-    let connector: Connector | undefined;
-    ws.on("message", (data) => {
-      const raw = typeof data === "string" ? data : data.toString("utf8");
-      if (raw.length > MAX_FRAME) {
-        ws.close(1009, "frame too large");
-        return;
-      }
-      let message: Envelope;
-      try {
-        message = parseEnvelope(raw);
-      } catch (err) {
-        send(ws, frame("err", { code: "bad_request", message: err instanceof Error ? err.message : "bad frame" }));
-        return;
-      }
-      store.note(message.type, message.id, text(message.payload, "boardId"));
-      if (!phone && !connector) {
-        if (message.type === "client.hello") {
-          const device = store.deviceByToken(text(message.payload, "token") ?? "");
-          if (!device) {
-            send(ws, frame("err", { code: "unauthorized", message: "device token rejected" }, message.id));
-            ws.close(4001, "unauthorized");
-            return;
-          }
-          phone = { ws, device, boards: new Set(), logs: new Set() };
-          phones.add(phone);
-          send(ws, frame("ack", { stage: "executed" }, message.id));
-          return;
-        }
-        if (message.type === "board.register") {
-          const board = store.boardByToken(text(message.payload, "token") ?? "");
-          const boardId = text(message.payload, "boardId") ?? "";
-          if (!board || board.boardId !== boardId) {
-            send(ws, frame("err", { code: "unauthorized", message: "board token rejected" }, message.id));
-            ws.close(4001, "unauthorized");
-            return;
-          }
-          connectors.get(boardId)?.ws.close(4000, "replaced");
-          connector = { ws, board };
-          connectors.set(boardId, connector);
-          store.onlineBoards.add(boardId);
-          send(ws, frame("ack", { stage: "executed" }, message.id));
-          return;
-        }
-        send(ws, frame("err", { code: "unauthorized", message: "hello required" }, message.id));
-        return;
-      }
-      if (phone) handlePhone(phone, message);
-      else if (connector) handleConnector(connector, message);
-    });
-    ws.on("close", () => {
-      if (phone) phones.delete(phone);
-      if (connector && connectors.get(connector.board.boardId)?.ws === ws) {
-        connectors.delete(connector.board.boardId);
-        store.onlineBoards.delete(connector.board.boardId);
-      }
+  const server = createServer((req, res) => {
+    void handleHttp(req, res, { auth, hub, startedAt, log: writeLog, adminLimiter, now }).catch((error: unknown) => {
+      const status = error instanceof HttpError ? error.status : 500;
+      const code = error instanceof HttpError ? error.code : "internal";
+      const message = status === 500 ? "internal error" : error instanceof Error ? error.message : "internal error";
+      if (status === 500) writeLog("error", "http handler failed", { message: error instanceof Error ? error.message : "unknown" });
+      if (!res.headersSent) sendJson(res, status, { error: { code, message } });
+      else res.end();
     });
   });
+  server.requestTimeout = 20_000;
+  server.headersTimeout = 10_000;
 
-  function handlePhone(phone: Phone, message: Envelope) {
-    const payload = message.payload;
-    if (message.type === "board.list") {
-      const boards = phone.device.boardIds.map((boardId) => ({
-        boardId,
-        label: boardLabel(store, boardId),
-        online: connectors.has(boardId),
-        generation: null,
-      }));
-      send(phone.ws, frame("ack", { boards }, message.id));
-      return;
-    }
-    const boardId = text(payload, "boardId") ?? "";
-    if (!phone.device.boardIds.includes(boardId)) {
-      send(phone.ws, frame("err", { code: "forbidden", message: "board is not paired to this phone" }, message.id));
-      return;
-    }
-    if (message.type === "sub.tasks") {
-      phone.boards.add(boardId);
-      send(phone.ws, frame("ack", { stage: "executed", boardId }, message.id));
-      return;
-    }
-    if (message.type === "sub.logs") {
-      const taskId = text(payload, "taskId");
-      phone.logs.add(taskId ? `${boardId}/${taskId}` : boardId);
-      send(phone.ws, frame("ack", { stage: "executed", boardId }, message.id));
-      return;
-    }
-    if (message.type === "cmd.lookup") {
-      const key = text(payload, "idempotencyKey") ?? "";
-      const found = store.findCommand(boardId, key);
-      send(phone.ws, frame("ack", found ? commandAck(found) : { stage: "unknown", boardId }, message.id));
-      return;
-    }
-    if (message.type === "cmd.create" || message.type === "cmd.continue" || message.type === "cmd.stop") {
-      handleCommand(phone, message);
-      return;
-    }
-    send(phone.ws, frame("err", { code: "bad_request", message: "unsupported type" }, message.id));
-  }
+  const wss = new WebSocketServer({ server, path: "/v1/ws", maxPayload: MAX_FRAME, perMessageDeflate: false });
 
-  function handleCommand(phone: Phone, message: Envelope) {
-    const payload = message.payload;
-    const boardId = text(payload, "boardId") ?? "";
-    const key = text(payload, "idempotencyKey") ?? "";
-    const invalid = message.type === "cmd.create" ? validateCreate(payload) : commandShapeError(message.type, payload);
-    if (invalid) {
-      send(phone.ws, frame("err", { code: "bad_request", message: invalid, boardId }, message.id));
+  wss.on("connection", (socket) => {
+    if (sockets.size >= maxConnections) {
+      socket.close(1013, "overloaded");
       return;
     }
-    if (!validKey(key)) {
-      send(phone.ws, frame("err", { code: "bad_request", message: "idempotencyKey must be 8-80 visible ASCII characters", boardId }, message.id));
-      return;
-    }
-    const prior = store.findCommand(boardId, key);
-    if (prior) {
-      send(phone.ws, frame(prior.stage === "failed" ? "err" : "ack", commandAck(prior), message.id));
-      return;
-    }
-    if (!connectors.has(boardId)) {
-      send(phone.ws, frame("err", { code: "board_offline", message: "This board is offline. The relay will not queue a command.", boardId }, message.id));
-      return;
-    }
-    const stored: StoredCommand = {
-      boardId,
-      cmd: message.type,
-      idempotencyKey: key,
-      stage: "accepted",
-      createdAt: Date.now(),
+    sockets.add(socket);
+    const limiter = new RateLimiter(wsLimit, 1_000, now);
+    let role: "unknown" | "board" | "phone" = "unknown";
+    let board: BoardConn | null = null;
+    let phone: PhoneConn | null = null;
+
+    const send = (message: Envelope) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     };
-    store.rememberCommand(stored);
-    send(phone.ws, frame("ack", { stage: "accepted", boardId, idempotencyKey: key }, message.id));
-    const connector = connectors.get(boardId);
-    if (connector) send(connector.ws, frame(message.type, payload, message.id));
+    const closeSocket = () => {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
+    };
+
+    socket.on("message", (data, isBinary) => {
+      try {
+        if (!limiter.allow("ws")) {
+          send(makeErr(now(), "websocket message rate exceeded", { code: "rate_limited" }));
+          return;
+        }
+        if (isBinary) {
+          send(makeErr(now(), "binary frames are not accepted", { code: "bad_request" }));
+          return;
+        }
+        const text = rawToString(data);
+        if (role === "unknown") {
+          const opened = openRole(text, send, closeSocket);
+          role = opened.role;
+          board = opened.board;
+          phone = opened.phone;
+          return;
+        }
+        if (role === "board" && board) hub.handleBoard(board, text);
+        if (role === "phone" && phone) hub.handlePhone(phone, text);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "internal error";
+        writeLog("error", "websocket handler failed", { message });
+        send(makeErr(now(), "internal error", { code: "internal" }));
+      }
+    });
+
+    socket.on("close", () => {
+      sockets.delete(socket);
+      if (board) hub.disconnectBoard(board);
+      if (phone) hub.disconnectPhone(phone);
+    });
+    socket.on("error", () => {
+      socket.close();
+    });
+
+    function openRole(text: string, sendFrame: (message: Envelope) => void, close: () => void): {
+      role: "unknown" | "board" | "phone";
+      board: BoardConn | null;
+      phone: PhoneConn | null;
+    } {
+      let peeked: unknown;
+      try {
+        peeked = JSON.parse(text) as unknown;
+      } catch {
+        sendFrame(makeErr(now(), "invalid JSON", { code: "bad_request" }));
+        return { role: "unknown", board: null, phone: null };
+      }
+      const type = isRecord(peeked) ? peeked.type : undefined;
+      const ref = isRecord(peeked) && typeof peeked.id === "string" ? peeked.id : undefined;
+      if (type === "board.register") {
+        const next = hub.attachBoard(sendFrame, close);
+        hub.handleBoard(next, peeked);
+        return { role: "board", board: next, phone: null };
+      }
+      if (type === "client.hello") {
+        const next = hub.attachPhone(sendFrame, close);
+        hub.handlePhone(next, peeked);
+        return { role: "phone", board: null, phone: next };
+      }
+      sendFrame(makeErr(now(), "send board.register or client.hello first", { code: "unauthorized", ref }));
+      return { role: "unknown", board: null, phone: null };
+    }
+  });
+
+  const ping = setInterval(() => {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN) socket.ping();
+    }
+  }, 30_000);
+  ping.unref?.();
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("error", onError);
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await closeServer(server, wss, sockets, hub, ping);
+    throw new Error("server did not bind a TCP port");
+  }
+  const clientHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  return {
+    host,
+    port: address.port,
+    httpUrl: `http://${clientHost}:${address.port}`,
+    wsUrl: `ws://${clientHost}:${address.port}/v1/ws`,
+    close: () => closeServer(server, wss, sockets, hub, ping),
+  };
+}
+
+async function handleHttp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: { auth: AuthStore; hub: RelayHub; startedAt: number; log: LogFn; adminLimiter: RateLimiter; now: () => number },
+): Promise<void> {
+  if (req.method === "OPTIONS") {
+    sendJson(res, 204, {});
+    return;
+  }
+  const url = new URL(req.url ?? "/", "http://relay.local");
+  const path = url.pathname;
+  if (req.method === "GET" && path === "/health") {
+    sendJson(res, 200, {
+      ok: true,
+      service: "agent-board-relay",
+      protocol: PROTOCOL_VERSION,
+      uptimeSec: Math.round((Date.now() - ctx.startedAt) / 1000),
+      ...ctx.hub.stats(),
+    });
+    return;
   }
 
-  function handleConnector(connector: Connector, message: Envelope) {
-    const boardId = connector.board.boardId;
-    if (message.type === "cmd.result") {
-      const key = text(message.payload, "idempotencyKey") ?? "";
-      const stage = text(message.payload, "stage");
-      const stored = store.findCommand(boardId, key);
-      if (!stored || (stage !== "executed" && stage !== "failed" && stage !== "timeout")) {
-        send(connector.ws, frame("err", { code: "bad_request", message: "unknown command result" }, message.id));
-        return;
-      }
-      stored.stage = stage;
-      stored.message = text(message.payload, "message");
-      const task = message.payload.task;
-      if (task && typeof task === "object") stored.task = task as Record<string, unknown>;
-      for (const phone of phones) {
-        if (!phone.device.boardIds.includes(boardId)) continue;
-        send(phone.ws, frame(stage === "failed" ? "err" : "ack", commandAck(stored)));
-      }
+  if (path === "/auth/pair/create" || path === "/auth/revoke/device" || path === "/auth/revoke/board" || path === "/auth/board/issue") {
+    if (req.method !== "POST") return methodNotAllowed(res);
+    if (!ctx.adminLimiter.allow(clientIp(req))) {
+      sendJson(res, 429, { error: { code: "rate_limited", message: "too many admin requests" } });
       return;
     }
-    if (message.type.startsWith("evt.")) {
-      const eventBoard = text(message.payload, "boardId") ?? boardId;
-      if (eventBoard !== boardId) return;
-      const taskId = text(message.payload, "taskId");
-      for (const phone of phones) {
-        if (!phone.device.boardIds.includes(boardId)) continue;
-        const wantsTasks = phone.boards.has(boardId);
-        const wantsLogs = phone.logs.has(boardId) || (taskId != null && phone.logs.has(`${boardId}/${taskId}`));
-        const isLog = message.type === "evt.log";
-        if (isLog ? wantsLogs : wantsTasks) send(phone.ws, message);
-      }
+    if (!ctx.auth.verifyAdmin(bearer(req))) {
+      sendJson(res, 401, { error: { code: "unauthorized", message: "admin token rejected" } });
+      return;
     }
+    const body = await readJson(req);
+    if (!isRecord(body)) throw new HttpError(400, "bad_request", "JSON object required");
+    if (path === "/auth/pair/create") return createPair(res, ctx, body);
+    if (path === "/auth/revoke/device") return revokeDevice(res, ctx, body);
+    if (path === "/auth/revoke/board") return revokeBoard(res, ctx, body);
+    return issueBoard(res, ctx, body);
   }
 
-  return new Promise((resolve) => {
-    http.listen(opts.port ?? 0, "127.0.0.1", () => {
-      const address = http.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      resolve({
-        port,
-        store,
-        close: () =>
-          new Promise((done) => {
-            wss.close();
-            http.close(() => done());
-          }),
-      });
+  if (path === "/auth/pair") {
+    if (req.method !== "POST") return methodNotAllowed(res);
+    const body = await readJson(req);
+    if (!isRecord(body) || typeof body.pairCode !== "string") {
+      sendJson(res, 400, { error: { code: "bad_request", message: "pairCode is required" } });
+      return;
+    }
+    if (body.deviceName !== undefined && typeof body.deviceName !== "string") {
+      sendJson(res, 400, { error: { code: "bad_request", message: "deviceName must be a string" } });
+      return;
+    }
+    const paired = ctx.auth.pair(body.pairCode, typeof body.deviceName === "string" ? body.deviceName : undefined, clientIp(req));
+    if (!paired.ok) return sendAuthFailure(res, paired.code, paired.message);
+    sendJson(res, 200, {
+      deviceId: paired.deviceId,
+      deviceToken: paired.deviceToken,
+      role: paired.role,
+      boardIds: paired.boardIds,
+      expiresAt: paired.expiresAt,
     });
-  });
-}
+    return;
+  }
 
-async function handleHttp(req: IncomingMessage, res: ServerResponse, store: RelayStore, setupToken: string) {
-  const url = new URL(req.url ?? "/", "http://127.0.0.1");
-  if (req.method === "GET" && url.pathname === "/health") {
-    sendJson(res, 200, { ok: true, boardsOnline: store.onlineBoards.size });
-    return;
-  }
-  const body = await readBody(req);
-  if (req.method === "POST" && url.pathname === "/boards") {
-    if (!authorized(req, setupToken)) return sendJson(res, 401, { error: { code: "unauthorized", message: "setup token required" } });
-    const boardId = typeof body.boardId === "string" ? body.boardId : "";
-    const label = typeof body.label === "string" ? body.label : boardId;
-    if (!validBoardId(boardId)) return sendJson(res, 400, { error: { code: "bad_request", message: "boardId is invalid" } });
-    const board = store.registerBoard(boardId, label);
-    sendJson(res, 201, { boardId: board.boardId, label: board.label, boardToken: board.token });
-    return;
-  }
-  if (req.method === "POST" && url.pathname === "/auth/pair/create") {
-    const token = bearer(req);
-    const fromBody = Array.isArray(body.boardIds) ? body.boardIds.filter((id): id is string => typeof id === "string") : [];
-    const board = token ? store.boardByToken(token) : undefined;
-    const boardIds = fromBody.length ? fromBody : board ? [board.boardId] : [];
-    const allowed = authorized(req, setupToken) || board != null;
-    if (!allowed || boardIds.length === 0 || boardIds.some((id) => !validBoardId(id))) {
-      return sendJson(res, 401, { error: { code: "unauthorized", message: "setup token and boardIds are required" } });
+  if (path === "/auth/refresh") {
+    if (req.method !== "POST") return methodNotAllowed(res);
+    const body = await readJson(req);
+    if (!isRecord(body) || typeof body.deviceToken !== "string") {
+      sendJson(res, 400, { error: { code: "bad_request", message: "deviceToken is required" } });
+      return;
     }
-    const pair = store.createPairCode(boardIds);
-    sendJson(res, 201, { pairCode: pair.code, boardIds: pair.boardIds, expiresAt: pair.expiresAt });
+    const refreshed = ctx.auth.refresh(body.deviceToken);
+    if (!refreshed.ok) return sendAuthFailure(res, refreshed.code, refreshed.message);
+    ctx.hub.kickToken(body.deviceToken);
+    sendJson(res, 200, {
+      deviceId: refreshed.deviceId,
+      deviceToken: refreshed.deviceToken,
+      role: refreshed.role,
+      boardIds: refreshed.boardIds,
+      expiresAt: refreshed.expiresAt,
+    });
     return;
   }
-  if (req.method === "POST" && url.pathname === "/auth/pair") {
-    const code = typeof body.pairCode === "string" ? body.pairCode : "";
-    const name = typeof body.deviceName === "string" ? body.deviceName : "";
-    const redeemed = store.redeemPairCode(code, name);
-    if (!redeemed.ok) return sendJson(res, redeemed.status, { error: { code: "unauthorized", message: redeemed.error } });
-    sendJson(res, 200, publicDevice(redeemed.device));
+
+  sendJson(res, 404, { error: { code: "not_found", message: "not found" } });
+}
+
+function createPair(res: ServerResponse, ctx: { auth: AuthStore }, body: Record<string, unknown>): void {
+  if (!Array.isArray(body.boardIds) || body.boardIds.some((id) => typeof id !== "string")) {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardIds must be an array of strings" } });
     return;
   }
-  if (req.method === "POST" && url.pathname === "/auth/refresh") {
-    const token = typeof body.deviceToken === "string" ? body.deviceToken : "";
-    const next = store.refresh(token);
-    if (!next) return sendJson(res, 401, { error: { code: "revoked", message: "device token rejected" } });
-    sendJson(res, 200, publicDevice(next));
+  let ttlMs: number | undefined;
+  if (body.ttlMs !== undefined) {
+    if (typeof body.ttlMs !== "number") {
+      sendJson(res, 400, { error: { code: "bad_request", message: "ttlMs must be a number" } });
+      return;
+    }
+    ttlMs = body.ttlMs;
+  }
+  const created = ctx.auth.createPairCode(body.boardIds as string[], ttlMs);
+  if (!created.ok) return sendAuthFailure(res, created.code, created.message);
+  sendJson(res, 200, { pairCode: created.pairCode, boardIds: created.boardIds, expiresAt: created.expiresAt });
+}
+
+function revokeDevice(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {
+  if (typeof body.deviceId !== "string") {
+    sendJson(res, 400, { error: { code: "bad_request", message: "deviceId is required" } });
     return;
   }
-  sendJson(res, 404, { error: { code: "bad_request", message: "not found" } });
+  if (!ctx.auth.revokeDevice(body.deviceId)) {
+    sendJson(res, 404, { error: { code: "not_found", message: "device not found" } });
+    return;
+  }
+  ctx.hub.kickDevice(body.deviceId);
+  sendJson(res, 200, { ok: true, deviceId: body.deviceId });
 }
 
-function commandShapeError(type: string, payload: Record<string, unknown>): string | null {
-  const boardId = text(payload, "boardId") ?? "";
-  const taskId = text(payload, "taskId") ?? "";
-  if (!validBoardId(boardId)) return "boardId is invalid";
-  if (!validBoardId(taskId)) return "taskId is invalid";
-  if (type !== "cmd.continue" && type !== "cmd.stop") return "unsupported type";
-  return null;
+function revokeBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {
+  if (typeof body.boardToken === "string") {
+    const credentialId = ctx.auth.revokeBoardToken(body.boardToken);
+    if (!credentialId) {
+      sendJson(res, 404, { error: { code: "not_found", message: "board token not found" } });
+      return;
+    }
+    ctx.hub.kickCredential(credentialId);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (typeof body.boardId === "string") {
+    const revoked = ctx.auth.revokeBoardId(body.boardId);
+    if (!revoked.ok) {
+      sendJson(res, 400, { error: { code: "bad_request", message: "boardId is invalid" } });
+      return;
+    }
+    for (const credentialId of revoked.credentialIds) ctx.hub.kickCredential(credentialId);
+    ctx.hub.kickBoard(body.boardId);
+    sendJson(res, 200, { ok: true, boardId: body.boardId });
+    return;
+  }
+  sendJson(res, 400, { error: { code: "bad_request", message: "boardToken or boardId is required" } });
 }
 
-function commandAck(cmd: StoredCommand): Record<string, unknown> {
-  return {
-    stage: cmd.stage,
-    boardId: cmd.boardId,
-    idempotencyKey: cmd.idempotencyKey,
-    cmd: cmd.cmd,
-    message: cmd.message,
-    task: cmd.task,
-    code: cmd.stage === "failed" ? "failed" : undefined,
-  };
+function issueBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {
+  if (!Array.isArray(body.boardIds) || body.boardIds.some((id) => typeof id !== "string")) {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardIds must be an array of strings" } });
+    return;
+  }
+  const issued = ctx.auth.issueBoardToken(body.boardIds as string[]);
+  if (!issued.ok) return sendAuthFailure(res, issued.code, issued.message);
+  for (const credentialId of issued.revokedCredentialIds) ctx.hub.kickCredential(credentialId);
+  sendJson(res, 200, { boardToken: issued.boardToken, boardIds: issued.boardIds });
 }
 
-function boardLabel(store: RelayStore, boardId: string): string {
-  return [...store.boards.values()].find((b) => b.boardId === boardId)?.label ?? boardId;
+function sendAuthFailure(res: ServerResponse, code: string, message: string): void {
+  const status = code === "unauthorized" ? 401 : code === "rate_limited" ? 429 : code === "not_found" ? 404 : 400;
+  sendJson(res, status, { error: { code, message } });
 }
 
-function publicDevice(device: { deviceId: string; token: string; boardIds: string[]; expiresAt: number }) {
-  return {
-    deviceId: device.deviceId,
-    deviceToken: device.token,
-    role: "phone",
-    boardIds: device.boardIds,
-    expiresAt: device.expiresAt,
-  };
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
-function authorized(req: IncomingMessage, setupToken: string): boolean {
-  return bearer(req) === setupToken && setupToken.length > 0;
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buf.length;
+    if (size > MAX_BODY) throw new HttpError(413, "payload_too_large", "body too large");
+    chunks.push(buf);
+  }
+  if (size === 0) throw new HttpError(400, "bad_request", "JSON body required");
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    throw new HttpError(400, "bad_request", "invalid JSON");
+  }
 }
 
-function bearer(req: IncomingMessage): string | undefined {
+function methodNotAllowed(res: ServerResponse): void {
+  res.setHeader("allow", "POST");
+  sendJson(res, 405, { error: { code: "method_not_allowed", message: "method not allowed" } });
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  const payload = status === 204 ? "" : JSON.stringify(body);
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(payload),
+    "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "content-type, authorization",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+  });
+  res.end(payload);
+}
+
+function bearer(req: IncomingMessage): string {
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return undefined;
-  return header.slice("Bearer ".length).trim();
+  if (typeof header !== "string") return "";
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(header);
+  return match?.[1] ?? "";
 }
 
-function send(ws: WebSocket, message: Envelope) {
-  if (ws.readyState === ws.OPEN) ws.send(encode(message));
+function clientIp(req: IncomingMessage): string {
+  return req.socket.remoteAddress ?? "unknown";
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown) {
-  const raw = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(raw) });
-  res.end(raw);
+function rawToString(data: RawData): string {
+  if (typeof data === "string") return data;
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  return Buffer.from(data).toString("utf8");
 }
 
-function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-    req.on("end", () => {
-      if (!chunks.length) return resolve({});
-      try {
-        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        resolve(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {});
-      } catch {
-        resolve({});
-      }
-    });
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function closeServer(
+  server: HttpServer,
+  wss: WebSocketServer,
+  sockets: Set<WebSocket>,
+  hub: RelayHub,
+  ping: NodeJS.Timeout,
+): Promise<void> {
+  clearInterval(ping);
+  hub.dispose();
+  for (const socket of sockets) socket.terminate();
+  sockets.clear();
+  await new Promise<void>((resolve) => {
+    wss.close(() => resolve());
+  });
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
   });
 }
-
-export { PRE_STORE_CODES };
