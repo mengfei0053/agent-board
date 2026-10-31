@@ -28,6 +28,7 @@ export class RelayCursor {
     return had;
   }
 
+  /** Generation baseline. Terminal tasks here are already done and must not notify again. */
   buildSnapshot(boardId: string, tasks: MappedTask[], workspaces: ThinWorkspace[]): RelayFrame {
     const capped = capTasks(tasks);
     this.known.clear();
@@ -36,9 +37,29 @@ export class RelayCursor {
       this.known.set(task.id, taskSignature(task));
       if (isTerminalStatus(task.status)) this.done.add(task.id);
     }
+    return this.snapshotFrame(boardId, capped, workspaces);
+  }
+
+  /**
+   * Snapshot after delete or a workspace change. Does not adopt store state
+   * that later buffered events still have to announce: known signatures and
+   * the done set stay, except ids the board no longer has.
+   */
+  refreshSnapshot(boardId: string, tasks: MappedTask[], workspaces: ThinWorkspace[]): RelayFrame {
+    const present = new Set(tasks.map((task) => task.id));
+    for (const id of [...this.known.keys()]) {
+      if (!present.has(id)) {
+        this.known.delete(id);
+        this.done.delete(id);
+      }
+    }
+    return this.snapshotFrame(boardId, capTasks(tasks), workspaces);
+  }
+
+  private snapshotFrame(boardId: string, tasks: MappedTask[], workspaces: ThinWorkspace[]): RelayFrame {
     return this.event("evt.snapshot", {
       boardId,
-      tasks: capped.map(wireTask),
+      tasks: tasks.map(wireTask),
       workspaces,
     });
   }

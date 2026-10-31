@@ -30,6 +30,7 @@ export class ConnectorSession {
   private overflowed = false;
   private acceptLive = false;
   private pumpQueued = false;
+  private pendingCommands = 0;
   private tail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -70,7 +71,21 @@ export class ConnectorSession {
   }
 
   handleCommand(message: Envelope): void {
-    void this.enqueue(() => this.applyCommand(message));
+    if (this.closed || this.overflowed) return;
+    if (this.pendingCommands >= RELAY_LIMITS.maxLiveCommands) {
+      this.fail(message, new RelayCommandError("rate_limited", "relay command queue is full"));
+      this.overflowed = true;
+      this.opts.onOverflow();
+      return;
+    }
+    this.pendingCommands += 1;
+    void this.enqueue(async () => {
+      try {
+        await this.applyCommand(message);
+      } finally {
+        this.pendingCommands -= 1;
+      }
+    });
   }
 
   close(): void {
@@ -140,7 +155,7 @@ export class ConnectorSession {
       (path) => this.opts.facade.gitEligibility(path),
     );
     if (this.closed || this.overflowed) return;
-    this.emit(this.cursor.buildSnapshot(this.opts.boardId, tasks, workspaces));
+    this.emit(this.cursor.refreshSnapshot(this.opts.boardId, tasks, workspaces));
   }
 
   private async applyCommand(message: Envelope): Promise<void> {

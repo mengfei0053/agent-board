@@ -5,6 +5,11 @@
 export const RELAY_LIMITS = {
   /** Pre-session inbound relay frames buffered before the session can take commands. */
   maxPendingFrames: 32,
+  /**
+   * Live `cmd.*` jobs waiting on the session serial tail, including the one
+   * currently running. The next frame is rejected and the socket is closed.
+   */
+  maxLiveCommands: 32,
   /** Max inbound or outbound frame size in bytes. */
   maxFrameBytes: 256 * 1024,
   /** Close and reconnect when `ws.bufferedAmount` exceeds this. */

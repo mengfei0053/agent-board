@@ -62,10 +62,7 @@ describe("connector session", () => {
     assert.equal(frames[0]?.payload.generation, 5);
     const firstTasks = frames[0]?.payload.tasks as Array<{ id: string; status: string }>;
     assert.equal(firstTasks.some((task) => task.id === "live" && task.status === "running"), true);
-    assert.ok(frames.every((frame, index) => index === 0 || frame.type !== "evt.snapshot" || index > 0));
-    const beforeSnapshot = frames.findIndex((frame) => frame.type !== "evt.snapshot");
-    assert.ok(frames.findIndex((frame) => frame.type === "evt.snapshot") === 0);
-    assert.ok(beforeSnapshot > 0);
+    assert.ok(frames.findIndex((frame) => frame.type !== "evt.snapshot") > 0);
 
     const done = frames.filter((frame) => frame.type === "evt.task.done");
     assert.equal(done.length, 1);
@@ -102,6 +99,117 @@ describe("connector session", () => {
     const ids = (last?.payload.tasks as Array<{ id: string }>).map((task) => task.id);
     assert.equal(ids.includes("old"), false);
     session.close();
+  });
+
+  it("emits done when a different task is deleted before a buffered terminal upsert", async () => {
+    const taskA = makeTask({ id: "A", status: "running", title: "A" });
+    const taskB = makeTask({ id: "B", status: "running", title: "B" });
+    const facade = memoryFacade({ tasks: [taskA, taskB], workspaces: [makeWorkspace()] });
+    const gate = defer<{ ok: boolean }>();
+    let eligibilityCalls = 0;
+    facade.gitEligibility = () => {
+      eligibilityCalls += 1;
+      if (eligibilityCalls === 1) return gate.promise;
+      return Promise.resolve({ ok: false });
+    };
+    const { frames, send } = sentFrames();
+    const session = new ConnectorSession({
+      generation: 2,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {},
+      onFatal: () => {},
+    });
+    const boot = session.bootstrap();
+    await waitFor(() => eligibilityCalls === 1);
+    facade.publish({ type: "task_delete", taskIds: ["B"] });
+    facade.publish({
+      type: "task_upsert",
+      task: makeTask({ id: "A", status: "succeeded", title: "A", summary: "done" }),
+    });
+    gate.resolve({ ok: false });
+    await boot;
+
+    const done = frames.filter((frame) => frame.type === "evt.task.done");
+    assert.equal(done.length, 1);
+    assert.equal(done[0]?.payload.taskId, "A");
+    assert.equal(done[0]?.payload.status, "succeeded");
+    const taskFrames = frames.filter((frame) => frame.type === "evt.task");
+    assert.equal(taskFrames.length, 1);
+    assert.equal((taskFrames[0]?.payload.task as { id: string }).id, "A");
+    assert.equal(frames[0]?.type, "evt.snapshot");
+    const doneAt = frames.findIndex((frame) => frame.type === "evt.task.done");
+    assert.ok(doneAt > frames.findIndex((frame) => frame.type === "evt.snapshot"));
+    session.close();
+  });
+
+  it("emits done when a workspace refresh is queued ahead of a terminal upsert", async () => {
+    const taskA = makeTask({ id: "A", status: "running", title: "A" });
+    const facade = memoryFacade({ tasks: [taskA], workspaces: [makeWorkspace()] });
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+    facade.publish({ type: "workspace_upsert", workspace: makeWorkspace({ name: "renamed" }) });
+    facade.publish({
+      type: "task_upsert",
+      task: makeTask({ id: "A", status: "succeeded", title: "A" }),
+    });
+    await waitFor(() => frames.some((frame) => frame.type === "evt.task.done"));
+    const done = frames.filter((frame) => frame.type === "evt.task.done");
+    assert.equal(done.length, 1);
+    assert.equal(done[0]?.payload.taskId, "A");
+    session.close();
+    assert.equal(facade.listeners.size, 0);
+  });
+
+  it("rejects live commands past the queue cap without starting another create", async () => {
+    const facade = memoryFacade();
+    const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();
+    facade.createImpl = async (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "held",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const { frames, send } = sentFrames();
+    let overflows = 0;
+    const session = new ConnectorSession({
+      generation: 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {
+        overflows += 1;
+      },
+      onFatal: () => {},
+    });
+    await session.bootstrap();
+    session.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
+    await waitFor(() => facade.creates === 1);
+    for (let i = 0; i < RELAY_LIMITS.maxLiveCommands + 5; i += 1) {
+      session.handleCommand(createCmd({ idempotencyKey: `flood-key-${i}` }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(facade.creates, 1);
+    assert.equal(overflows, 1);
+    const rejected = frames.filter((frame) => frame.type === "err" && frame.payload.code === "rate_limited");
+    assert.ok(rejected.length >= 1);
+    assert.equal(rejected.every((frame) => frame.payload.message === "relay command queue is full"), true);
+    gate.resolve(facade.tasks[0]!);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(facade.creates, 1);
+    session.close();
+    assert.equal(facade.listeners.size, 0);
   });
 
   it("demotes isGit when enrichment fails", async () => {

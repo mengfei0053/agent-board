@@ -28,6 +28,18 @@ describe("relay cursor", () => {
     assert.equal(new Set(seqs).size, seqs.length);
   });
 
+  it("keeps a pending terminal transition across a refresh snapshot", () => {
+    const cursor = new RelayCursor(1);
+    const runningA = mapBoardTask(makeTask({ id: "A", status: "running", title: "A" }))!;
+    const runningB = mapBoardTask(makeTask({ id: "B", status: "running", title: "B" }))!;
+    cursor.buildSnapshot("thinkbook", [runningA, runningB], []);
+    const succeededA = { ...runningA, status: "succeeded" as const };
+    cursor.refreshSnapshot("thinkbook", [succeededA], []);
+    const frames = cursor.observeTask("thinkbook", succeededA);
+    assert.deepEqual(frames.map((frame) => frame.type), ["evt.task", "evt.task.done"]);
+    assert.equal(frames[1]?.payload.taskId, "A");
+  });
+
   it("does not emit done for a task that was already terminal in the snapshot", () => {
     const cursor = new RelayCursor(2);
     const done = mapBoardTask(makeTask({ status: "failed" }))!;

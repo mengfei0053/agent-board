@@ -221,6 +221,70 @@ describe("embedded relay run", { concurrency: 1 }, () => {
     }
   });
 
+  it("rejects a live command flood while create is held and reconnects", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const gate = defer<ReturnType<typeof makeTask>>();
+    facade.createImpl = (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "held",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const crashes: string[] = [];
+    const onCrash = (err: Error) => crashes.push(err.message);
+    process.on("uncaughtException", onCrash);
+    const dialer = startEmbeddedRelay({
+      config: enabledConfig(relay.url, { reconnectMinMs: 20, reconnectMaxMs: 40 }),
+      facade,
+      log: () => {},
+    });
+    try {
+      await dialer.ready;
+      const ws = relay.clients[0];
+      assert.ok(ws);
+      relay.send(ws, "cmd.create", {
+        boardId: "thinkbook",
+        idempotencyKey: "create-key-1",
+        title: "Hold",
+        prompt: "wait",
+        agent: "pi",
+        cwd: "/tmp/repo",
+      }, "cmd-hold");
+      await waitFor(() => facade.creates === 1);
+      for (let i = 0; i < RELAY_LIMITS.maxLiveCommands + 8; i += 1) {
+        relay.send(ws, "cmd.create", {
+          boardId: "thinkbook",
+          idempotencyKey: `flood-key-${i}`,
+          title: "Flood",
+          prompt: "again",
+          agent: "pi",
+          cwd: "/tmp/repo",
+        }, `flood-${i}`);
+      }
+      await waitFor(() => relay.received.some((frame) => frame.type === "err" && frame.payload.code === "rate_limited"));
+      await waitFor(() => relay.generation >= 3);
+      assert.equal(facade.creates, 1);
+      assert.equal(crashes.length, 0);
+      assert.equal(facade.listeners.size, 1);
+    } finally {
+      process.off("uncaughtException", onCrash);
+      gate.resolve(facade.tasks[0] ?? makeTask());
+      await dialer.close();
+      await relay.close();
+    }
+    assert.equal(facade.listeners.size, 0);
+    assert.equal(facade.creates, 1);
+  });
+
   it("returns null when relay env is incomplete", () => {
     const logs: string[] = [];
     const started = maybeStartEmbeddedRelay({
