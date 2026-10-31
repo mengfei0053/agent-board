@@ -4,6 +4,7 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: write
@@ -27,26 +28,36 @@ jobs:
       - name: Install Android SDK 35
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Assemble unsigned release APK
+      - name: Assemble debug-signed APK
         working-directory: android
-        run: chmod +x ./gradlew && ./gradlew :app:assembleRelease --stacktrace
+        run: chmod +x ./gradlew && ./gradlew :app:assembleDebug --stacktrace
 
       - name: Name the APK
         id: apk
         run: |
           set -euo pipefail
-          src=$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          src=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n 1)
           test -n "$src"
-          tag="${GITHUB_REF_NAME}"
+          # pull_request refs look like "123/merge"; artifact names cannot contain slashes.
+          tag="${GITHUB_REF_NAME//\//-}"
           short=$(git rev-parse --short=7 HEAD)
-          dest="agent-board-${tag}-${short}.apk"
+          dest="agent-board-${tag}-${short}-debug.apk"
           # Prefer short SHA name for workflow_dispatch on main
           if [[ "$tag" == "main" ]]; then
-            dest="agent-board-${short}.apk"
+            dest="agent-board-${short}-debug.apk"
           fi
           cp "$src" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
-          echo "Built $dest from $src (unsigned; no keystore secrets are used)."
+          echo "Built $dest from $src (debug-signed with the Gradle debug keystore; no keystore secrets are used)."
+
+      - name: Verify APK signature block
+        run: |
+          set -euo pipefail
+          apk="${{ steps.apk.outputs.path }}"
+          apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort | tail -n 1)
+          test -n "$apksigner"
+          # API 30+ rejects APKs that lack a v2/v3 signature block (Samsung: 软件包似乎无效).
+          "$apksigner" verify --verbose --print-certs --min-sdk-version 30 "$apk"
 
       - name: Keep the APK as a workflow artifact
         uses: actions/upload-artifact@v4
