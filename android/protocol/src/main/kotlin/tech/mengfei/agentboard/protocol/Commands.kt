@@ -39,6 +39,17 @@ private val preStoreCodes = setOf(
     "rate_limited",
 )
 
+/**
+ * The relay answers `cmd.detail` with `accepted` before the board sends the card.
+ * That ack has no task. Keep waiting for `executed` (or an error). Do not clear the waiter.
+ */
+fun detailReplySettled(message: Envelope): Boolean {
+    if (message.type == "err") return true
+    if (message.type != "ack") return true
+    if (message.payload.text("stage") != "accepted") return true
+    return message.payload.obj("task")?.let(::readTask)?.detailFull == true
+}
+
 fun interpretCommand(message: Envelope): CommandInterpretation? {
     if (message.type != "ack" && message.type != "err") return null
     val stage = message.payload.text("stage")

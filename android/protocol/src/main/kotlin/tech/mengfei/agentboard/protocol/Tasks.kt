@@ -89,6 +89,8 @@ data class BoardView(
     val generation: Long? = null,
     val seq: Long? = null,
     val needsResync: Boolean = false,
+    /** False until evt.snapshot. Workspace selection must not be saved before this. */
+    val sawSnapshot: Boolean = false,
 )
 
 data class DoneNotice(
@@ -139,7 +141,9 @@ class BoardReducer(
         val generation = payload.longValue("generation")
         val generationChanged = generation != null && view.generation != null && generation != view.generation
         if (generationChanged) logDedupe.clear()
-        val tasks = readTaskList(payload["tasks"])
+        val tasks = readTaskList(payload["tasks"]).map { incoming ->
+            mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
+        }
         val seq = payload.longValue("seq") ?: payload.longValue("version")
         val stale = snapshotStillStale(generation, seq)
         return ApplyOutcome.Applied(view.copy(
@@ -149,6 +153,7 @@ class BoardReducer(
             generation = generation ?: view.generation,
             seq = seq ?: view.seq,
             needsResync = stale,
+            sawSnapshot = true,
         ))
     }
 
@@ -476,6 +481,23 @@ fun workspaceSwitchItems(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>
     val items = workspaces.map { WorkspaceSwitchItem(it.id, it.name, it.path) }
     if (unassignedTasks(tasks, workspaces).isEmpty()) return items
     return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, UNASSIGNED_LABEL, null)
+}
+
+data class WorkspaceSelectionUpdate(val selectedId: String?, val persist: Boolean)
+
+/**
+ * Before the first snapshot, keep the saved workspace and do not write it back.
+ * After a snapshot, keep it when it still exists; otherwise pick the fallback and persist that.
+ */
+fun nextWorkspaceSelection(
+    remembered: String?,
+    workspaces: List<ThinWorkspace>,
+    tasks: List<RelayTask>,
+    sawSnapshot: Boolean,
+): WorkspaceSelectionUpdate {
+    if (!sawSnapshot) return WorkspaceSelectionUpdate(remembered, persist = false)
+    val resolved = resolveWorkspaceSelection(remembered, workspaces, tasks)
+    return WorkspaceSelectionUpdate(resolved, persist = resolved != remembered)
 }
 
 /**

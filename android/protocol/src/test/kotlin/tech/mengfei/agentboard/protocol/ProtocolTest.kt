@@ -743,6 +743,48 @@ class WorkspaceListTest {
     }
 
     @Test
+    fun acceptedDetailAckDoesNotSettleAndSnapshotKeepsTheFullCard() {
+        val accepted = parseEnvelope(
+            """{"v":1,"id":"r","type":"ack","ts":1,"payload":{"ref":"d","stage":"accepted","boardId":"thinkbook-main"}}""",
+        )
+        assertFalse(detailReplySettled(accepted))
+        val executed = parseEnvelope(
+            """{"v":1,"id":"r2","type":"ack","ts":2,"payload":{"ref":"d","stage":"executed","task":{"id":"task_01","title":"Fix","status":"running","updatedAt":4,"detail":"full","prompt":"full prompt","turns":[{"iteration":1,"prompt":"full prompt","output":"full reply"}]}}}""",
+        )
+        assertTrue(detailReplySettled(executed))
+        assertTrue(detailReplySettled(parseEnvelope(
+            """{"v":1,"id":"e","type":"err","ts":3,"payload":{"ref":"d","code":"board_offline","message":"offline"}}""",
+        )))
+
+        val reducer = BoardReducer()
+        var view = applied(reducer, BoardView("thinkbook-main"), executedTask())
+        assertEquals("full reply", view.tasks.single().turns?.single()?.output)
+        assertFalse(view.sawSnapshot)
+        view = applied(reducer, view, parseEnvelope(
+            """{"v":1,"id":"m","type":"evt.snapshot","ts":5,"payload":{"boardId":"thinkbook-main","generation":1,"seq":2,"eventId":"snap","version":2,"tasks":[{"id":"task_01","title":"Fix","status":"running","updatedAt":5,"promptPreview":"short","outputPreview":"partial"}]}}""",
+        ))
+        assertTrue(view.sawSnapshot)
+        assertEquals("full reply", view.tasks.single().output)
+        assertEquals("full reply", view.tasks.single().turns?.single()?.output)
+        assertEquals("partial", view.tasks.single().outputPreview)
+        assertEquals("running", view.tasks.single().status)
+    }
+
+    @Test
+    fun openingABoardDoesNotEraseASavedWorkspaceBeforeTheSnapshot() {
+        val rooms = listOf(app, other)
+        val waiting = nextWorkspaceSelection("ws_other", emptyList(), emptyList(), sawSnapshot = false)
+        assertEquals("ws_other", waiting.selectedId)
+        assertFalse(waiting.persist)
+        val restored = nextWorkspaceSelection("ws_other", rooms, emptyList(), sawSnapshot = true)
+        assertEquals("ws_other", restored.selectedId)
+        assertFalse(restored.persist)
+        val missing = nextWorkspaceSelection("gone", rooms, emptyList(), sawSnapshot = true)
+        assertEquals("ws_app", missing.selectedId)
+        assertTrue(missing.persist)
+    }
+
+    @Test
     fun localWorkspaceInsertAndRemovalDoNotDropTasks() {
         val view = BoardView(
             boardId = "thinkbook-main",
@@ -757,6 +799,10 @@ class WorkspaceListTest {
         assertEquals(listOf("ws_app"), removed.workspaces.map { it.id })
         assertEquals("a", removed.tasks.single().id)
     }
+
+    private fun executedTask() = parseEnvelope(
+        """{"v":1,"id":"m","type":"evt.task","ts":4,"payload":{"boardId":"thinkbook-main","generation":1,"seq":1,"eventId":"t","task":{"id":"task_01","title":"Fix","status":"running","updatedAt":4,"detail":"full","prompt":"full prompt","output":"full reply","turns":[{"iteration":1,"prompt":"full prompt","output":"full reply"}]}}}""",
+    )
 
     private fun applied(reducer: BoardReducer, view: BoardView, message: Envelope): BoardView {
         return (reducer.apply(view, message) as ApplyOutcome.Applied).view

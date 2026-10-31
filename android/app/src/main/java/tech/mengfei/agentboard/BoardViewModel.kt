@@ -61,7 +61,8 @@ import tech.mengfei.agentboard.protocol.validateContinue
 import tech.mengfei.agentboard.protocol.validateDetail
 import tech.mengfei.agentboard.protocol.ThinWorkspace
 import tech.mengfei.agentboard.protocol.cwdForNewTask
-import tech.mengfei.agentboard.protocol.resolveWorkspaceSelection
+import tech.mengfei.agentboard.protocol.detailReplySettled
+import tech.mengfei.agentboard.protocol.nextWorkspaceSelection
 import tech.mengfei.agentboard.protocol.validateCreate
 import tech.mengfei.agentboard.protocol.validateStop
 import tech.mengfei.agentboard.protocol.validateWorkspaceCreate
@@ -685,13 +686,14 @@ class BoardViewModel(
             return
         }
         if (ref != null && ref == pendingDetailId) {
+            if (!detailReplySettled(message)) return
             pendingDetailId = null
             val interpreted = interpretCommand(message)
             val task = interpreted?.task
             if (task != null && view.boardId == _state.value.selectedBoardId) {
                 view = view.withLocalTask(task)
-            } else if (message.type == "err" && interpreted != null) {
-                formError = interpreted.summary
+            } else if (message.type == "err" || message.text("stage") in setOf("failed", "timeout", "unknown")) {
+                if (interpreted != null) formError = interpreted.summary
             }
             render()
             return
@@ -930,7 +932,8 @@ class BoardViewModel(
         val taskId = snapshot.selectedTaskId
         val spaces = if (view.boardId == boardId) view.workspaces else emptyList()
         val taskRows = if (view.boardId == boardId) view.tasks else snapshot.tasks
-        val selectedWorkspaceId = resolvedWorkspaceId(boardId, spaces, taskRows)
+        val sawSnapshot = view.boardId == boardId && view.sawSnapshot
+        val selectedWorkspaceId = resolvedWorkspaceId(boardId, spaces, taskRows, sawSnapshot)
         val nextKey = workspaceListKey(spaces)
         val listChanged = nextKey != workspaceKey
         workspaceKey = nextKey
@@ -976,20 +979,26 @@ class BoardViewModel(
         return settledByAction[actionKey(cmd, boardId, taskId)]?.interpretation
     }
 
-    private fun resolvedWorkspaceId(boardId: String?, spaces: List<ThinWorkspace>, tasks: List<RelayTask>): String? {
+    private fun resolvedWorkspaceId(
+        boardId: String?,
+        spaces: List<ThinWorkspace>,
+        tasks: List<RelayTask>,
+        sawSnapshot: Boolean,
+    ): String? {
         if (boardId.isNullOrBlank() || view.boardId != boardId) return _state.value.selectedWorkspaceId
         val remembered = selectedByBoard[boardId] ?: store.selectedWorkspace(boardId)?.also { selectedByBoard[boardId] = it }
-        val resolved = resolveWorkspaceSelection(remembered, spaces, tasks)
-        if (resolved != remembered) {
-            if (resolved == null) {
+        val update = nextWorkspaceSelection(remembered, spaces, tasks, sawSnapshot)
+        val selectedId = update.selectedId
+        if (update.persist) {
+            if (selectedId == null) {
                 selectedByBoard.remove(boardId)
                 store.saveSelectedWorkspace(boardId, null)
             } else {
-                selectedByBoard[boardId] = resolved
-                store.saveSelectedWorkspace(boardId, resolved)
+                selectedByBoard[boardId] = selectedId
+                store.saveSelectedWorkspace(boardId, selectedId)
             }
         }
-        return resolved
+        return selectedId
     }
 
     private fun freshWorktree(cwd: String, spaces: List<ThinWorkspace>, needsResync: Boolean): Boolean {
