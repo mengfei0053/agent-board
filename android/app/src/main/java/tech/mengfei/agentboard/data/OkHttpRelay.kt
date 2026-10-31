@@ -9,8 +9,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 data class HttpResult(val code: Int, val body: String)
 
@@ -22,9 +22,10 @@ interface SocketListener {
 
 interface RelayApi {
     suspend fun request(method: String, url: String, body: String?): HttpResult
-    fun openSocket(url: String, listener: SocketListener)
-    fun send(text: String): Boolean
-    fun closeSocket()
+    fun openSocket(credentialId: String, url: String, listener: SocketListener)
+    fun send(credentialId: String, text: String): Boolean
+    fun closeSocket(credentialId: String)
+    fun closeAll()
 }
 
 class OkHttpRelay : RelayApi {
@@ -37,7 +38,7 @@ class OkHttpRelay : RelayApi {
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
-    private val socket = AtomicReference<WebSocket?>(null)
+    private val sockets = ConcurrentHashMap<String, WebSocket>()
 
     override suspend fun request(method: String, url: String, body: String?): HttpResult = withContext(Dispatchers.IO) {
         val call = Request.Builder().url(url)
@@ -51,8 +52,8 @@ class OkHttpRelay : RelayApi {
         }
     }
 
-    override fun openSocket(url: String, listener: SocketListener) {
-        closeSocket()
+    override fun openSocket(credentialId: String, url: String, listener: SocketListener) {
+        sockets.remove(credentialId)?.close(1000, "bye")
         val request = Request.Builder().url(url).build()
         val opened = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -75,12 +76,16 @@ class OkHttpRelay : RelayApi {
                 listener.onClosed(t.message ?: "socket failed")
             }
         })
-        socket.set(opened)
+        sockets[credentialId] = opened
     }
 
-    override fun send(text: String): Boolean = socket.get()?.send(text) == true
+    override fun send(credentialId: String, text: String): Boolean = sockets[credentialId]?.send(text) == true
 
-    override fun closeSocket() {
-        socket.getAndSet(null)?.close(1000, "bye")
+    override fun closeSocket(credentialId: String) {
+        sockets.remove(credentialId)?.close(1000, "bye")
+    }
+
+    override fun closeAll() {
+        sockets.keys.toList().forEach(::closeSocket)
     }
 }

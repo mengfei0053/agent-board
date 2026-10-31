@@ -1,6 +1,7 @@
 package tech.mengfei.agentboard
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -32,7 +33,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             LaunchedEffect(state.screen) {
-                if (state.screen == Screen.Pair) {
+                if (state.screen == Screen.Pair || state.screen == Screen.AddBoard) {
                     window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
                 } else {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -43,5 +44,31 @@ class MainActivity : ComponentActivity() {
                 RootScreen(state, model)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        model.onForeground()
+        openNotification(intent)
+    }
+
+    override fun onStop() {
+        model.onBackground()
+        super.onStop()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openNotification(intent)
+    }
+
+    private fun openNotification(intent: Intent?) {
+        model.openNotification(intent?.getStringExtra(EXTRA_SESSION), intent?.getStringExtra(EXTRA_TASK))
+    }
+
+    companion object {
+        const val EXTRA_SESSION = "sessionId"
+        const val EXTRA_TASK = "taskId"
     }
 }

@@ -27,10 +27,10 @@ fun subTasksEnvelope(id: String, ts: Long, boardId: String): Envelope = frame(
     id, ts, "sub.tasks", buildJsonObject { put("boardId", boardId) },
 )
 
-fun subLogsEnvelope(id: String, ts: Long, boardId: String, taskId: String? = null): Envelope = frame(
+fun subLogsEnvelope(id: String, ts: Long, boardId: String, taskId: String): Envelope = frame(
     id, ts, "sub.logs", buildJsonObject {
         put("boardId", boardId)
-        if (!taskId.isNullOrBlank()) put("taskId", taskId)
+        put("taskId", taskId)
     },
 )
 
@@ -148,6 +148,19 @@ private fun isPromptText(value: String): Boolean = value.none {
     code == 0 || code == 127 || (code < 32 && code != 9 && code != 10 && code != 13)
 }
 
+/** Phone continue always carries a non-blank prompt. Blank is not sent. */
+fun validatePhoneContinue(
+    id: String,
+    ts: Long,
+    boardId: String,
+    taskId: String,
+    idempotencyKey: String,
+    prompt: String,
+): Validated<Envelope> {
+    if (prompt.trim().isEmpty()) return Validated.Invalid("prompt is required, up to 20000 characters")
+    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt)
+}
+
 fun validateContinue(
     id: String,
     ts: Long,
@@ -172,6 +185,7 @@ fun validateArchiveList(
     idempotencyKey: String,
     cursor: String?,
     limit: Int = 20,
+    workspaceId: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!visibleKey.matches(idempotencyKey)) {
@@ -179,11 +193,13 @@ fun validateArchiveList(
     }
     if (limit !in 1..50) return Validated.Invalid("limit is invalid")
     if (cursor != null && !archiveCursorPattern.matches(cursor)) return Validated.Invalid("cursor is invalid")
+    if (!workspaceId.isNullOrEmpty() && !isWorkspaceId(workspaceId)) return Validated.Invalid("workspaceId is invalid")
     return Validated.Ok(frame(id, ts, "cmd.archive.list", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
         put("limit", limit)
         if (!cursor.isNullOrBlank()) put("cursor", cursor)
+        if (!workspaceId.isNullOrEmpty()) put("workspaceId", workspaceId)
     }))
 }
 
