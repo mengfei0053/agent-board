@@ -13,6 +13,7 @@ data class RelayTask(
     val status: String,
     val updatedAt: Long,
     val agent: String? = null,
+    val workspaceId: String? = null,
 )
 
 data class LogLine(
@@ -229,13 +230,123 @@ class EventIdDeduper(private val capacity: Int = 500) {
     fun size(): Int = seen.size
 }
 
+/** Empty id is the phone-local「未分配」bucket. It is not a board workspace id. */
+const val UNASSIGNED_WORKSPACE_ID = ""
+const val UNASSIGNED_LABEL = "未分配"
+
+private val workspaceIdPattern = Regex("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$")
+
+fun isWorkspaceId(value: String): Boolean = workspaceIdPattern.matches(value)
+
+data class WorkspaceSwitchItem(
+    val id: String,
+    val label: String,
+    val path: String?,
+)
+
+data class WorkspaceBanner(
+    val title: String,
+    val detail: String?,
+)
+
 fun readTask(obj: JsonObject): RelayTask? {
     val id = obj.text("id") ?: return null
     val title = obj.text("title") ?: return null
     val status = obj.text("status") ?: return null
     if (status !in TASK_STATUSES) return null
     val updatedAt = obj.longValue("updatedAt") ?: return null
-    return RelayTask(id, title, status, updatedAt, obj.text("agent"))
+    return RelayTask(id, title, status, updatedAt, obj.text("agent"), readWorkspaceId(obj))
+}
+
+/**
+ * A missing or unusable `workspaceId` is unassigned.
+ * An omitted field and a malformed field both parse; the task is not dropped.
+ */
+fun readWorkspaceId(obj: JsonObject): String? {
+    if ("workspaceId" !in obj) return null
+    val id = obj.text("workspaceId") ?: return null
+    if (!isWorkspaceId(id)) return null
+    return id
+}
+
+fun readThinWorkspace(obj: JsonObject): ThinWorkspace? {
+    val id = obj.text("id") ?: return null
+    val name = obj.text("name") ?: return null
+    val path = obj.text("path") ?: return null
+    val isGit = obj.bool("isGit") ?: return null
+    if (!isWorkspaceId(id) || name.isBlank() || path.isBlank() || "://" in path) return null
+    return ThinWorkspace(id, name, path, isGit)
+}
+
+fun unassignedTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<RelayTask> {
+    val known = workspaces.mapTo(HashSet()) { it.id }
+    return tasks.filter { task ->
+        val id = task.workspaceId
+        id.isNullOrBlank() || id !in known
+    }
+}
+
+/** Tasks for the web-style selected workspace. `null` shows nothing. `""` is 「未分配」. */
+fun visibleTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>, selectedId: String?): List<RelayTask> {
+    if (selectedId == null) return emptyList()
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return unassignedTasks(tasks, workspaces)
+    return tasks.filter { it.workspaceId == selectedId }
+}
+
+fun workspaceSwitchItems(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<WorkspaceSwitchItem> {
+    val items = workspaces.map { WorkspaceSwitchItem(it.id, it.name, it.path) }
+    if (unassignedTasks(tasks, workspaces).isEmpty()) return items
+    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, UNASSIGNED_LABEL, null)
+}
+
+/**
+ * Keep an explicit selection when it still exists.
+ * A missing selection prefers the first workspace that has tasks, then 「未分配」,
+ * then the first workspace. That matches the web board's single-workspace view
+ * without hiding every task in an empty workspace.
+ */
+fun resolveWorkspaceSelection(
+    current: String?,
+    workspaces: List<ThinWorkspace>,
+    tasks: List<RelayTask>,
+): String? {
+    if (current == UNASSIGNED_WORKSPACE_ID && unassignedTasks(tasks, workspaces).isNotEmpty()) {
+        return UNASSIGNED_WORKSPACE_ID
+    }
+    if (current != null && workspaces.any { it.id == current }) return current
+    val withTasks = workspaces.firstOrNull { workspace -> tasks.any { it.workspaceId == workspace.id } }
+    if (withTasks != null) return withTasks.id
+    if (unassignedTasks(tasks, workspaces).isNotEmpty()) return UNASSIGNED_WORKSPACE_ID
+    if (workspaces.isNotEmpty()) return workspaces.first().id
+    return null
+}
+
+fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>): WorkspaceBanner {
+    if (selectedId == null) return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(UNASSIGNED_LABEL, "这些任务没有对应的工作区")
+    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+    return WorkspaceBanner(workspace.name, workspace.path)
+}
+
+/** Web detail uses the workspace name. A missing id is 「未分配」. */
+fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>): String {
+    if (workspaceId.isNullOrBlank()) return UNASSIGNED_LABEL
+    return workspaces.find { it.id == workspaceId }?.name ?: UNASSIGNED_LABEL
+}
+
+/** Opening New task copies the selected workspace path unless the user already typed another cwd. */
+fun cwdForNewTask(currentCwd: String, selectedPath: String?, workspacePaths: Collection<String>): String {
+    if (selectedPath == null) return currentCwd
+    val trimmed = currentCwd.trim()
+    if (trimmed.isEmpty() || trimmed in workspacePaths) return selectedPath
+    return currentCwd
+}
+
+/** Send `workspaceId` only while cwd is still that workspace path, matching web create. */
+fun workspaceIdForCreate(cwd: String, selectedId: String?, selectedPath: String?): String? {
+    if (selectedId.isNullOrEmpty() || selectedPath == null) return null
+    if (cwd.trim() != selectedPath) return null
+    return selectedId
 }
 
 fun worktreeAllowed(cwd: String, workspaces: List<ThinWorkspace>): Boolean {
@@ -343,6 +454,18 @@ fun parseBoardList(payload: JsonObject): List<BoardInfo>? {
 
 fun BoardView.withLocalTask(task: RelayTask): BoardView {
     return copy(tasks = upsert(tasks, task))
+}
+
+fun BoardView.withWorkspace(workspace: ThinWorkspace): BoardView {
+    val index = workspaces.indexOfFirst { it.id == workspace.id }
+    if (index < 0) return copy(workspaces = workspaces + workspace)
+    val next = workspaces.toMutableList()
+    next[index] = workspace
+    return copy(workspaces = next)
+}
+
+fun BoardView.withoutWorkspace(id: String): BoardView {
+    return copy(workspaces = workspaces.filterNot { it.id == id })
 }
 
 private fun upsert(tasks: List<RelayTask>, task: RelayTask): List<RelayTask> {

@@ -26,15 +26,24 @@ describe("relay map", () => {
     }));
     assert.equal(mapped?.status, "paused");
     assert.equal(mapped?.agent, "codex");
+    assert.equal(mapped?.workspaceId, "w1");
     assert.equal(mapped?.updatedAt, Date.parse("2026-10-31T00:00:00.000Z"));
     assert.equal(mapBoardTask(makeTask({ status: "archived" })), null);
   });
 
-  it("changes signature when title, status, or agent changes", () => {
+  it("omits a missing or unusable workspace id and still maps the task", () => {
+    assert.equal(mapBoardTask(makeTask({ workspaceId: "" }))?.workspaceId, undefined);
+    assert.equal(mapBoardTask(makeTask({ workspaceId: "not a workspace" }))?.workspaceId, undefined);
+    assert.equal(mapBoardTask(makeTask({ workspaceId: "ws_app" }))?.workspaceId, "ws_app");
+  });
+
+  it("changes signature when title, status, agent, or workspace changes", () => {
     const base = mapBoardTask(makeTask())!;
     assert.equal(taskSignature(base), taskSignature({ ...base }));
     assert.notEqual(taskSignature(base), taskSignature({ ...base, title: "Other" }));
     assert.notEqual(taskSignature(base), taskSignature({ ...base, status: "succeeded" }));
     assert.notEqual(taskSignature(base), taskSignature({ ...base, agent: "claude" }));
+    assert.notEqual(taskSignature(base), taskSignature({ ...base, workspaceId: "ws_other" }));
+    assert.notEqual(taskSignature(base), taskSignature({ ...base, workspaceId: undefined }));
   });
 });

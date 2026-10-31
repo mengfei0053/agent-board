@@ -59,9 +59,16 @@ import tech.mengfei.agentboard.protocol.subLogsEnvelope
 import tech.mengfei.agentboard.protocol.subTasksEnvelope
 import tech.mengfei.agentboard.protocol.validateContinue
 import tech.mengfei.agentboard.protocol.ThinWorkspace
+import tech.mengfei.agentboard.protocol.cwdForNewTask
+import tech.mengfei.agentboard.protocol.resolveWorkspaceSelection
 import tech.mengfei.agentboard.protocol.validateCreate
 import tech.mengfei.agentboard.protocol.validateStop
+import tech.mengfei.agentboard.protocol.validateWorkspaceCreate
+import tech.mengfei.agentboard.protocol.validateWorkspaceDelete
 import tech.mengfei.agentboard.protocol.withLocalTask
+import tech.mengfei.agentboard.protocol.withWorkspace
+import tech.mengfei.agentboard.protocol.withoutWorkspace
+import tech.mengfei.agentboard.protocol.workspaceIdForCreate
 import tech.mengfei.agentboard.protocol.workspaceListKey
 import tech.mengfei.agentboard.protocol.worktreeAllowedFresh
 import java.io.IOException
@@ -73,6 +80,7 @@ sealed interface Screen {
     data class Tasks(val boardId: String) : Screen
     data class Detail(val boardId: String, val taskId: String) : Screen
     data class Create(val boardId: String) : Screen
+    data class WorkspaceCreate(val boardId: String) : Screen
 }
 
 data class UiState(
@@ -109,6 +117,12 @@ data class UiState(
     val draftUseGitWorktree: Boolean = false,
     val worktreeEnabled: Boolean = false,
     val workspaces: List<ThinWorkspace> = emptyList(),
+    val selectedWorkspaceId: String? = null,
+    val draftWorkspaceName: String = "",
+    val draftWorkspacePath: String = "",
+    val workspaceCreateMode: String = "send",
+    val workspaceDeleteMode: String = "send",
+    val confirmDeleteWorkspace: Boolean = false,
     val canPop: Boolean = false,
 )
 
@@ -139,6 +153,7 @@ class BoardViewModel(
     private val resync = ResyncScheduler()
     private var pollJob: Job? = null
     private var workspaceKey: String = ""
+    private val selectedByBoard = mutableMapOf<String, String>()
     /** True only after a snapshot that is not waiting on a sequence gap, while this socket is online. */
     private var eligibilityFresh: Boolean = false
     private val backStack = ArrayDeque<Screen>()
@@ -178,6 +193,8 @@ class BoardViewModel(
     fun updateDraftPrompt(value: String) = _state.updateCopy { copy(draftPrompt = value) }
     fun updateDraftAgent(value: String) = _state.updateCopy { copy(draftAgent = value) }
     fun updateDraftCwd(value: String) = _state.updateCopy { copy(draftCwd = value, draftUseGitWorktree = false) }
+    fun updateDraftWorkspaceName(value: String) = _state.updateCopy { copy(draftWorkspaceName = value) }
+    fun updateDraftWorkspacePath(value: String) = _state.updateCopy { copy(draftWorkspacePath = value) }
 
     fun setUseGitWorktree(value: Boolean) {
         val current = _state.value
@@ -189,13 +206,62 @@ class BoardViewModel(
     fun openSettings() = push(Screen.Settings)
     fun openCreate() {
         val boardId = _state.value.selectedBoardId ?: return
-        _state.updateCopy { copy(draftUseGitWorktree = false) }
+        val current = _state.value
+        val selectedPath = current.workspaces.find { it.id == current.selectedWorkspaceId }?.path
+        val nextCwd = cwdForNewTask(current.draftCwd, selectedPath, current.workspaces.map { it.path })
+        _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd) }
         push(Screen.Create(boardId))
+    }
+
+    fun openWorkspaceCreate() {
+        val boardId = _state.value.selectedBoardId ?: return
+        _state.updateCopy { copy(draftWorkspaceName = "", draftWorkspacePath = "", formError = null) }
+        push(Screen.WorkspaceCreate(boardId))
+    }
+
+    fun selectWorkspace(id: String) {
+        val boardId = _state.value.selectedBoardId ?: return
+        if (id.isNotEmpty() && view.workspaces.none { it.id == id }) return
+        selectedByBoard[boardId] = id
+        store.saveSelectedWorkspace(boardId, id)
+        render()
+    }
+
+    fun requestDeleteWorkspace() {
+        val id = _state.value.selectedWorkspaceId
+        if (id.isNullOrEmpty() || _state.value.workspaces.none { it.id == id }) return
+        _state.updateCopy { copy(confirmDeleteWorkspace = true) }
+    }
+
+    fun cancelDeleteWorkspace() = _state.updateCopy { copy(confirmDeleteWorkspace = false) }
+
+    fun confirmDeleteWorkspace() {
+        val current = _state.value
+        val boardId = current.selectedBoardId ?: return
+        val workspaceId = current.selectedWorkspaceId ?: return
+        if (workspaceId.isEmpty()) return
+        _state.updateCopy { copy(confirmDeleteWorkspace = false) }
+        val action = actionKey("cmd.workspace.delete", boardId, workspaceId)
+        if (settledByAction[action]?.interpretation?.retry == Retry.ReuseSameKey) {
+            settledByAction.remove(action)
+        }
+        submit("cmd.workspace.delete", boardId, workspaceId)
+    }
+
+    fun submitWorkspaceCreate() {
+        val boardId = _state.value.selectedBoardId ?: return
+        val action = actionKey("cmd.workspace.create", boardId, null)
+        if (settledByAction[action]?.interpretation?.retry == Retry.ReuseSameKey) {
+            settledByAction.remove(action)
+        }
+        submit("cmd.workspace.create", boardId, null)
     }
 
     fun pop() {
         val previous = backStack.removeLastOrNull() ?: return
-        _state.updateCopy { copy(screen = previous, canPop = backStack.isNotEmpty(), formError = null) }
+        _state.updateCopy {
+            copy(screen = previous, canPop = backStack.isNotEmpty(), formError = null, confirmDeleteWorkspace = false)
+        }
     }
 
     fun pair() {
@@ -408,7 +474,16 @@ class BoardViewModel(
         resyncJob?.cancel()
         commandNote = null
         formError = null
-        _state.updateCopy { copy(selectedBoardId = boardId, selectedTaskId = null, draftUseGitWorktree = false) }
+        val saved = store.selectedWorkspace(boardId)
+        if (saved == null) selectedByBoard.remove(boardId) else selectedByBoard[boardId] = saved
+        _state.updateCopy {
+            copy(
+                selectedBoardId = boardId,
+                selectedTaskId = null,
+                draftUseGitWorktree = false,
+                confirmDeleteWorkspace = false,
+            )
+        }
         push(Screen.Tasks(boardId))
         if (connection == "online") resubscribe(boardId)
         render()
@@ -434,6 +509,23 @@ class BoardViewModel(
         render()
     }
 
+    fun startDifferentWorkspaceCreate() {
+        val boardId = _state.value.selectedBoardId ?: return
+        if (inflight != null) return
+        settledByAction.remove(actionKey("cmd.workspace.create", boardId, null))
+        commandNote = "The next workspace create uses a new idempotency key."
+        render()
+    }
+
+    fun startDifferentWorkspaceDelete() {
+        val boardId = _state.value.selectedBoardId ?: return
+        val workspaceId = _state.value.selectedWorkspaceId ?: return
+        if (inflight != null || workspaceId.isEmpty()) return
+        settledByAction.remove(actionKey("cmd.workspace.delete", boardId, workspaceId))
+        commandNote = "The next workspace delete uses a new idempotency key."
+        render()
+    }
+
     fun resendStop() = resend("cmd.stop")
     fun resendContinue() = resend("cmd.continue")
 
@@ -448,7 +540,11 @@ class BoardViewModel(
 
     private fun submit(cmd: String, boardId: String?, taskId: String?) {
         if (boardId.isNullOrBlank()) return
-        if (cmd != "cmd.create" && taskId.isNullOrBlank()) return
+        when (cmd) {
+            "cmd.create", "cmd.workspace.create" -> Unit
+            "cmd.stop", "cmd.continue", "cmd.workspace.delete" -> if (taskId.isNullOrBlank()) return
+            else -> return
+        }
         val action = actionKey(cmd, boardId, taskId)
         val settled = settledByAction[action]
         when (val plan = planSubmit(cmd, inflight != null, settled?.interpretation, settled?.key, keys)) {
@@ -474,6 +570,7 @@ class BoardViewModel(
         val requestId = ids()
         val ts = clock()
         val draft = _state.value
+        val selected = draft.workspaces.find { it.id == draft.selectedWorkspaceId }
         val built = when (cmd) {
             "cmd.create" -> validateCreate(
                 requestId,
@@ -485,7 +582,17 @@ class BoardViewModel(
                 draft.draftCwd,
                 key,
                 useGitWorktree = draft.draftUseGitWorktree && freshWorktree(draft.draftCwd, draft.workspaces, draft.needsResync),
+                workspaceId = workspaceIdForCreate(draft.draftCwd, selected?.id, selected?.path),
             )
+            "cmd.workspace.create" -> validateWorkspaceCreate(
+                requestId,
+                ts,
+                boardId,
+                draft.draftWorkspaceName,
+                draft.draftWorkspacePath,
+                key,
+            )
+            "cmd.workspace.delete" -> validateWorkspaceDelete(requestId, ts, boardId, taskId ?: return, key)
             "cmd.stop" -> validateStop(requestId, ts, boardId, taskId ?: return, key)
             else -> validateContinue(requestId, ts, boardId, taskId ?: return, key)
         }
@@ -726,9 +833,26 @@ class BoardViewModel(
         commandNote = step.summary
         val task = interpreted?.task
         if (current != null && task != null && current.boardId == view.boardId) view = view.withLocalTask(task)
+        val workspace = interpreted?.workspace
+        if (current != null && workspace != null && current.boardId == view.boardId) {
+            view = view.withWorkspace(workspace)
+            selectedByBoard[current.boardId] = workspace.id
+            store.saveSelectedWorkspace(current.boardId, workspace.id)
+        }
+        val deleted = interpreted?.deletedWorkspaceId
+        if (current != null && deleted != null && current.boardId == view.boardId) {
+            view = view.withoutWorkspace(deleted)
+            if (selectedByBoard[current.boardId] == deleted) {
+                selectedByBoard.remove(current.boardId)
+                store.saveSelectedWorkspace(current.boardId, null)
+            }
+        }
         if (current != null && task != null && current.cmd == "cmd.create" && interpreted?.retry == Retry.None) {
             _state.updateCopy { copy(selectedTaskId = task.id, selectedBoardId = current.boardId) }
             if (_state.value.screen !is Screen.Detail) push(Screen.Detail(current.boardId, task.id))
+        }
+        if (current != null && workspace != null && current.cmd == "cmd.workspace.create" && interpreted?.retry == Retry.None) {
+            if (_state.value.screen is Screen.WorkspaceCreate) pop()
         }
         render()
     }
@@ -781,6 +905,8 @@ class BoardViewModel(
         val boardId = snapshot.selectedBoardId
         val taskId = snapshot.selectedTaskId
         val spaces = if (view.boardId == boardId) view.workspaces else emptyList()
+        val taskRows = if (view.boardId == boardId) view.tasks else snapshot.tasks
+        val selectedWorkspaceId = resolvedWorkspaceId(boardId, spaces, taskRows)
         val nextKey = workspaceListKey(spaces)
         val listChanged = nextKey != workspaceKey
         workspaceKey = nextKey
@@ -789,7 +915,7 @@ class BoardViewModel(
         _state.value = snapshot.copy(
             connection = connection,
             boards = boards,
-            tasks = if (view.boardId == boardId) view.tasks else snapshot.tasks,
+            tasks = taskRows,
             logs = if (taskId == null) emptyList() else view.logs[taskId].orEmpty(),
             selectedOnline = boards.find { it.boardId == boardId }?.online,
             needsResync = view.needsResync,
@@ -803,6 +929,9 @@ class BoardViewModel(
             stopResend = explicitResendAllowed("cmd.stop", settled(boardId, "cmd.stop", taskId)),
             continueResend = explicitResendAllowed("cmd.continue", settled(boardId, "cmd.continue", taskId)),
             workspaces = spaces,
+            selectedWorkspaceId = selectedWorkspaceId,
+            workspaceCreateMode = modeFor("cmd.workspace.create", boardId, null),
+            workspaceDeleteMode = modeFor("cmd.workspace.delete", boardId, selectedWorkspaceId),
             worktreeEnabled = freshWorktree(snapshot.draftCwd, spaces, view.needsResync),
             draftUseGitWorktree = worktreeOn,
         )
@@ -821,6 +950,22 @@ class BoardViewModel(
     private fun settled(boardId: String?, cmd: String, taskId: String?): CommandInterpretation? {
         if (boardId.isNullOrBlank()) return null
         return settledByAction[actionKey(cmd, boardId, taskId)]?.interpretation
+    }
+
+    private fun resolvedWorkspaceId(boardId: String?, spaces: List<ThinWorkspace>, tasks: List<RelayTask>): String? {
+        if (boardId.isNullOrBlank() || view.boardId != boardId) return _state.value.selectedWorkspaceId
+        val remembered = selectedByBoard[boardId] ?: store.selectedWorkspace(boardId)?.also { selectedByBoard[boardId] = it }
+        val resolved = resolveWorkspaceSelection(remembered, spaces, tasks)
+        if (resolved != remembered) {
+            if (resolved == null) {
+                selectedByBoard.remove(boardId)
+                store.saveSelectedWorkspace(boardId, null)
+            } else {
+                selectedByBoard[boardId] = resolved
+                store.saveSelectedWorkspace(boardId, resolved)
+            }
+        }
+        return resolved
     }
 
     private fun freshWorktree(cwd: String, spaces: List<ThinWorkspace>, needsResync: Boolean): Boolean {

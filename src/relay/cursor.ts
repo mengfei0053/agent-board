@@ -67,7 +67,7 @@ export class RelayCursor {
   }
 
   /**
-   * Emit `evt.task` when title, status, or agent changes.
+   * Emit `evt.task` when title, status, agent, or workspace changes.
    * Emit `evt.task.done` once per task per terminal entry in this generation.
    */
   observeTask(boardId: string, task: MappedTask): RelayFrame[] {
@@ -135,6 +135,7 @@ function wireTask(task: MappedTask): Record<string, unknown> {
     updatedAt: task.updatedAt,
     ...(task.agent ? { agent: task.agent } : {}),
     ...(task.summary ? { summary: task.summary } : {}),
+    ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
   };
 }
 

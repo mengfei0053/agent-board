@@ -57,6 +57,7 @@ fun validateCreate(
     cwd: String,
     idempotencyKey: String,
     useGitWorktree: Boolean = false,
+    workspaceId: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) {
         return Validated.Invalid("boardId must be 1-64 letters, digits, '.', '_' or '-'")
@@ -78,6 +79,9 @@ fun validateCreate(
     if (!visibleKey.matches(idempotencyKey)) {
         return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
     }
+    if (!workspaceId.isNullOrBlank() && !isWorkspaceId(workspaceId)) {
+        return Validated.Invalid("workspaceId is invalid")
+    }
     return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
@@ -86,8 +90,58 @@ fun validateCreate(
         put("agent", agent)
         put("cwd", cwd)
         if (useGitWorktree) put("useGitWorktree", true)
+        if (!workspaceId.isNullOrBlank()) put("workspaceId", workspaceId)
     }))
 }
+
+fun validateWorkspaceCreate(
+    id: String,
+    ts: Long,
+    boardId: String,
+    name: String,
+    path: String,
+    idempotencyKey: String,
+): Validated<Envelope> {
+    if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
+    val cleanName = name.trim()
+    if (cleanName.isEmpty() || cleanName.length > 200 || name.length > 200 || !isReadableText(cleanName)) {
+        return Validated.Invalid("name is required, up to 200 characters")
+    }
+    val cleanPath = path.trim()
+    if (!isLocalPath(cleanPath) || !cleanPath.startsWith("/")) {
+        return Validated.Invalid("path is required and must be an absolute local path")
+    }
+    if (!visibleKey.matches(idempotencyKey)) {
+        return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
+    }
+    return Validated.Ok(frame(id, ts, "cmd.workspace.create", buildJsonObject {
+        put("boardId", boardId)
+        put("idempotencyKey", idempotencyKey)
+        put("name", cleanName)
+        put("path", cleanPath)
+    }))
+}
+
+fun validateWorkspaceDelete(
+    id: String,
+    ts: Long,
+    boardId: String,
+    workspaceId: String,
+    idempotencyKey: String,
+): Validated<Envelope> {
+    if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
+    if (!isWorkspaceId(workspaceId)) return Validated.Invalid("workspaceId is invalid")
+    if (!visibleKey.matches(idempotencyKey)) {
+        return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
+    }
+    return Validated.Ok(frame(id, ts, "cmd.workspace.delete", buildJsonObject {
+        put("boardId", boardId)
+        put("idempotencyKey", idempotencyKey)
+        put("workspaceId", workspaceId)
+    }))
+}
+
+private fun isReadableText(value: String): Boolean = value.none { it.code in 0..31 || it.code == 127 }
 
 fun validateContinue(
     id: String,

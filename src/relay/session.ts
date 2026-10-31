@@ -4,9 +4,9 @@ import { eventsFromBoardEvent } from "./dialect.js";
 import type { Envelope } from "./envelope.js";
 import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import type { BoardFacade } from "./facade.js";
-import { CreateIdempotency } from "./idempotency.js";
+import { CreateIdempotency, WorkspaceIdempotency } from "./idempotency.js";
 import { RELAY_LIMITS } from "./limits.js";
-import { isAgentKind, mapBoardTask, type MappedTask } from "./map.js";
+import { isAgentKind, mapBoardTask, WORKSPACE_ID, type MappedTask } from "./map.js";
 import { enrichWorkspaces } from "./workspaces.js";
 
 const VISIBLE_KEY = /^[\x21-\x7E]{8,80}$/;
@@ -40,6 +40,7 @@ export class ConnectorSession {
   private pendingCommands = 0;
   private drainingJobs = false;
   private readonly jobs: SessionJob[] = [];
+  private readonly workspaceOps: WorkspaceIdempotency;
 
   constructor(
     private readonly opts: {
@@ -47,12 +48,15 @@ export class ConnectorSession {
       boardId: string;
       facade: BoardFacade;
       idempotency: CreateIdempotency;
+      /** Shared across generations. Defaults to a session-local cache. */
+      workspaceIdempotency?: WorkspaceIdempotency;
       send: RelaySender;
       onOverflow: () => void;
       onFatal: (err: unknown) => void;
       log?: LogFn;
     },
   ) {
+    this.workspaceOps = opts.workspaceIdempotency ?? new WorkspaceIdempotency();
     this.cursor = new RelayCursor(opts.generation);
     this.unsub = opts.facade.subscribe((ev) => this.onBus(ev));
     this.baseline = opts.facade.boardSnapshot().flatMap((task) => {
@@ -227,6 +231,14 @@ export class ConnectorSession {
         await this.applyCreate(message);
         return;
       }
+      if (message.type === "cmd.workspace.create") {
+        await this.applyWorkspaceCreate(message);
+        return;
+      }
+      if (message.type === "cmd.workspace.delete") {
+        await this.applyWorkspaceDelete(message);
+        return;
+      }
       if (message.type === "cmd.stop" || message.type === "cmd.continue") {
         await this.applyTaskCommand(message);
         return;
@@ -281,6 +293,50 @@ export class ConnectorSession {
     }, message.id);
   }
 
+  private async applyWorkspaceCreate(message: Envelope): Promise<void> {
+    const parsed = parseWorkspaceCreate(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const workspace = await this.workspaceOps.runCreate(parsed.key, () => this.opts.facade.createWorkspace(parsed.input));
+    if (this.closed) return;
+    let isGit = false;
+    try {
+      isGit = (await this.opts.facade.gitEligibility(workspace.path)).ok === true;
+    } catch {
+      isGit = false;
+    }
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      workspace: { id: workspace.id, name: workspace.name, path: workspace.path, isGit },
+    }, message.id);
+  }
+
+  private async applyWorkspaceDelete(message: Envelope): Promise<void> {
+    const parsed = parseWorkspaceDelete(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const deleted = await this.workspaceOps.runDelete(parsed.key, async () => {
+      await this.opts.facade.deleteWorkspace(parsed.workspaceId);
+      return parsed.workspaceId;
+    });
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      deleted,
+    }, message.id);
+  }
+
   private fail(message: Envelope, err: unknown): void {
     if (this.closed) return;
     const safe = relayErrorFrom(err);
@@ -300,7 +356,11 @@ export class ConnectorSession {
 }
 
 function isLiveCommand(type: string): boolean {
-  return type === "cmd.create" || type === "cmd.continue" || type === "cmd.stop";
+  return type === "cmd.create"
+    || type === "cmd.continue"
+    || type === "cmd.stop"
+    || type === "cmd.workspace.create"
+    || type === "cmd.workspace.delete";
 }
 
 function wireMapped(task: MappedTask): Record<string, unknown> {
@@ -311,6 +371,7 @@ function wireMapped(task: MappedTask): Record<string, unknown> {
     updatedAt: task.updatedAt,
     ...(task.agent ? { agent: task.agent } : {}),
     ...(task.summary ? { summary: task.summary } : {}),
+    ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
   };
 }
 
@@ -342,6 +403,13 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
   if ("useGitWorktree" in payload && payload.useGitWorktree != null && typeof payload.useGitWorktree !== "boolean") {
     return { ok: false, code: "bad_request", message: "useGitWorktree must be a boolean" };
   }
+  let workspaceId: string | undefined;
+  if ("workspaceId" in payload && payload.workspaceId != null && payload.workspaceId !== "") {
+    if (typeof payload.workspaceId !== "string" || !WORKSPACE_ID.test(payload.workspaceId)) {
+      return { ok: false, code: "bad_request", message: "workspaceId is invalid" };
+    }
+    workspaceId = payload.workspaceId;
+  }
   return {
     ok: true,
     key: key.key,
@@ -350,9 +418,45 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
       title: payload.title,
       prompt: payload.prompt,
       cwd: payload.cwd,
+      ...(workspaceId ? { workspaceId } : {}),
       ...(payload.useGitWorktree === true ? { useGitWorktree: true } : {}),
     },
   };
+}
+
+function parseWorkspaceCreate(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; input: { name: string; path: string } } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  if (typeof payload.name !== "string") return { ok: false, code: "bad_request", message: "name is required" };
+  const name = payload.name.trim();
+  if (!name || name.length > 200) return { ok: false, code: "bad_request", message: "name is required" };
+  if ([...name].some((ch) => ch < " " || ch === "\u007f")) {
+    return { ok: false, code: "bad_request", message: "name is invalid" };
+  }
+  if (typeof payload.path !== "string") return { ok: false, code: "bad_request", message: "path is required" };
+  const pathError = localPathError(payload.path, "path");
+  if (pathError) return { ok: false, code: "bad_request", message: pathError };
+  return { ok: true, key: key.key, input: { name, path: payload.path.trim() } };
+}
+
+function parseWorkspaceDelete(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; workspaceId: string } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  const workspaceId = payload.workspaceId;
+  if (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId)) {
+    return { ok: false, code: "bad_request", message: "workspaceId is invalid" };
+  }
+  return { ok: true, key: key.key, workspaceId };
 }
 
 function parseTaskCommand(
@@ -395,10 +499,14 @@ function requireKey(
 }
 
 function localCwdError(cwd: string): string | null {
-  if (!cwd.trim()) return "cwd is required";
-  if (cwd.length > 1024) return "cwd is too long";
-  if ([...cwd].some((ch) => ch < " " || ch === "\u007f")) return "cwd is invalid";
-  if (cwd.includes("://")) return "cwd must be a local path";
-  if (!cwd.startsWith("/")) return "cwd must be an absolute path";
+  return localPathError(cwd, "cwd");
+}
+
+function localPathError(value: string, label: string): string | null {
+  if (!value.trim()) return `${label} is required`;
+  if (value.length > 1024) return `${label} is too long`;
+  if ([...value].some((ch) => ch < " " || ch === "\u007f")) return `${label} is invalid`;
+  if (value.includes("://")) return `${label} must be a local path`;
+  if (!value.startsWith("/")) return `${label} must be an absolute path`;
   return null;
 }

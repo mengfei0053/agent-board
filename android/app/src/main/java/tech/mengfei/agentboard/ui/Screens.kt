@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
@@ -35,6 +36,10 @@ import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
 import tech.mengfei.agentboard.protocol.deriveWsUrl
+import tech.mengfei.agentboard.protocol.visibleTasks
+import tech.mengfei.agentboard.protocol.workspaceBanner
+import tech.mengfei.agentboard.protocol.workspaceDisplayName
+import tech.mengfei.agentboard.protocol.workspaceSwitchItems
 import java.text.DateFormat
 import java.util.Date
 
@@ -47,6 +52,7 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
         is Screen.Tasks -> state.boards.find { it.boardId == screen.boardId }?.label ?: screen.boardId
         is Screen.Detail -> state.tasks.find { it.id == screen.taskId }?.title ?: screen.taskId
         is Screen.Create -> "New task"
+        is Screen.WorkspaceCreate -> "新建工作区"
     }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -64,6 +70,7 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
             is Screen.Tasks -> TaskScreen(state, model, padding)
             is Screen.Detail -> DetailScreen(state, model, padding)
             is Screen.Create -> CreateScreen(state, model, padding)
+            is Screen.WorkspaceCreate -> WorkspaceCreateScreen(state, model, padding)
         }
     }
 }
@@ -153,28 +160,86 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
                 color = MaterialTheme.colorScheme.error,
             )
         }
+        Banner(state.commandNote)
+        Banner(state.formError)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = model::pop) { Text("Boards") }
             TextButton(onClick = model::openCreate) { Text("New task") }
         }
-        if (state.tasks.isEmpty()) {
-            Text("No tasks in the latest snapshot.", modifier = Modifier.padding(20.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = model::openWorkspaceCreate) { Text("新建工作区") }
+            TextButton(
+                onClick = model::requestDeleteWorkspace,
+                enabled = state.workspaces.any { it.id == state.selectedWorkspaceId },
+            ) { Text("删除") }
+        }
+        if (state.workspaceDeleteMode == "lookup") {
+            TextButton(onClick = model::startDifferentWorkspaceDelete, modifier = Modifier.padding(horizontal = 12.dp)) {
+                Text("Start a different delete (new idempotency key)")
+            }
+        }
+        val chips = workspaceSwitchItems(state.tasks, state.workspaces)
+        if (chips.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                chips.forEach { chip ->
+                    FilterChip(
+                        selected = chip.id == state.selectedWorkspaceId,
+                        onClick = { model.selectWorkspace(chip.id) },
+                        label = { Text(chip.label) },
+                    )
+                }
+            }
+        }
+        val banner = workspaceBanner(state.selectedWorkspaceId, state.workspaces)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text(banner.title, style = MaterialTheme.typography.titleMedium)
+            banner.detail?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        val visible = visibleTasks(state.tasks, state.workspaces, state.selectedWorkspaceId)
+        if (visible.isEmpty()) {
+            Text(
+                if (state.selectedWorkspaceId == null) "当前没有工作区。" else "当前工作区暂无任务",
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
         } else {
-            LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                items(state.tasks, key = { it.id }) { task ->
-                    TaskRow(task) { model.openTask(task.id) }
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
+                items(visible, key = { it.id }) { task ->
+                    TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces)) { model.openTask(task.id) }
                     HorizontalDivider()
                 }
             }
+        }
+        if (state.confirmDeleteWorkspace) {
+            val name = state.workspaces.find { it.id == state.selectedWorkspaceId }?.name ?: ""
+            AlertDialog(
+                onDismissRequest = model::cancelDeleteWorkspace,
+                title = { Text("删除工作区") },
+                text = { Text("删除工作区「$name」？\n若仍有任务将无法删除。") },
+                confirmButton = {
+                    TextButton(
+                        onClick = model::confirmDeleteWorkspace,
+                        enabled = state.createMode != "busy",
+                    ) { Text("删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = model::cancelDeleteWorkspace) { Text("取消") }
+                },
+            )
         }
     }
 }
 
 @Composable
-private fun TaskRow(task: RelayTask, onClick: () -> Unit) {
+private fun TaskRow(task: RelayTask, workspaceLabel: String, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Text(task.title, style = MaterialTheme.typography.titleMedium)
+            Text(workspaceLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 "${task.status}${task.agent?.let { " · $it" } ?: ""}",
                 color = statusColor(task.status),
@@ -193,6 +258,11 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
         } else {
             Text(task.status, color = statusColor(task.status), style = MaterialTheme.typography.titleMedium)
             Text(task.agent ?: "No agent", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val workspaceName = workspaceDisplayName(task.workspaceId, state.workspaces)
+            Text("工作区 · $workspaceName", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            state.workspaces.find { it.id == task.workspaceId }?.path?.let { path ->
+                Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         Banner(state.commandNote)
         Banner(state.formError)
@@ -233,6 +303,10 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
 private fun CreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
         TextButton(onClick = model::pop) { Text("Tasks") }
+        val selected = state.workspaces.find { it.id == state.selectedWorkspaceId }
+        if (selected != null && state.draftCwd.trim() == selected.path) {
+            Text("工作区：${selected.name} · ${selected.path}")
+        }
         Text("The connector needs an agent and a local working directory. A path that is not a workspace root still runs, and the board may file it under the default workspace.")
         Banner(state.banner)
         Banner(state.commandNote)
@@ -296,6 +370,41 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
         ) { Text(actionLabel(state.createMode, "Create")) }
         if (state.createMode == "lookup") {
             TextButton(onClick = model::startDifferentCreate) {
+                Text("Start a different command (new idempotency key)")
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
+    ScrollColumn(padding) {
+        TextButton(onClick = model::pop) { Text("Tasks") }
+        Text("名称和路径与网页看板的新建工作区相同。路径必须是 ThinkBook 上的绝对目录。")
+        Banner(state.commandNote)
+        Banner(state.formError)
+        OutlinedTextField(
+            value = state.draftWorkspaceName,
+            onValueChange = model::updateDraftWorkspaceName,
+            label = { Text("名称") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = state.draftWorkspacePath,
+            onValueChange = model::updateDraftWorkspacePath,
+            label = { Text("路径") },
+            placeholder = { Text("/home/me/src/app") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Button(
+            onClick = model::submitWorkspaceCreate,
+            enabled = state.workspaceCreateMode != "busy",
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(actionLabel(state.workspaceCreateMode, "新建")) }
+        if (state.workspaceCreateMode == "lookup") {
+            TextButton(onClick = model::startDifferentWorkspaceCreate) {
                 Text("Start a different command (new idempotency key)")
             }
         }

@@ -20,7 +20,9 @@ curl -s -X POST http://127.0.0.1:8787/auth/pair/create \
 2. Install the debug APK. On the pair screen, set the relay HTTP URL. The WebSocket URL is derived (`http` becomes `ws`, `https` becomes `wss`, path `/v1/ws`).
 3. Enter the `pc_…` pair code and a device name. Pair stores the device token and only then sends `client.hello`.
 4. Pick a board. The phone sends `sub.tasks` and `sub.logs`.
-5. Create needs a title, prompt, agent (`pi`, `claude`, `cursor`, `devin`, or `codex`), and a local `cwd`. When that cwd is a git workspace root in a fresh snapshot, the create screen can start the task in a git worktree. The checkbox is off by default and stays disabled while the list is stale or the relay is disconnected.
+5. The task list follows the web board: pick one workspace and only that workspace's tasks are shown. The header is the workspace name and path. Tasks with no `workspaceId`, or an id the snapshot does not list, stay under 「未分配」. Detail shows 工作区. New task copies the selected workspace path, and sends `workspaceId` while the path still matches.
+6. 新建工作区 sends `cmd.workspace.create` (`name` + absolute `path`). 删除 asks for the same confirmation as the web board, then `cmd.workspace.delete`. The board still refuses the default workspace and any workspace that still has tasks. Switching workspaces is local; it is not a relay frame.
+7. Create needs a title, prompt, agent (`pi`, `claude`, `cursor`, `devin`, or `codex`), and a local `cwd`. When that cwd is a git workspace root in a fresh snapshot, the create screen can start the task in a git worktree. The checkbox is off by default and stays disabled while the list is stale or the relay is disconnected.
 
 Settings can change the relay URL, refresh the device token (`POST /auth/refresh` drops the old socket), or forget the phone.
 

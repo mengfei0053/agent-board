@@ -14,6 +14,8 @@ data class CommandInterpretation(
     val summary: String,
     val retry: Retry,
     val task: RelayTask? = null,
+    val workspace: ThinWorkspace? = null,
+    val deletedWorkspaceId: String? = null,
     val settled: Boolean,
 )
 
@@ -43,30 +45,40 @@ fun interpretCommand(message: Envelope): CommandInterpretation? {
     val code = message.payload.text("code")
     val text = message.payload.text("message")
     val task = message.payload.obj("task")?.let(::readTask)
+    val workspace = message.payload.obj("workspace")?.let(::readThinWorkspace)
+    val deletedWorkspaceId = message.payload.text("deleted")?.takeIf(::isWorkspaceId)
     if (message.type == "ack") {
         return when (stage) {
             "accepted" -> CommandInterpretation(
                 "Relay accepted the command. Waiting for the board.",
                 Retry.None,
                 task,
+                workspace,
+                deletedWorkspaceId,
                 settled = false,
             )
             "executed" -> CommandInterpretation(
                 "Board accepted the command.",
                 Retry.None,
                 task,
+                workspace,
+                deletedWorkspaceId,
                 settled = true,
             )
             "timeout" -> CommandInterpretation(
                 text ?: "The board did not answer in time.",
                 Retry.LookupOnly,
                 task,
+                workspace,
+                deletedWorkspaceId,
                 settled = true,
             )
             "failed" -> CommandInterpretation(
                 text ?: code ?: "The command failed after the relay stored it.",
                 Retry.LookupOnly,
                 task,
+                workspace,
+                deletedWorkspaceId,
                 settled = true,
             )
             "unknown" -> CommandInterpretation(
@@ -109,9 +121,9 @@ fun planSubmit(
     return SubmitPlan.Send(newKey())
 }
 
-/** A second stop or continue after lookup is an explicit new command. Create stays on lookup. */
+/** A second stop or continue after lookup is an explicit new command. Create and workspace commands stay on lookup. */
 fun explicitResendAllowed(cmd: String, last: CommandInterpretation?): Boolean {
-    return cmd != "cmd.create" && last?.retry == Retry.LookupOnly
+    return (cmd == "cmd.stop" || cmd == "cmd.continue") && last?.retry == Retry.LookupOnly
 }
 
 /** Lookups of an accepted command are not registered as waiters, so poll a few times and then stop. */

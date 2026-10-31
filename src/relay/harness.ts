@@ -4,7 +4,8 @@ import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { BoardEvent, Task, Workspace } from "../types.js";
 import type { EnabledRelayConfig } from "./config.js";
-import type { BoardFacade, FacadeCreateInput } from "./facade.js";
+import { RelayCommandError } from "./errors.js";
+import type { BoardFacade, FacadeCreateInput, FacadeWorkspaceInput } from "./facade.js";
 
 export type ClientFrame = {
   v: number;
@@ -120,6 +121,32 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       if (!task) throw new Error("not found");
       task.status = "running";
       return { ...task };
+    },
+    createWorkspace: async (input: FacadeWorkspaceInput) => {
+      const name = input.name.trim();
+      if (!name) throw new RelayCommandError("bad_request", "name is required");
+      const path = input.path.trim();
+      if (!path) throw new RelayCommandError("bad_request", "path is required");
+      const ws: Workspace = {
+        id: `ws${workspaces.length + 1}`,
+        name,
+        path,
+        createdAt: "2026-10-31T00:00:00.000Z",
+        updatedAt: "2026-10-31T00:00:00.000Z",
+      };
+      workspaces.push(ws);
+      facade.publish({ type: "workspace_upsert", workspace: { ...ws } });
+      return ws;
+    },
+    deleteWorkspace: async (id: string) => {
+      const index = workspaces.findIndex((workspace) => workspace.id === id);
+      if (index < 0) throw new RelayCommandError("not_found", "workspace not found");
+      if (index === 0) throw new RelayCommandError("bad_request", "cannot delete the default workspace");
+      if (tasks.some((task) => task.workspaceId === id)) {
+        throw new RelayCommandError("bad_request", "workspace still has tasks; move or delete them first");
+      }
+      workspaces.splice(index, 1);
+      facade.publish({ type: "workspace_delete", workspaceIds: [id] });
     },
     subscribe(fn: (ev: BoardEvent) => void) {
       listeners.add(fn);

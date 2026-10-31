@@ -498,6 +498,64 @@ test("a sequence gap is still reported to a phone that subscribes later", () => 
   assert.ok(indexOf(phonePeer, "evt.gap") < indexOf(phonePeer, "evt.snapshot"));
 });
 
+test("workspace commands and task workspaceId survive a relay hop", () => {
+  const fx = setup();
+  open.push(fx.hub);
+  const boardPeer = fx.peer();
+  const board = registerBoard(fx.hub, boardPeer);
+  const phonePeer = fx.peer();
+  const phone = helloPhone(fx.hub, fx.auth, phonePeer, "workspaces");
+  fx.hub.handlePhone(phone.conn, frame("sub.tasks", "sub-ws", { boardId: "thinkbook-main" }));
+
+  fx.hub.handleBoard(board, frame("evt.snapshot", "snap-ws", {
+    ...cursor(1, "snap-ws"),
+    version: 1,
+    capturedAt: NOW,
+    tasks: [{ ...task("running"), workspaceId: "ws_app" }],
+    workspaces: [{ id: "ws_app", name: "App", path: "/home/me/src/app", isGit: true }],
+  }));
+  const snap = phonePeer.ofType("evt.snapshot").at(-1);
+  const snapTask = Array.isArray(snap?.payload?.tasks) ? snap?.payload?.tasks[0] : undefined;
+  assert.equal(isRecord(snapTask) && snapTask.workspaceId, "ws_app");
+
+  fx.hub.handlePhone(phone.conn, frame("cmd.workspace.create", "ws-new", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "android-ws-7f3a",
+    name: "Other",
+    path: "/tmp/other",
+  }));
+  assert.equal(byRef(phonePeer, "ws-new")?.payload?.stage, "accepted");
+  const forwarded = boardPeer.ofType("cmd.workspace.create").at(-1);
+  assert.equal(forwarded?.payload?.name, "Other");
+  fx.hub.handleBoard(board, frame("ack", "ack-ws", {
+    ref: forwarded?.id,
+    stage: "executed",
+    workspace: { id: "ws_other", name: "Other", path: "/tmp/other", isGit: false },
+  }));
+  const executed = byRef(phonePeer, "ws-new");
+  assert.equal(executed?.payload?.stage, "executed");
+  assert.equal(isRecord(executed?.payload?.workspace) && executed?.payload?.workspace.id, "ws_other");
+
+  fx.hub.handlePhone(phone.conn, frame("cmd.workspace.create", "ws-new-2", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "android-ws-7f3a",
+    name: "Other",
+    path: "/tmp/other",
+  }));
+  assert.equal(boardPeer.ofType("cmd.workspace.create").length, 1);
+  assert.equal(byRef(phonePeer, "ws-new-2")?.payload?.duplicate, true);
+  assert.equal(isRecord(byRef(phonePeer, "ws-new-2")?.payload?.workspace) && byRef(phonePeer, "ws-new-2")?.payload?.workspace.name, "Other");
+
+  fx.hub.handlePhone(phone.conn, frame("cmd.workspace.delete", "ws-del", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "android-ws-del-1",
+    workspaceId: "ws_other",
+  }));
+  const del = boardPeer.ofType("cmd.workspace.delete").at(-1);
+  fx.hub.handleBoard(board, frame("ack", "ack-del", { ref: del?.id, stage: "executed", deleted: "ws_other" }));
+  assert.equal(byRef(phonePeer, "ws-del")?.payload?.deleted, "ws_other");
+});
+
 const NOW = 1_700_000_000_000;
 
 function byRef(peer: Peer, ref: string): Envelope | undefined {

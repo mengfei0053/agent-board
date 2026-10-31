@@ -25,6 +25,8 @@ type CommandRecord = {
   type: CommandType;
   stage: "accepted" | "executed" | "failed" | "timeout";
   task?: JsonObject;
+  workspace?: JsonObject;
+  deleted?: string;
   errorCode?: string;
   errorMessage?: string;
   expiresAt: number;
@@ -55,6 +57,8 @@ const PHONE_KINDS = new Set([
   "cmd.create",
   "cmd.continue",
   "cmd.stop",
+  "cmd.workspace.create",
+  "cmd.workspace.delete",
   "cmd.lookup",
 ]);
 
@@ -164,6 +168,8 @@ export class RelayHub {
       case "cmd.create":
       case "cmd.continue":
       case "cmd.stop":
+      case "cmd.workspace.create":
+      case "cmd.workspace.delete":
         this.forwardCmd(conn, parsed);
         return;
       default:
@@ -405,7 +411,7 @@ export class RelayHub {
 
   private forwardCmd(
     conn: PhoneConn,
-    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" }>,
+    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" }>,
   ): void {
     if (!this.allow(conn, parsed.boardId, parsed.envelope.id)) return;
     const key = this.commandKey(parsed.kind, parsed.boardId, parsed.idempotencyKey);
@@ -487,9 +493,13 @@ export class RelayHub {
     }
     if (result.type === "ack") {
       const task = result.envelope.payload?.task;
+      const workspace = result.envelope.payload?.workspace;
+      const deleted = result.envelope.payload?.deleted;
       this.finishCommand(record, {
         stage: "executed",
         ...(isJsonObject(task) ? { task } : {}),
+        ...(isJsonObject(workspace) ? { workspace } : {}),
+        ...(typeof deleted === "string" ? { deleted } : {}),
       });
       return;
     }
@@ -498,7 +508,9 @@ export class RelayHub {
 
   private finishCommand(
     record: CommandRecord,
-    update: { stage: "executed"; task?: JsonObject } | { stage: "failed" | "timeout"; errorCode: string; errorMessage: string },
+    update:
+      | { stage: "executed"; task?: JsonObject; workspace?: JsonObject; deleted?: string }
+      | { stage: "failed" | "timeout"; errorCode: string; errorMessage: string },
   ): void {
     if (record.timer) clearTimeout(record.timer);
     record.timer = undefined;
@@ -506,6 +518,8 @@ export class RelayHub {
     record.expiresAt = this.now() + (this.opts.idempotencyTtlMs ?? 600_000);
     if (update.stage === "executed") {
       if (update.task) record.task = update.task;
+      if (update.workspace) record.workspace = update.workspace;
+      if (update.deleted) record.deleted = update.deleted;
     } else {
       record.errorCode = update.errorCode;
       record.errorMessage = update.errorMessage;
@@ -733,6 +747,8 @@ export class RelayHub {
     };
     if (duplicate) base.duplicate = true;
     if (record.task) base.task = record.task;
+    if (record.workspace) base.workspace = record.workspace;
+    if (record.deleted) base.deleted = record.deleted;
     if (record.errorCode) base.code = record.errorCode;
     if (record.errorMessage) base.message = record.errorMessage;
     return makeAck(this.now(), requestId, base);

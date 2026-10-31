@@ -11,7 +11,13 @@ export type TerminalStatus = (typeof TERMINAL_TASK_STATUSES)[number];
 export const LOG_STREAMS = ["stdout", "stderr", "system"] as const;
 export type LogStream = (typeof LOG_STREAMS)[number];
 
-export const CMD_TYPES = ["cmd.create", "cmd.continue", "cmd.stop"] as const;
+export const CMD_TYPES = [
+  "cmd.create",
+  "cmd.continue",
+  "cmd.stop",
+  "cmd.workspace.create",
+  "cmd.workspace.delete",
+] as const;
 export type CommandType = (typeof CMD_TYPES)[number];
 
 export const ACK_STAGES = ["accepted", "executed", "failed", "timeout", "unknown"] as const;
@@ -29,6 +35,8 @@ const MESSAGE_KINDS = [
   "cmd.create",
   "cmd.continue",
   "cmd.stop",
+  "cmd.workspace.create",
+  "cmd.workspace.delete",
   "cmd.lookup",
   "evt.task",
   "evt.log",
@@ -59,6 +67,8 @@ export type Task = {
   status: TaskStatus;
   updatedAt: number;
   agent?: string;
+  /** Present when the board task is filed in a workspace. */
+  workspaceId?: string;
 };
 
 export type ParseFailure = {
@@ -79,6 +89,8 @@ export type Incoming =
   | { ok: true; kind: "cmd.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.continue"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.stop"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
+  | { ok: true; kind: "cmd.workspace.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
+  | { ok: true; kind: "cmd.workspace.delete"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.lookup"; envelope: Envelope; boardId: string; idempotencyKey: string; cmd: CommandType }
   | ({ ok: true; kind: "evt.task"; envelope: Envelope } & Cursor)
   | ({ ok: true; kind: "evt.log"; envelope: Envelope; taskId: string } & Cursor)
@@ -92,6 +104,8 @@ export type Incoming =
 const MSG_ID = /^[\x21-\x7e]{1,100}$/;
 const KEY_ID = /^[\x21-\x7e]{8,80}$/;
 const BOARD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Board workspace ids are nanoid(10), which may start with `_` or `-`. */
+const WORKSPACE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
 const ERR_CODE = /^[a-z0-9_]{1,64}$/;
 
 export function parseMessage(raw: unknown): Incoming {
@@ -128,6 +142,10 @@ export function parseMessage(raw: unknown): Incoming {
       return parseCmdTask(payload, id, ts, "cmd.continue");
     case "cmd.stop":
       return parseCmdStop(payload, id, ts);
+    case "cmd.workspace.create":
+      return parseCmdWorkspaceCreate(payload, id, ts);
+    case "cmd.workspace.delete":
+      return parseCmdWorkspaceDelete(payload, id, ts);
     case "cmd.lookup":
       return parseLookup(payload, id, ts);
     case "evt.task":
@@ -280,6 +298,9 @@ function parseCmdCreate(payload: unknown, id: string, ts: number): Incoming {
   const worktree = readOptionalBoolean(record.value, "useGitWorktree");
   if (!worktree.ok) return failure("bad_request", worktree.message, id);
   if (worktree.value === true) body.useGitWorktree = true;
+  const workspaceId = optionalWorkspaceId(record.value.workspaceId, "workspaceId");
+  if (!workspaceId.ok) return failure("bad_request", workspaceId.message, id);
+  if (workspaceId.value) body.workspaceId = workspaceId.value;
   return {
     ok: true,
     kind: "cmd.create",
@@ -323,6 +344,55 @@ function parseCmdStop(payload: unknown, id: string, ts: number): Incoming {
   };
 }
 
+function parseCmdWorkspaceCreate(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const boardId = readBoardId(record.value.boardId, "boardId");
+  if (!boardId.ok) return failure("bad_request", boardId.message, id);
+  const key = readKey(record.value.idempotencyKey);
+  if (!key.ok) return failure("bad_request", key.message, id);
+  const name = readText(record.value.name, "name", 1, 200);
+  if (!name.ok) return failure("bad_request", name.message, id);
+  const path = readText(record.value.path, "path", 1, 1024);
+  if (!path.ok) return failure("bad_request", path.message, id);
+  if (path.value.includes("://")) return failure("bad_request", "path must be a local path", id);
+  if (!path.value.startsWith("/")) return failure("bad_request", "path must be an absolute path", id);
+  return {
+    ok: true,
+    kind: "cmd.workspace.create",
+    envelope: envelope("cmd.workspace.create", id, ts, {
+      boardId: boardId.value,
+      idempotencyKey: key.value,
+      name: name.value.trim(),
+      path: path.value.trim(),
+    }),
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+  };
+}
+
+function parseCmdWorkspaceDelete(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const boardId = readBoardId(record.value.boardId, "boardId");
+  if (!boardId.ok) return failure("bad_request", boardId.message, id);
+  const key = readKey(record.value.idempotencyKey);
+  if (!key.ok) return failure("bad_request", key.message, id);
+  const workspaceId = readWorkspaceId(record.value.workspaceId, "workspaceId");
+  if (!workspaceId.ok) return failure("bad_request", workspaceId.message, id);
+  return {
+    ok: true,
+    kind: "cmd.workspace.delete",
+    envelope: envelope("cmd.workspace.delete", id, ts, {
+      boardId: boardId.value,
+      idempotencyKey: key.value,
+      workspaceId: workspaceId.value,
+    }),
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+  };
+}
+
 function parseLookup(payload: unknown, id: string, ts: number): Incoming {
   const record = requireRecord(payload, id);
   if (!record.ok) return record.failure;
@@ -331,7 +401,7 @@ function parseLookup(payload: unknown, id: string, ts: number): Incoming {
   const key = readKey(record.value.idempotencyKey);
   if (!key.ok) return failure("bad_request", key.message, id);
   if (typeof record.value.cmd !== "string" || !isCommandType(record.value.cmd)) {
-    return failure("bad_request", "cmd must be cmd.create, cmd.continue, or cmd.stop", id);
+    return failure("bad_request", "cmd must be cmd.create, cmd.continue, cmd.stop, cmd.workspace.create, or cmd.workspace.delete", id);
   }
   return {
     ok: true,
@@ -488,6 +558,16 @@ function parseAck(payload: unknown, id: string, ts: number): Incoming {
     const task = readTask(record.value.task, false);
     if (!task.ok) return failure("bad_request", task.message, id);
     body.task = taskToJson(task.task);
+  }
+  if (record.value.workspace !== undefined) {
+    const workspace = readWorkspace(record.value.workspace, "workspace");
+    if (!workspace.ok) return failure("bad_request", workspace.message, id);
+    body.workspace = workspace.value;
+  }
+  if (record.value.deleted !== undefined) {
+    const deleted = readWorkspaceId(record.value.deleted, "deleted");
+    if (!deleted.ok) return failure("bad_request", deleted.message, id);
+    body.deleted = deleted.value;
   }
   if (record.value.boards !== undefined) {
     const boards = readBoards(record.value.boards);
@@ -663,18 +743,27 @@ function readSnapshotWorkspaces(value: unknown): { ok: true; value?: Json[] } | 
   if (value.length > 50) return { ok: false, message: "workspaces exceeds 50 items" };
   const rows: Json[] = [];
   for (const item of value) {
-    if (!isRecord(item)) return { ok: false, message: "workspace must be an object" };
-    const id = readBoardId(item.id, "workspaces.id");
-    if (!id.ok) return { ok: false, message: id.message };
-    const name = readText(item.name, "workspaces.name", 1, 80);
-    if (!name.ok) return name;
-    const path = readText(item.path, "workspaces.path", 1, 1024);
-    if (!path.ok) return path;
-    if (path.value.includes("://")) return { ok: false, message: "workspaces.path must be a local path" };
-    if (typeof item.isGit !== "boolean") return { ok: false, message: "workspaces.isGit must be a boolean" };
-    rows.push({ id: id.value, name: name.value, path: path.value, isGit: item.isGit });
+    const row = readWorkspace(item);
+    if (!row.ok) return row;
+    rows.push(row.value);
   }
   return { ok: true, value: rows };
+}
+
+function readWorkspace(
+  value: unknown,
+  label = "workspaces",
+): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "workspace must be an object" };
+  const id = readWorkspaceId(value.id, `${label}.id`);
+  if (!id.ok) return { ok: false, message: id.message };
+  const name = readText(value.name, `${label}.name`, 1, 200);
+  if (!name.ok) return name;
+  const path = readText(value.path, `${label}.path`, 1, 1024);
+  if (!path.ok) return path;
+  if (path.value.includes("://")) return { ok: false, message: `${label}.path must be a local path` };
+  if (typeof value.isGit !== "boolean") return { ok: false, message: `${label}.isGit must be a boolean` };
+  return { ok: true, value: { id: id.value, name: name.value, path: path.value, isGit: value.isGit } };
 }
 
 function readTask(value: unknown, terminalOnly: boolean): { ok: true; task: Task } | { ok: false; message: string } {
@@ -696,12 +785,16 @@ function readTask(value: unknown, terminalOnly: boolean): { ok: true; task: Task
     if (!agent.ok) return agent;
     task.agent = agent.value;
   }
+  const workspaceId = optionalWorkspaceId(value.workspaceId, "task.workspaceId");
+  if (!workspaceId.ok) return workspaceId;
+  if (workspaceId.value) task.workspaceId = workspaceId.value;
   return { ok: true, task };
 }
 
 function taskToJson(task: Task): JsonObject {
   const json: JsonObject = { id: task.id, title: task.title, status: task.status, updatedAt: task.updatedAt };
   if (task.agent) json.agent = task.agent;
+  if (task.workspaceId) json.workspaceId = task.workspaceId;
   return json;
 }
 
@@ -745,6 +838,21 @@ function readKey(value: unknown): { ok: true; value: string } | { ok: false; mes
     return { ok: false, message: "idempotencyKey must be 8-80 visible ASCII characters" };
   }
   return { ok: true, value };
+}
+
+function readWorkspaceId(value: unknown, field: string): { ok: true; value: string } | { ok: false; message: string } {
+  if (typeof value !== "string" || !WORKSPACE_ID.test(value)) {
+    return { ok: false, message: `${field} must be 1-64 characters of letters, digits, '_', '.', or '-'` };
+  }
+  return { ok: true, value };
+}
+
+function optionalWorkspaceId(
+  value: unknown,
+  field: string,
+): { ok: true; value?: string } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  return readWorkspaceId(value, field);
 }
 
 function readBoardId(value: unknown, field: string): { ok: true; value: string } | { ok: false; message: string } {

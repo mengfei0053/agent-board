@@ -63,6 +63,15 @@ class SessionStore(context: Context) {
         secret?.edit()?.remove(KEY_TOKEN)?.remove(KEY_DEVICE)?.remove(KEY_EXPIRES)?.commit()
     }
 
+    /** Phone-local workspace selection, same role as the web board's localStorage key. `""` is 「未分配」. */
+    fun selectedWorkspace(boardId: String): String? = plain.getString(workspaceKey(boardId), null)
+
+    fun saveSelectedWorkspace(boardId: String, workspaceId: String?) {
+        val edit = plain.edit()
+        if (workspaceId == null) edit.remove(workspaceKey(boardId)) else edit.putString(workspaceKey(boardId), workspaceId)
+        edit.apply()
+    }
+
     private fun openSecret(context: Context): SharedPreferences? {
         return try {
             val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
@@ -87,5 +96,7 @@ class SessionStore(context: Context) {
         const val KEY_TOKEN = "device_token"
         const val KEY_DEVICE = "device_id"
         const val KEY_EXPIRES = "expires_at"
+
+        fun workspaceKey(boardId: String) = "ws_$boardId"
     }
 }

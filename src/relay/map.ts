@@ -6,6 +6,9 @@ export const TERMINAL_STATUSES = new Set(["succeeded", "failed", "stopped"]);
 
 export type RelayStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "stopped";
 
+/** Same alphabet as board workspace ids (`nanoid`) plus the board-id punctuation. */
+export const WORKSPACE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
+
 /** Phone-facing task. `updatedAt` is epoch milliseconds. Archived tasks are omitted. */
 export type MappedTask = {
   id: string;
@@ -14,6 +17,8 @@ export type MappedTask = {
   updatedAt: number;
   agent?: string;
   summary?: string;
+  /** Omitted when the board task has no usable workspace id. */
+  workspaceId?: string;
 };
 
 export function mapStatus(status: string): RelayStatus | null {
@@ -28,7 +33,9 @@ export function isTerminalStatus(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-export function mapBoardTask(task: Pick<Task, "id" | "title" | "kind" | "status" | "updatedAt" | "summary">): MappedTask | null {
+export function mapBoardTask(
+  task: Pick<Task, "id" | "title" | "kind" | "status" | "updatedAt" | "summary"> & { workspaceId?: string },
+): MappedTask | null {
   const status = mapStatus(task.status);
   if (!status || !task.id || !task.title) return null;
   const updatedAt = Date.parse(task.updatedAt);
@@ -40,12 +47,13 @@ export function mapBoardTask(task: Pick<Task, "id" | "title" | "kind" | "status"
   };
   if (task.kind) mapped.agent = task.kind;
   if (task.summary) mapped.summary = task.summary;
+  if (task.workspaceId && WORKSPACE_ID.test(task.workspaceId)) mapped.workspaceId = task.workspaceId;
   return mapped;
 }
 
-/** Title, status, and agent. Unchanged signatures do not emit another `evt.task`. */
+/** Title, status, agent, and workspace. Unchanged signatures do not emit another `evt.task`. */
 export function taskSignature(task: MappedTask): string {
-  return `${task.status}\0${task.title}\0${task.agent ?? ""}`;
+  return `${task.status}\0${task.title}\0${task.agent ?? ""}\0${task.workspaceId ?? ""}`;
 }
 
 export function isAgentKind(value: string): value is AgentKind {
