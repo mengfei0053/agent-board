@@ -156,6 +156,15 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
 - 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`
 
+## 工作区 Git 状态
+
+- `GET /api/workspaces/:id/git-status`（`?refresh=1` 跳过缓存）
+- 只读：对工作区 `path` 下每个 `.git`（目录或文件）跑 `git status --porcelain=v1 -b -z` 与 `git log -1`
+- 发现上限：深度 **6**（根为 0）、仓库 **32**、目录 **4000**、每仓库文件行 **200**；不进入 `node_modules` / `vendor` / `dist` / `build` / `target` / `.git` 内部等目录
+- 结果内存缓存约 3 秒；扫描与 git 调用异步，不阻塞其它请求
+- 路径只来自已保存的工作区，忽略客户端传入的 path；子进程去掉 `GIT_DIR` 等会把 git 指到别处的环境变量
+- UI：看板当前工作区横幅下，以及 `/workspaces/:id/settings`
+
 ## 任务内容图片
 
 - 创建 / 续跑输入框支持粘贴截图或「插入图片」；上传到 `data/uploads/`，在 prompt 中写入 Markdown `![alt](/uploads/<id>.ext)`

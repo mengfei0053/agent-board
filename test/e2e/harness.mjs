@@ -453,6 +453,44 @@ export function createMockServer(state, extra) {
       return json(res, 200, { task: t });
     }
 
+    const gitStatus = pathname.match(/^\/api\/workspaces\/([^/]+)\/git-status$/);
+    if (gitStatus && req.method === "GET") {
+      const id = decodeURIComponent(gitStatus[1]);
+      const cur = state.workspaces.get(id);
+      if (!cur) return json(res, 404, { error: "not found" });
+      return json(res, 200, {
+        workspaceId: id,
+        root: cur.path,
+        truncated: false,
+        scannedDirs: 2,
+        cached: false,
+        caps: { maxDepth: 6, maxRepos: 32, maxDirs: 4000, maxFilesPerRepo: 200 },
+        repos: [
+          {
+            path: cur.path,
+            relPath: ".",
+            branch: "main",
+            detached: false,
+            upstream: "origin/main",
+            ahead: 1,
+            behind: 0,
+            upstreamGone: false,
+            dirty: true,
+            head: "abc1234",
+            subject: "演示提交",
+            noCommits: false,
+            fileCount: 2,
+            filesTruncated: false,
+            error: null,
+            files: [
+              { code: " M", x: " ", y: "M", path: "README.md", label: "未暂存修改" },
+              { code: "??", x: "?", y: "?", path: "notes.txt", label: "未跟踪" },
+            ],
+          },
+        ],
+      });
+    }
+
     if (pathname.startsWith("/api/")) {
       return json(res, 404, { error: `mock missing ${pathname}` });
     }

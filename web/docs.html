@@ -28,6 +28,7 @@
       <a href="#query">查询</a>
       <a href="#sse">SSE 事件</a>
       <a href="#settings">设置</a>
+      <a href="#workspaces">工作区 / Git</a>
     </nav>
 
     <main class="docs-main">
@@ -216,7 +217,7 @@ npm start</code></pre>
     </main>
   </div>
 
-<section>
+<section id="workspaces">
   <h2>工作区</h2>
   <ul>
     <li><code>GET /api/workspaces</code> — 列表</li>
@@ -224,8 +225,36 @@ npm start</code></pre>
     <li><code>POST /api/workspaces</code> — <code>{ name, path }</code></li>
     <li><code>PATCH /api/workspaces/:id</code> — <code>{ name?, path?, settings? }</code>；<code>settings</code> 为整对象替换：<code>{ systemPrompt?, skills?: string[], mcp? }</code></li>
     <li><code>DELETE /api/workspaces/:id</code> — 无任务时可删（默认工作区不可删）</li>
+    <li><code>GET /api/workspaces/:id/git-status</code> — 只读 Git 状态。<code>?refresh=1</code> 跳过约 3 秒缓存。不接受客户端路径；仓库根目录只取工作区已保存的 <code>path</code>。</li>
   </ul>
-  <p>新建任务优先传 <code>workspaceId</code>；cwd 取自工作区 path。看板左侧侧栏管理工区，右侧只显示当前工区任务。侧栏工作区可右键：设置 / 编辑 / 删除；设置页 <code>/workspaces/:id/settings</code>。空间 <code>systemPrompt</code> / skills / mcp 在任务首次启动时前置拼入 runner prompt（有 session 的续跑不重复注入）。</p>
+  <p>新建任务优先传 <code>workspaceId</code>；cwd 取自工作区 path。看板左侧侧栏管理工区，右侧只显示当前工区任务。选中工作区后，泳道上方展示 Git 状态；空间设置页 <code>/workspaces/:id/settings</code> 也有同样的只读面板。侧栏工作区可右键：设置 / 编辑 / 删除。空间 <code>systemPrompt</code> / skills / mcp 在任务首次启动时前置拼入 runner prompt（有 session 的续跑不重复注入）。</p>
+  <p>Git 发现：从工作区根目录向下找 <code>.git</code>（目录或文件，含子模块 / worktree）。根目录深度为 0。上限：深度 <strong>6</strong>、仓库 <strong>32</strong>、扫描目录 <strong>4000</strong>、每个仓库变更行 <strong>200</strong>。不进入 <code>node_modules</code>、<code>vendor</code>、<code>dist</code>、<code>build</code>、<code>target</code>、<code>.git</code> 内部以及其他常见依赖 / 构建目录。达到上限时响应 <code>truncated: true</code>。接口只跑 <code>git status</code> 与 <code>git log -1</code>，不提交、不推送、不切换分支。</p>
+  <pre><code>{
+  "workspaceId": "…",
+  "root": "/abs/workspace",
+  "truncated": false,
+  "scannedDirs": 12,
+  "cached": false,
+  "caps": { "maxDepth": 6, "maxRepos": 32, "maxDirs": 4000, "maxFilesPerRepo": 200 },
+  "repos": [{
+    "path": "/abs/workspace",
+    "relPath": ".",
+    "branch": "main",
+    "detached": false,
+    "upstream": "origin/main",
+    "ahead": 1,
+    "behind": 0,
+    "upstreamGone": false,
+    "dirty": true,
+    "head": "abc1234",
+    "subject": "短说明",
+    "noCommits": false,
+    "files": [{ "code": " M", "x": " ", "y": "M", "path": "README.md", "label": "未暂存修改" }],
+    "fileCount": 1,
+    "filesTruncated": false,
+    "error": null
+  }]
+}</code></pre>
 </section>
 </body>
 </html>

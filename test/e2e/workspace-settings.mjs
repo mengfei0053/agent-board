@@ -126,6 +126,43 @@ function createServer() {
       }
     }
 
+    const gitStatus = pathname.match(/^\/api\/workspaces\/([^/]+)\/git-status$/);
+    if (gitStatus && req.method === "GET") {
+      const id = decodeURIComponent(gitStatus[1]);
+      if (id !== workspace.id) return json(res, 404, { error: "not found" });
+      return json(res, 200, {
+        workspaceId: id,
+        root: workspace.path,
+        truncated: false,
+        scannedDirs: 2,
+        cached: false,
+        caps: { maxDepth: 6, maxRepos: 32, maxDirs: 4000, maxFilesPerRepo: 200 },
+        repos: [
+          {
+            path: workspace.path,
+            relPath: ".",
+            branch: "main",
+            detached: false,
+            upstream: "origin/main",
+            ahead: 1,
+            behind: 0,
+            upstreamGone: false,
+            dirty: true,
+            head: "abc1234",
+            subject: "演示提交",
+            noCommits: false,
+            fileCount: 2,
+            filesTruncated: false,
+            error: null,
+            files: [
+              { code: " M", x: " ", y: "M", path: "README.md", label: "未暂存修改" },
+              { code: "??", x: "?", y: "?", path: "notes.txt", label: "未跟踪" },
+            ],
+          },
+        ],
+      });
+    }
+
     if (pathname.startsWith("/api/")) {
       return json(res, 404, { error: `mock missing ${pathname}` });
     }
@@ -186,6 +223,21 @@ async function main() {
     assert.deepEqual(menuItems.actions, ["settings", "edit", "delete"]);
     assert.ok(menuItems.labels.includes("设置"));
     assert.ok(menuItems.labels.includes("删除"));
+    await page.waitForFunction(
+      () => (document.getElementById("git-panel-summary")?.textContent || "").includes("有变更"),
+    );
+    const boardGit = await page.evaluate(() => ({
+      hidden: document.getElementById("git-panel")?.hidden,
+      summary: document.getElementById("git-panel-summary")?.textContent || "",
+      body: document.getElementById("git-panel-body")?.textContent || "",
+    }));
+    assert.equal(boardGit.hidden, false);
+    assert.match(boardGit.summary, /1 个仓库/);
+    assert.match(boardGit.body, /main/);
+    assert.match(boardGit.body, /README\.md/);
+    assert.match(boardGit.body, /未跟踪/);
+    assert.match(boardGit.body, /领先 1/);
+    console.log("[e2e] board git panel ok");
     console.log("[e2e] context menu ok");
 
     // Click 设置 → settings page
@@ -230,6 +282,15 @@ async function main() {
     assert.match(skillsVal, /code-review/);
     assert.match(skillsVal, /release/);
     console.log("[e2e] settings reload ok");
+
+    await page.waitForFunction(
+      () => (document.getElementById("git-status-summary")?.textContent || "").includes("有变更"),
+    );
+    const settingsGit = await page.$eval("#git-status-body", (el) => el.textContent || "");
+    assert.match(settingsGit, /演示提交/);
+    assert.match(settingsGit, /notes\.txt/);
+    assert.match(settingsGit, /未暂存修改/);
+    console.log("[e2e] settings git status ok");
 
     console.log("[e2e] all passed");
   } finally {

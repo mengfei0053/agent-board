@@ -49,6 +49,7 @@ import type {
 } from "./types.js";
 import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
+import { workspaceGitStatus } from "./gitStatus.js";
 import {
   CLI_COMMAND_KEYS,
   applyCliPathMemory,
@@ -372,6 +373,21 @@ app.get("/api/workspaces/:id", (c) => {
     workspace: ws,
     defaultWorkspaceId: getDefaultWorkspaceId(),
   });
+});
+
+/** Read-only git status. The path always comes from the stored workspace, never from the query string. */
+app.get("/api/workspaces/:id/git-status", async (c) => {
+  const id = c.req.param("id");
+  const ws = getWorkspace(id);
+  if (!ws) return c.json({ error: "not found" }, 404);
+  try {
+    const root = resolveAllowedDirectory(ws.path, "path");
+    const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true";
+    const status = await workspaceGitStatus(root, { refresh });
+    return c.json({ workspaceId: id, ...status });
+  } catch (e) {
+    return errorJson(c, e, 400);
+  }
 });
 
 app.patch("/api/workspaces/:id", async (c) => {

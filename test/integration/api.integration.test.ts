@@ -15,8 +15,10 @@ import {
   jsonOf,
   ensureDir,
 } from "./harness.js";
-import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { clearGitStatusCacheForTests, gitReadOnlyEnv } from "../../src/gitStatus.js";
 import { browseHome } from "../../src/fsbrowse.js";
 import { isRepoDataPath, jsonDbPath, logsDir } from "../../src/db.js";
 
@@ -953,6 +955,76 @@ describe("integration I1–I12", () => {
     assert.equal(body.cliPaths.pi.override, "/tmp/pi-from-a");
     assert.equal(body.cliPaths.claude.override, "/tmp/claude-from-b");
     setSettingsBarrierForTests(null);
+  });
+
+  it("I13 git-status lists every repo under the workspace and ignores client paths", async () => {
+    clearGitStatusCacheForTests();
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const git = (cwd: string, args: string[]) => {
+      execFileSync("git", args, {
+        cwd,
+        stdio: "pipe",
+        env: gitReadOnlyEnv({
+          ...process.env,
+          GIT_AUTHOR_NAME: "Tester",
+          GIT_AUTHOR_EMAIL: "tester@example.com",
+          GIT_COMMITTER_NAME: "Tester",
+          GIT_COMMITTER_EMAIL: "tester@example.com",
+        }),
+      });
+    };
+    git(path, ["init", "-b", "main"]);
+    writeFileSync(join(path, "README.md"), "a\n");
+    git(path, ["add", "README.md"]);
+    git(path, ["commit", "-m", "init readme"]);
+    writeFileSync(join(path, "README.md"), "changed\n");
+    const nested = join(path, "pkgs", "lib");
+    mkdirSync(nested, { recursive: true });
+    git(nested, ["init", "-b", "dev"]);
+    writeFileSync(join(nested, "lib.txt"), "lib\n");
+    git(nested, ["add", "lib.txt"]);
+    git(nested, ["commit", "-m", "lib init"]);
+
+    const create = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "git 空间", path }),
+    });
+    assert.equal(create.status, 201);
+    const { workspace } = await jsonOf(create);
+
+    const missing = await app.request("/api/workspaces/does-not-exist/git-status");
+    assert.equal(missing.status, 404);
+
+    const res = await app.request(
+      `/api/workspaces/${workspace.id}/git-status?path=/etc&refresh=1`,
+    );
+    assert.equal(res.status, 200);
+    const body = await jsonOf(res);
+    assert.equal(body.workspaceId, workspace.id);
+    assert.equal(body.root, path);
+    assert.equal(body.caps.maxDepth, 6);
+    assert.equal(body.caps.maxRepos, 32);
+    assert.equal(body.caps.maxDirs, 4000);
+    assert.equal(body.caps.maxFilesPerRepo, 200);
+    assert.equal(body.repos.length, 2);
+    const top = body.repos.find((repo: { relPath: string }) => repo.relPath === ".");
+    const child = body.repos.find((repo: { relPath: string }) => repo.relPath === join("pkgs", "lib"));
+    assert.equal(top.branch, "main");
+    assert.equal(top.dirty, true);
+    assert.equal(top.subject, "init readme");
+    assert.ok(top.files.some((file: { path: string; code: string }) => file.path === "README.md" && file.code === " M"));
+    assert.equal(child.branch, "dev");
+    assert.equal(child.dirty, false);
+    assert.ok(body.repos.every((repo: { path: string }) => repo.path === path || repo.path.startsWith(path + "/")));
+
+    const cached = await jsonOf(await app.request(`/api/workspaces/${workspace.id}/git-status`));
+    assert.equal(cached.cached, true);
+
+    rmSync(path, { recursive: true, force: true });
+    const gone = await app.request(`/api/workspaces/${workspace.id}/git-status?refresh=1`);
+    assert.equal(gone.status, 400);
   });
 });
 
