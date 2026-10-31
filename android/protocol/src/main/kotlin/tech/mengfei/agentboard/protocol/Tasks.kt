@@ -124,6 +124,8 @@ data class DoneNotice(
     val status: String,
     val title: String?,
     val summary: String?,
+    val sessionId: String? = null,
+    val displayName: String? = null,
 )
 
 sealed interface ApplyOutcome {
@@ -446,12 +448,31 @@ fun resumeCommandLabel(task: RelayTask, english: Boolean = false): String {
 
 fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
 
+/**
+ * `共 N 轮` only when the loaded iterations are exactly 1..N.
+ * Holes and the 12-cap use `已加载 n 条 / 最新第 N 轮`.
+ */
+fun turnHeading(task: RelayTask, english: Boolean = false): String? {
+    val turns = task.turns ?: return null
+    if (turns.isEmpty()) return null
+    val iterations = turns.map { it.iteration }
+    val latest = task.iteration ?: iterations.maxOrNull() ?: return null
+    val contiguous = latest >= 1 && iterations.toSet() == (1..latest).toSet()
+    val n = iterations.size
+    return if (contiguous) {
+        if (english) "$latest rounds" else "共 $latest 轮"
+    } else if (english) {
+        "Loaded $n / latest round $latest"
+    } else {
+        "已加载 $n 条 / 最新第 $latest 轮"
+    }
+}
+
 fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val initial = if (english) "Initial" else "初始"
     val follow = if (english) "Continue" else "继续"
     val turns = task.turns
     if (!turns.isNullOrEmpty()) {
-        val live = task.status == "queued" || task.status == "running" || task.status == "paused"
         val current = task.iteration
         return turns.map { turn ->
             DetailRound(
@@ -459,7 +480,7 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
                 kindLabel = if (turn.iteration <= 1) initial else follow,
                 prompt = turn.prompt,
                 output = turn.output,
-                pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
+                pending = outputStillGenerating(task.status, turn.iteration, current, turn.output.isNullOrBlank()),
             )
         }
     }
@@ -467,8 +488,20 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val output = task.output ?: task.outputPreview
     if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
     val iteration = task.iteration ?: 1
-    val live = task.status == "queued" || task.status == "running" || task.status == "paused"
-    return listOf(DetailRound(iteration, if (iteration <= 1) initial else follow, prompt, output, live && output.isNullOrBlank()))
+    return listOf(
+        DetailRound(
+            iteration,
+            if (iteration <= 1) initial else follow,
+            prompt,
+            output,
+            outputStillGenerating(task.status, iteration, iteration, output.isNullOrBlank()),
+        ),
+    )
+}
+
+/** Only a running round with no reply is "generating". Queued and paused are not a live model. */
+fun outputStillGenerating(status: String, iteration: Int, current: Int?, outputBlank: Boolean): Boolean {
+    return status == "running" && outputBlank && current != null && iteration == current
 }
 
 fun detailError(task: RelayTask, english: Boolean = false): String? {

@@ -33,15 +33,18 @@ class DoneNotifier(private val context: Context) {
         if (notice.status == ARCHIVED_STATUS) return
         ensureChannel()
         val english = prefersEnglish(java.util.Locale.getDefault().language)
-        val title = notice.title?.takeIf { it.isNotBlank() } ?: statusLabel(notice.status, english)
+        val taskTitle = notice.title?.takeIf { it.isNotBlank() } ?: statusLabel(notice.status, english)
+        val title = notice.displayName?.takeIf { it.isNotBlank() }?.let { "$it · $taskTitle" } ?: taskTitle
         val body = "${notice.taskId} · ${statusLabel(notice.status, english)}"
         val open = PendingIntent.getActivity(
             context,
-            0,
+            notice.sessionId?.hashCode() ?: 0,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(MainActivity.EXTRA_SESSION, notice.sessionId)
+                putExtra(MainActivity.EXTRA_TASK, notice.taskId)
             },
-            PendingIntent.FLAG_IMMUTABLE,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_done)
