@@ -446,6 +446,26 @@ fun resumeCommandLabel(task: RelayTask, english: Boolean = false): String {
 
 fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
 
+/**
+ * `共 N 轮` only when the loaded iterations are exactly 1..N.
+ * Holes and the 12-cap use `已加载 n 条 / 最新第 N 轮`.
+ */
+fun turnHeading(task: RelayTask, english: Boolean = false): String? {
+    val turns = task.turns ?: return null
+    if (turns.isEmpty()) return null
+    val iterations = turns.map { it.iteration }
+    val latest = task.iteration ?: iterations.maxOrNull() ?: return null
+    val contiguous = latest >= 1 && iterations.toSet() == (1..latest).toSet()
+    val n = iterations.size
+    return if (contiguous) {
+        if (english) "$latest rounds" else "共 $latest 轮"
+    } else if (english) {
+        "Loaded $n / latest round $latest"
+    } else {
+        "已加载 $n 条 / 最新第 $latest 轮"
+    }
+}
+
 fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val initial = if (english) "Initial" else "初始"
     val follow = if (english) "Continue" else "继续"

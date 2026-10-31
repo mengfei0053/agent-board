@@ -148,6 +148,19 @@ private fun isPromptText(value: String): Boolean = value.none {
     code == 0 || code == 127 || (code < 32 && code != 9 && code != 10 && code != 13)
 }
 
+/** Phone continue always carries a non-blank prompt. Blank is not sent. */
+fun validatePhoneContinue(
+    id: String,
+    ts: Long,
+    boardId: String,
+    taskId: String,
+    idempotencyKey: String,
+    prompt: String,
+): Validated<Envelope> {
+    if (prompt.trim().isEmpty()) return Validated.Invalid("prompt is required, up to 20000 characters")
+    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt)
+}
+
 fun validateContinue(
     id: String,
     ts: Long,
