@@ -7,6 +7,7 @@
 import { mkdtempSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isRepoDataPath } from "../../src/db.js";
 import { createServer } from "node:net";
 import EmbeddedPostgres from "embedded-postgres";
 import type { Runner, RunnerHooks, RunnerStartOptions } from "../../src/runners/types.js";
@@ -28,6 +29,7 @@ export type RunnerProtocolEvent =
 let pg: EmbeddedPostgres | null = null;
 let pgDir = "";
 let databaseUrl = "";
+let testDataDir = "";
 export const runnerCalls: RunnerCall[] = [];
 export const runnerProtocol: RunnerProtocolEvent[] = [];
 
@@ -73,8 +75,15 @@ export async function startTestDb(): Promise<string> {
   await pg.start();
   await pg.createDatabase("agent_board_test");
   databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/agent_board_test`;
+  testDataDir = mkdtempSync(join(tmpdir(), "agent-board-data-"));
   process.env.DATABASE_URL = databaseUrl;
+  process.env.DATA_DIR = testDataDir;
+  process.env.UPLOADS_DIR = join(testDataDir, "uploads");
+  process.env.AGENT_BOARD_REFUSE_REPO_DATA = "1";
   process.env.AGENT_BOARD_WEBHOOK_SECRET = "test-webhook-secret";
+  if (isRepoDataPath(process.env.DATA_DIR) || isRepoDataPath(process.env.UPLOADS_DIR)) {
+    throw new Error("integration tests refused to use the repo data directory");
+  }
   return databaseUrl;
 }
 
@@ -96,6 +105,18 @@ export async function stopTestDb(): Promise<void> {
   }
   pgDir = "";
   databaseUrl = "";
+  if (testDataDir && existsSync(testDataDir)) {
+    try {
+      rmSync(testDataDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  testDataDir = "";
+}
+
+export function testDataRoot(): string {
+  return testDataDir;
 }
 
 function makeFakeRunner(): Runner {

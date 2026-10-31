@@ -170,6 +170,16 @@ describe("merge / upsert / summarize / formatError", () => {
     );
   });
 
+  it("does not replace a longer live turn with a shorter extracted result", () => {
+    const long = "final ".repeat(2000);
+    const merged = mergeOutputTurns(
+      [{ iteration: 1, text: long, at: "2026-01-01T00:00:02.000Z" }],
+      [{ iteration: 1, text: "short earlier result" }],
+      1,
+    );
+    assert.equal(merged[0]?.text, long);
+  });
+
   it("extracts and merges prompt turns", () => {
     const lines = [
       JSON.stringify({ type: "start" }),

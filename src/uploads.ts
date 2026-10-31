@@ -1,14 +1,40 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
-import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
+import { extname, join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type { TaskAttachment } from "./types.js";
+import { assertDataRootAllowed, dataDir, databaseUrl } from "./db.js";
 import { getPool } from "./db.js";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const uploadsDir = join(root, "data", "uploads");
+const OWNER_FILE = ".agent-board-upload-owner";
+const TRASH_DIR = ".trash";
+
+/** Upload root. `UPLOADS_DIR` wins; otherwise `<DATA_DIR>/uploads`. */
+export function uploadsDir(): string {
+  const raw = process.env.UPLOADS_DIR?.trim();
+  if (raw) return resolve(raw);
+  return join(dataDir(), "uploads");
+}
+
+/** Stable id for the database that owns this upload root. */
+export function uploadOwnerId(dbUrl = databaseUrl()): string {
+  return createHash("sha256").update(dbUrl).digest("hex");
+}
 
 /** Max upload size for prompt images (bytes). */
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
@@ -68,8 +94,9 @@ const EXT_MIME: Record<string, string> = {
   sql: "application/sql",
 };
 
-export function ensureUploadsDir(): void {
-  if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true });
+export function ensureUploadsDir(dir = uploadsDir()): void {
+  assertDataRootAllowed(dir);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 export function isAllowedImageMime(mime: string): boolean {
@@ -103,16 +130,44 @@ export function sniffImageMime(buf: Uint8Array): string | null {
   return null;
 }
 
+const UPLOAD_REF_RE = /\/uploads\/([A-Za-z0-9_-]+\.[A-Za-z0-9]{1,16})/g;
+
+export type UploadRefSource = {
+  attachments?: { name: string }[] | undefined;
+  prompt?: string;
+  output?: string;
+  prompts?: { prompt?: string }[] | undefined;
+  outputs?: { text?: string }[] | undefined;
+};
+
+/** Every stored upload name referenced by attachments or any persisted text field. */
+export function collectUploadRefs(tasks: Iterable<UploadRefSource>): Set<string> {
+  const names = new Set<string>();
+  for (const t of tasks) {
+    for (const a of t.attachments || []) {
+      if (a?.name) names.add(a.name);
+    }
+    const texts = [
+      t.prompt,
+      t.output,
+      ...(t.prompts || []).map((p) => p.prompt),
+      ...(t.outputs || []).map((o) => o.text),
+    ];
+    for (const text of texts) {
+      if (!text) continue;
+      for (const m of text.matchAll(UPLOAD_REF_RE)) {
+        if (m[1]) names.add(m[1]);
+      }
+    }
+  }
+  return names;
+}
+
 export function uploadNameReferenced(
   name: string,
-  tasks: Iterable<{ attachments?: { name: string }[] | undefined; prompt?: string }>,
+  tasks: Iterable<UploadRefSource>,
 ): boolean {
-  const needle = `/uploads/${name}`;
-  for (const t of tasks) {
-    if (t.attachments?.some((a) => a.name === name)) return true;
-    if (t.prompt && t.prompt.includes(needle)) return true;
-  }
-  return false;
+  return collectUploadRefs(tasks).has(name);
 }
 
 export function extForMime(mime: string): string | null {
@@ -127,14 +182,53 @@ export function isSafeStoredName(name: string): boolean {
   return SAFE_STORED_NAME.test(name);
 }
 
-export function absoluteUploadPath(name: string): string | null {
+export function absoluteUploadPath(name: string, dir = uploadsDir()): string | null {
   if (!isSafeStoredName(name) && !isSafeUploadName(name)) return null;
-  const abs = resolve(uploadsDir, name);
-  const rootAbs = resolve(uploadsDir);
+  const abs = resolve(dir, name);
+  const rootAbs = resolve(dir);
   if (!abs.startsWith(rootAbs + "/") && abs !== rootAbs) {
     return null;
   }
   return abs;
+}
+
+/** Open a stored file without following a symlink planted in the upload root. */
+export function openUploadNoFollow(abs: string): { fd: number; size: number } | null {
+  let fd: number;
+  try {
+    fd = openSync(abs, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return null;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) {
+      closeSync(fd);
+      return null;
+    }
+    return { fd, size: st.size };
+  } catch (err) {
+    try { closeSync(fd); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+function writeExclusiveFile(dest: string, buf: Buffer): void {
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const fd = openSync(dest, flags, 0o644);
+  try {
+    let off = 0;
+    while (off < buf.length) {
+      const n = writeSync(fd, buf, off, buf.length - off);
+      if (n <= 0) break;
+      off += n;
+    }
+  } catch (err) {
+    try { closeSync(fd); } catch { /* ignore */ }
+    try { unlinkSync(dest); } catch { /* ignore */ }
+    throw err;
+  }
+  closeSync(fd);
 }
 
 export function publicUploadUrl(name: string): string {
@@ -213,8 +307,9 @@ export async function saveUploadFile(
     });
   }
   ensureUploadsDir();
+  const dir = uploadsDir();
   const name = `${nanoid(12)}${ext}`;
-  const dest = join(uploadsDir, name);
+  const dest = join(dir, name);
   const buf = Buffer.from(await file.arrayBuffer());
   if (buf.length > MAX_UPLOAD_BYTES) {
     throw Object.assign(new Error(`图片过大（上限 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB）`), {
@@ -225,7 +320,7 @@ export async function saveUploadFile(
   if (!sniffed || sniffed !== mime && !(mime === "image/jpg" && sniffed === "image/jpeg")) {
     throw Object.assign(new Error("文件内容与图片类型不符"), { status: 400 });
   }
-  await pipeline(Readable.from(buf), createWriteStream(dest));
+  writeExclusiveFile(dest, buf);
   try {
     await rememberUpload({ name, originalName: file.name || name, mime: sniffed, size: buf.length });
   } catch (err) {
@@ -245,8 +340,9 @@ export async function saveAttachmentFile(file: File): Promise<TaskAttachment> {
   ensureUploadsDir();
   const originalName = sanitizeOriginalName(file.name || "file");
   const ext = safeExtFromFilename(originalName);
+  const dir = uploadsDir();
   const name = `${nanoid(12)}.${ext}`;
-  const dest = join(uploadsDir, name);
+  const dest = join(dir, name);
   const buf = Buffer.from(await file.arrayBuffer());
   if (buf.length > MAX_ATTACHMENT_BYTES) {
     throw Object.assign(
@@ -257,7 +353,7 @@ export async function saveAttachmentFile(file: File): Promise<TaskAttachment> {
   if (buf.length === 0) {
     throw Object.assign(new Error("附件为空文件"), { status: 400 });
   }
-  await pipeline(Readable.from(buf), createWriteStream(dest));
+  writeExclusiveFile(dest, buf);
   const mime =
     (file.type || "").trim() || mimeForStoredName(name, "application/octet-stream");
   try {
@@ -297,29 +393,64 @@ export function deleteAttachmentFiles(attachments: TaskAttachment[] | undefined)
   for (const a of attachments) unlinkUploadFile(a.name);
 }
 
-function unlinkUploadFile(name: string): void {
-  const abs = absoluteUploadPath(name);
+function unlinkUploadFile(name: string, dir = uploadsDir()): void {
+  const abs = absoluteUploadPath(name, dir);
   if (!abs) return;
   try {
-    if (existsSync(abs)) unlinkSync(abs);
+    const st = lstatSync(abs);
+    if (!st.isFile()) return;
+    unlinkSync(abs);
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
     console.warn(`[uploads] could not remove attachment ${name}:`, err);
   }
 }
 
+type OwnerStamp = { id: string; adoptedAt: number };
+
+function ownerPath(dir: string): string {
+  return join(dir, OWNER_FILE);
+}
+
+export function readUploadOwner(dir: string): OwnerStamp | null {
+  try {
+    const parsed = JSON.parse(readFileSync(ownerPath(dir), "utf8")) as OwnerStamp;
+    if (!parsed || typeof parsed.id !== "string" || typeof parsed.adoptedAt !== "number") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function writeUploadOwner(dir: string, stamp: OwnerStamp): void {
+  writeFileSync(ownerPath(dir), JSON.stringify(stamp));
+}
+
+function ownerAllowsDelete(dir: string, ownerId: string): OwnerStamp | null {
+  const stamp = readUploadOwner(dir);
+  if (!stamp || stamp.id !== ownerId) return null;
+  return stamp;
+}
+
 /**
  * Unlink files no remaining task points at. `tasks` is the post-delete set.
- * Shared attachments stay on disk.
+ * Shared attachments stay on disk. A root owned by another database is left alone.
  */
 export async function removeUploadsIfUnreferenced(
   names: string[],
-  tasks: Iterable<{ attachments?: { name: string }[] | undefined; prompt?: string }>,
+  tasks: Iterable<UploadRefSource>,
+  opts?: { dir?: string; ownerId?: string },
 ): Promise<void> {
+  const dir = opts?.dir ?? uploadsDir();
+  const ownerId = opts?.ownerId ?? uploadOwnerId();
+  if (!ownerAllowsDelete(dir, ownerId)) return;
   const unique = [...new Set(names.filter(Boolean))];
+  const referenced = collectUploadRefs(tasks);
   const dropped: string[] = [];
   for (const name of unique) {
-    if (uploadNameReferenced(name, tasks)) continue;
-    unlinkUploadFile(name);
+    if (referenced.has(name)) continue;
+    unlinkUploadFile(name, dir);
     dropped.push(name);
   }
   if (!dropped.length) return;
@@ -330,29 +461,81 @@ export async function removeUploadsIfUnreferenced(
   }
 }
 
-/** Delete on-disk uploads that nothing references and that are older than maxAgeMs. */
+export type GcOrphanOptions = {
+  maxAgeMs?: number;
+  dir?: string;
+  ownerId?: string;
+  now?: number;
+  /** When false, skip the uploads-table DELETE (unit tests with no pool). */
+  dropRows?: boolean;
+};
+
+/**
+ * Quarantine unreferenced files in one upload root.
+ * A directory is not deletable just because the current database has no refs:
+ * the root must carry this database's owner stamp, and files that predate the
+ * stamp (a populated dir claimed on first sight) are left in place.
+ * The first call on an unstamped directory writes the stamp and deletes nothing.
+ */
 export async function gcOrphanUploads(
   referenced: Set<string>,
-  maxAgeMs = 24 * 60 * 60 * 1000,
+  maxAgeMsOrOpts: number | GcOrphanOptions = 24 * 60 * 60 * 1000,
 ): Promise<number> {
-  ensureUploadsDir();
-  const now = Date.now();
+  const opts: GcOrphanOptions =
+    typeof maxAgeMsOrOpts === "number" ? { maxAgeMs: maxAgeMsOrOpts } : maxAgeMsOrOpts;
+  const dir = opts.dir ?? uploadsDir();
+  const maxAgeMs = opts.maxAgeMs ?? 24 * 60 * 60 * 1000;
+  const now = opts.now ?? Date.now();
+  const ownerId = opts.ownerId ?? uploadOwnerId();
+  ensureUploadsDir(dir);
+  let stamp = readUploadOwner(dir);
+  if (!stamp) {
+    writeUploadOwner(dir, { id: ownerId, adoptedAt: now });
+    return 0;
+  }
+  if (stamp.id !== ownerId) return 0;
+
+  const trash = join(dir, TRASH_DIR);
   const dropped: string[] = [];
-  for (const name of readdirSync(uploadsDir)) {
+  const justQuarantined = new Set<string>();
+  for (const name of readdirSync(dir)) {
+    if (name === OWNER_FILE || name === TRASH_DIR) continue;
     if (!isSafeStoredName(name) && !isSafeUploadName(name)) continue;
     if (referenced.has(name)) continue;
-    const abs = join(uploadsDir, name);
+    const abs = join(dir, name);
     try {
-      const st = statSync(abs);
+      const st = lstatSync(abs);
       if (!st.isFile()) continue;
+      if (st.mtimeMs < stamp.adoptedAt) continue;
       if (now - st.mtimeMs < maxAgeMs) continue;
-      unlinkSync(abs);
+      mkdirSync(trash, { recursive: true });
+      const trashedName = `${now}-${name}`;
+      const trashed = join(trash, trashedName);
+      renameSync(abs, trashed);
+      // Start the retention clock at quarantine time, not the original mtime.
+      const stampDate = new Date(now);
+      utimesSync(trashed, stampDate, stampDate);
+      justQuarantined.add(trashedName);
       dropped.push(name);
     } catch (err) {
       console.warn(`[uploads] gc skip ${name}:`, err);
     }
   }
-  if (dropped.length) {
+  if (existsSync(trash)) {
+    for (const name of readdirSync(trash)) {
+      if (justQuarantined.has(name)) continue;
+      const abs = join(trash, name);
+      try {
+        const st = lstatSync(abs);
+        if (!st.isFile()) continue;
+        if (now - st.mtimeMs < maxAgeMs) continue;
+        unlinkSync(abs);
+      } catch (err) {
+        console.warn(`[uploads] gc trash skip ${name}:`, err);
+      }
+    }
+  }
+  if (dropped.length && opts.dropRows !== false) {
     try {
       await getPool().query(`DELETE FROM uploads WHERE name = ANY($1::text[])`, [dropped]);
     } catch (err) {
@@ -365,7 +548,10 @@ export async function gcOrphanUploads(
 export function normalizeAttachmentsInput(
   raw: unknown,
 ): TaskAttachment[] {
-  if (!Array.isArray(raw)) return [];
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) {
+    throw Object.assign(new Error("attachments must be an array"), { status: 400 });
+  }
   const out: TaskAttachment[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;

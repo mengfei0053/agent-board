@@ -30,6 +30,7 @@ export function allowedDirectoryRoots(): string[] {
 }
 
 export function isInsideRoot(rootReal: string, targetReal: string): boolean {
+  if (rootReal === sep) return targetReal === sep || targetReal.startsWith(sep);
   return targetReal === rootReal || targetReal.startsWith(rootReal + sep);
 }
 

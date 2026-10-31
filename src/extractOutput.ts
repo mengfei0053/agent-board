@@ -296,6 +296,11 @@ export function mergeOutputTurns(
   for (const o of adjusted) {
     if (!o?.text?.trim()) continue;
     const prev = map.get(o.iteration);
+    // Log re-extraction must not replace a longer live capture with an older
+    // shorter result that is all the truncated log still contains.
+    if (prev?.text && prev.text.length > o.text.length) {
+      continue;
+    }
     map.set(o.iteration, {
       ...prev,
       ...o,

@@ -99,8 +99,18 @@ describe("boundStoredLogLine", () => {
     const stored = boundStoredLogLine(raw, 200);
     const parsed = JSON.parse(stored) as { type?: string; recoveredText?: string };
     assert.equal(parsed.type, "log_truncated");
+    assert.equal(parsed.recoveredText, "hello reply");
     assert.equal(typeof stored, "string");
     assert.ok(!stored.includes("…[truncated"));
+  });
+
+  it("keeps a long result string inside the truncated wrapper", () => {
+    const result = "R".repeat(12_000);
+    const raw = JSON.stringify({ type: "result", result });
+    const stored = boundStoredLogLine(raw, 200);
+    const parsed = JSON.parse(stored) as { type?: string; recoveredText?: string };
+    assert.equal(parsed.type, "log_truncated");
+    assert.equal(parsed.recoveredText, result);
   });
 
   it("selects indices in original order", () => {

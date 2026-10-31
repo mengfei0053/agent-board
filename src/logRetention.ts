@@ -27,7 +27,9 @@ export function boundStoredLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS):
   const head = raw.slice(0, maxChars);
   const trimmed = head.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    const recovered = extractTextFromEventLine(head);
+    // Parse the full event so a long final result stays recoverable. A cut
+    // prefix is not valid JSON and would lose the text to an older short result.
+    const recovered = extractTextFromEventLine(raw) || extractTextFromEventLine(head);
     return JSON.stringify({
       type: "log_truncated",
       originalChars: raw.length,

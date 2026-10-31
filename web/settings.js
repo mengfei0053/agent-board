@@ -54,7 +54,10 @@ function setStatus(msg, ok) {
 }
 
 function proxyHint(row) {
-  if (row?.override) {
+  if (row?.hasCredential) {
+    return `<span class="settings-hint muted">已保存凭据（显示为 ***）。不改此框则保持原密码；要更换请整段重填。</span>`;
+  }
+  if (row?.override || row?.configured) {
     return `<span class="settings-hint muted">已为本 Agent 单独设置</span>`;
   }
   if (row?.inherited && row.effective) {
@@ -133,8 +136,9 @@ function renderProxyBlock(kind, kindMap) {
           name="proxy-${escapeHtml(kind)}-${escapeHtml(key)}"
           data-proxy-kind="${escapeHtml(kind)}"
           data-proxy-key="${escapeHtml(key)}"
+          data-initial="${escapeHtml(row.override || "")}"
           value="${escapeHtml(row.override || "")}"
-          placeholder="留空则沿用看板"
+          placeholder="${row.hasCredential ? "已配置，留空保持不变" : "留空则沿用看板"}"
           spellcheck="false"
           autocomplete="off"
         />
@@ -161,7 +165,7 @@ function renderCodexSandboxBlock() {
     <section class="settings-block" aria-labelledby="codex-sandbox-title">
       <header class="settings-block-head">
         <h2 id="codex-sandbox-title">Codex 沙箱</h2>
-        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。关沙箱时仍建议保留本机 <code>~/.codex/hooks</code> 里的危险删除拦截（<code>rm -rf</code> / <code>git clean -fdx</code> 等会被 PreToolUse hook 拒绝）。</p>
+        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。关沙箱时，若本机 <code>~/.codex/hooks</code> 已配置危险删除拦截，<code>rm -rf</code> / <code>git clean -fdx</code> 可能被拒绝。看板不检查 hook 是否存在，提示词前缀和关沙箱都不是执行安全边界。</p>
       </header>
       <label class="settings-row settings-row-toggle">
         <span class="settings-label">
@@ -179,7 +183,7 @@ function renderCodexSandboxBlock() {
           <span class="settings-toggle-hint muted" id="codex-sandbox-hint">${
             on
               ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
-              : "关：-s danger-full-access（可访问内网；危险删除仍由 Codex hook 拦截）"
+              : "关：-s danger-full-access（可访问内网；hook 拦截取决于本机 Codex 配置）"
           }</span>
         </span>
       </label>
@@ -305,6 +309,7 @@ function collectPayload() {
   for (const input of panelsEl.querySelectorAll("input[data-proxy-kind][data-proxy-key]")) {
     const kind = input.dataset.proxyKind;
     const key = input.dataset.proxyKey;
+    if (input.value === (input.dataset.initial || "")) continue;
     if (!proxyEnv[kind]) proxyEnv[kind] = {};
     proxyEnv[kind][key] = input.value;
   }
@@ -333,7 +338,7 @@ panelsEl.addEventListener("change", (e) => {
   if (hint) {
     hint.textContent = t.checked
       ? "开：workspace-write 沙箱（可能无法推送到内网 GitLab）"
-      : "关：-s danger-full-access（可访问内网；危险删除仍由 Codex hook 拦截）";
+      : "关：-s danger-full-access（可访问内网；hook 拦截取决于本机 Codex 配置）";
   }
   setStatus(t.checked ? "已勾选启用沙箱（尚未保存）。" : "已取消沙箱（尚未保存）。");
 });

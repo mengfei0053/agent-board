@@ -9,6 +9,7 @@ import {
   _resetCliPathOverridesForTests,
   getCliPathSettings,
   parseCliPathsJson,
+  planCliPathOverrides,
   resolveCliCommand,
   whichResolved,
   whichResolvedAsync,
@@ -26,6 +27,11 @@ describe("parseCliPathsJson / resolveCliCommand", () => {
       parseCliPathsJson(JSON.stringify({ pi: " /opt/pi ", nope: "x", claude: "  " })),
       { pi: "/opt/pi" },
     );
+  });
+
+  it("rejects a NUL in a CLI path override", () => {
+    assert.throws(() => planCliPathOverrides({ agent: "agent\0bad" }), /NUL/);
+    assert.deepEqual(parseCliPathsJson(JSON.stringify({ agent: "agent\u0000bad" })), {});
   });
 
   it("resolves override or default", () => {

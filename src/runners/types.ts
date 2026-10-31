@@ -8,6 +8,10 @@ export type RunnerHooks = {
 export type RunnerHandle = {
   pid?: number;
   stop: () => void;
+  /** Resolves when the child has exited, or immediately if nothing was spawned. */
+  settled?: Promise<void>;
+  /** SIGTERM, then SIGKILL, then wait until exit or `timeoutMs`. */
+  stopAndWait?: (timeoutMs?: number) => Promise<void>;
 };
 
 export type RunnerStartOptions = {

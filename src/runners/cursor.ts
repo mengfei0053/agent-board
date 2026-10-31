@@ -10,11 +10,13 @@ import { mergeContinueWithoutSession } from "./promptForRun.js";
 async function ensureCursorChatId(
   hooks: RunnerHooks,
   isStopped: () => boolean,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   try {
     const r = await spawnCollect(resolveCliCommand("agent"), ["create-chat"], {
       env: childProcessEnv("agent", { NO_COLOR: "1" }),
       timeoutMs: 20_000,
+      signal,
     });
     if (isStopped()) return undefined;
     const out = `${r.stdout || ""}\n${r.stderr || ""}`.trim();
@@ -97,14 +99,22 @@ export const cursorRunner: Runner = {
   start(task, hooks, opts) {
     let stopped = false;
     let inner: RunnerHandle | null = null;
+    const createChatAbort = new AbortController();
     const handle: RunnerHandle = {
       stop() {
         stopped = true;
+        createChatAbort.abort();
         try {
           inner?.stop();
         } catch {
           /* ignore */
         }
+      },
+      stopAndWait: async (timeoutMs?: number) => {
+        stopped = true;
+        createChatAbort.abort();
+        if (inner?.stopAndWait) await inner.stopAndWait(timeoutMs);
+        else inner?.stop();
       },
     };
 
@@ -156,12 +166,37 @@ export const cursorRunner: Runner = {
       if (inner.pid) handle.pid = inner.pid;
     };
 
+    const failLaunch = (err: unknown) => {
+      if (stopped) return;
+      const error = err instanceof Error ? err.message : String(err);
+      try {
+        hooks.onStatus({
+          status: "failed",
+          error,
+          endedAt: new Date().toISOString(),
+          lastEvent: "launch_failed",
+        });
+      } catch {
+        /* the caller still needs this rejection handled */
+      }
+    };
+
+    const launchSafe = (resolved: string | undefined) => {
+      try {
+        launch(resolved);
+      } catch (err) {
+        failLaunch(err);
+      }
+    };
+
     if (priorSessionId) {
-      launch(undefined);
+      launchSafe(undefined);
     } else {
-      void ensureCursorChatId(hooks, () => stopped).then((id) => {
-        if (!stopped) launch(id);
-      });
+      void ensureCursorChatId(hooks, () => stopped, createChatAbort.signal)
+        .then((id) => {
+          if (!stopped) launchSafe(id);
+        })
+        .catch((err) => failLaunch(err));
     }
     return handle;
   },

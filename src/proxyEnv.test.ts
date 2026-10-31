@@ -5,9 +5,11 @@ import {
   _resetProxyEnvOverridesForTests,
   childProcessEnv,
   getProxyEnvSettings,
+  isRedactedProxyPlaceholder,
   lastInjectedProxyKeys,
   lastInjectedProxyKind,
   parseProxyEnvJson,
+  planProxyEnvOverrides,
 } from "./proxyEnv.js";
 
 afterEach(() => {
@@ -86,8 +88,42 @@ describe("childProcessEnv / getProxyEnvSettings", () => {
     const { proxyEnv } = getProxyEnvSettings();
     assert.equal(proxyEnv.pi.HTTP_PROXY.override, "http://user:***@127.0.0.1:7890");
     assert.equal(proxyEnv.pi.HTTP_PROXY.effective, "http://user:***@127.0.0.1:7890");
+    assert.equal(proxyEnv.pi.HTTP_PROXY.configured, true);
+    assert.equal(proxyEnv.pi.HTTP_PROXY.hasCredential, true);
     const env = childProcessEnv("pi");
     assert.equal(env.HTTP_PROXY, "http://user:s3cret@127.0.0.1:7890");
+    assert.equal(isRedactedProxyPlaceholder(proxyEnv.pi.HTTP_PROXY.override), true);
+    const planned = planProxyEnvOverrides({
+      pi: { HTTP_PROXY: proxyEnv.pi.HTTP_PROXY.override, HTTPS_PROXY: "http://fresh:1" },
+    });
+    assert.equal(planned.next.pi?.HTTP_PROXY, "http://user:s3cret@127.0.0.1:7890");
+    assert.equal(planned.next.pi?.HTTPS_PROXY, "http://fresh:1");
+  });
+
+  it("passes runner auth env and still strips database credentials", () => {
+    const prevOpen = process.env.OPENAI_API_KEY;
+    const prevCursor = process.env.CURSOR_API_KEY;
+    const prevDb = process.env.DATABASE_URL;
+    process.env.OPENAI_API_KEY = "sk-test-openai";
+    process.env.CURSOR_API_KEY = "cursor-secret";
+    process.env.DATABASE_URL = "postgresql://postgres:secret@127.0.0.1/db";
+    try {
+      const codex = childProcessEnv("codex");
+      assert.equal(codex.OPENAI_API_KEY, "sk-test-openai");
+      assert.equal(codex.CURSOR_API_KEY, undefined);
+      assert.equal(codex.DATABASE_URL, undefined);
+      const agent = childProcessEnv("agent");
+      assert.equal(agent.CURSOR_API_KEY, "cursor-secret");
+      assert.equal(agent.OPENAI_API_KEY, undefined);
+      assert.equal(agent.DATABASE_URL, undefined);
+    } finally {
+      if (prevOpen === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevOpen;
+      if (prevCursor === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevCursor;
+      if (prevDb === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prevDb;
+    }
   });
 
   it("leaves process.env when no override for kind", () => {

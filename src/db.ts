@@ -1,18 +1,61 @@
 import pg from "pg";
 import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const { Pool } = pg;
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const dataDir = join(root, "data");
-export const logsDir = join(dataDir, "logs");
-export const jsonDbPath = join(dataDir, "db.json");
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-mkdirSync(logsDir, { recursive: true });
+/** Repo `data/` directory. Tests must not use this; set DATA_DIR instead. */
+export function repoDataDir(): string {
+  return join(repoRoot, "data");
+}
 
-/** Default points at the ThinkBook docker postgres:16 container on :5432 */
+/**
+ * Data root. `DATA_DIR` overrides the repo `data/` folder so tests and a
+ * second instance can keep uploads, logs, and db.json off the real tree.
+ */
+export function dataDir(): string {
+  const raw = process.env.DATA_DIR?.trim();
+  return raw ? resolve(raw) : repoDataDir();
+}
+
+export function logsDir(): string {
+  return join(dataDir(), "logs");
+}
+
+export function jsonDbPath(): string {
+  return join(dataDir(), "db.json");
+}
+
+export function isRepoDataPath(target: string): boolean {
+  const root = resolve(repoDataDir());
+  const abs = resolve(target);
+  return abs === root || abs.startsWith(root + sep);
+}
+
+/** True when this process must not read or delete the repo data tree. */
+export function refuseRepoData(): boolean {
+  return process.env.AGENT_BOARD_REFUSE_REPO_DATA === "1";
+}
+
+export function assertDataRootAllowed(target: string): void {
+  if (refuseRepoData() && isRepoDataPath(target)) {
+    throw new Error(`refusing to touch repo data directory: ${target}`);
+  }
+}
+
+export function ensureDataDirs(): void {
+  const logs = logsDir();
+  assertDataRootAllowed(logs);
+  mkdirSync(logs, { recursive: true });
+}
+
+/**
+ * Local-dev fallback only. Compose does not use this password; set
+ * POSTGRES_PASSWORD and DATABASE_URL explicitly. Not a production default.
+ */
 export const DEFAULT_DATABASE_URL =
   "postgresql://postgres:postgres@127.0.0.1:5432/agent_board";
 
@@ -170,31 +213,34 @@ export async function ensureSchema(): Promise<void> {
 }
 
 export function jsonDbExists(): boolean {
-  return existsSync(jsonDbPath);
+  return existsSync(jsonDbPath());
 }
 
 export function readJsonDbRaw(): { tasks: unknown[] } | null {
-  if (!existsSync(jsonDbPath)) return null;
+  const path = jsonDbPath();
+  if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(jsonDbPath, "utf8")) as { tasks: unknown[] };
+    return JSON.parse(readFileSync(path, "utf8")) as { tasks: unknown[] };
   } catch {
     return null;
   }
 }
 
 export function listJsonlLogFiles(): { id: string; path: string }[] {
-  if (!existsSync(logsDir)) return [];
-  return readdirSync(logsDir)
+  const dir = logsDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
     .filter((f) => f.endsWith(".jsonl"))
-    .map((f) => ({ id: f.replace(/\.jsonl$/, ""), path: join(logsDir, f) }));
+    .map((f) => ({ id: f.replace(/\.jsonl$/, ""), path: join(dir, f) }));
 }
 
 export function archiveJsonDb(): void {
-  if (!existsSync(jsonDbPath)) return;
-  const dest = `${jsonDbPath}.migrated-${Date.now()}`;
+  const path = jsonDbPath();
+  if (!existsSync(path)) return;
+  const dest = `${path}.migrated-${Date.now()}`;
   try {
-    renameSync(jsonDbPath, dest);
-    console.log(`[db] archived ${jsonDbPath} -> ${dest}`);
+    renameSync(path, dest);
+    console.log(`[db] archived ${path} -> ${dest}`);
   } catch (err) {
     console.warn("[db] could not archive db.json:", err);
   }

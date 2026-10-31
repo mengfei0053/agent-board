@@ -9,22 +9,39 @@ import { runners } from "./index.js";
 
 describe("U16 runner buildArgs (no spawn)", () => {
   describe("pi", () => {
-    it("uses task.id as session when missing; includes model", () => {
-      const r = buildPiArgs(
+    it("assigns a fresh session id that is not the bare task id", () => {
+      const a = buildPiArgs(
         { id: "t1", prompt: "hello", model: "gpt-x" },
+        { freshSessionId: "t1-fresh-a" },
       );
-      assert.deepEqual(r.args, [
+      assert.deepEqual(a.args, [
         "-p",
         "--mode",
         "json",
         "--session-id",
-        "t1",
+        "t1-fresh-a",
         "--model",
         "gpt-x",
         "hello",
       ]);
-      assert.equal(r.assignSession, true);
-      assert.equal(r.sessionId, "t1");
+      assert.equal(a.assignSession, true);
+      assert.equal(a.sessionId, "t1-fresh-a");
+      const b = buildPiArgs({ id: "t1", prompt: "hello" });
+      const c = buildPiArgs({ id: "t1", prompt: "hello" });
+      assert.notEqual(b.sessionId, "t1");
+      assert.notEqual(b.sessionId, c.sessionId);
+      assert.ok(b.sessionId.startsWith("t1-"));
+    });
+
+    it("continue without a session keeps the original prompt and the follow-up", () => {
+      const r = buildPiArgs(
+        { id: "t1", prompt: "orig" },
+        { continuePrompt: "more", freshSessionId: "t1-new" },
+      );
+      assert.match(r.prompt, /orig/);
+      assert.match(r.prompt, /more/);
+      assert.match(r.prompt, /继续指令/);
+      assert.equal(r.sessionId, "t1-new");
     });
 
     it("continuePrompt replaces prompt; keeps existing session", () => {

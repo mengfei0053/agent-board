@@ -41,7 +41,9 @@
 
 ```bash
 cd ~/projects/agent-board   # 或你的 clone 路径
-cp -n .env.example .env     # 可选；webhook 等可在此改
+cp -n .env.example .env
+# 必填：把 POSTGRES_PASSWORD 换成随机 URL-safe 长密码，并同步 DATABASE_URL。
+# 占位符 replace-with-a-long-random-password 不是强密码。已有 volume 需 ALTER USER。
 
 docker compose up -d --build
 ```
@@ -81,7 +83,8 @@ pnpm install && pnpm dev
 | --- | --- | --- |
 | `PORT` | `8791` | HTTP 端口 |
 | `HOST` | 本机默认 `127.0.0.1`；Compose 内 `0.0.0.0` | 监听地址（容器内需 `0.0.0.0` 才能映射端口） |
-| `DATABASE_URL` | Compose 内：`postgresql://postgres:postgres@postgres:5432/agent_board`；本机默认见下节 | Postgres 连接串 |
+| `DATABASE_URL` | Compose 内由 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 拼出，不再默认 `postgres:postgres`；本机未设置时回退到本机 `127.0.0.1:5432` 的开发库 | Postgres 连接串 |
+| `DATA_DIR` / `UPLOADS_DIR` | 仓库 `data/` 与 `data/uploads` | 测试和第二个实例必须指向独立目录。启动 GC 只清理带本库 owner 戳、且在认领之后写入的孤儿文件 |
 | `AGENT_BOARD_WEBHOOK_SECRET` | 空（webhook 关闭） | 设置后开启 `POST /api/hooks/tasks` |
 
 模板见 [.env.example](./.env.example)。Compose 会读取同目录 `.env` 里的 `AGENT_BOARD_WEBHOOK_SECRET`（若有）。

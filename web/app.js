@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { mergeBoardTask } from "./boardTaskMerge.js";
 
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
@@ -1699,6 +1700,25 @@ function schedulePaintDetail(task) {
   }, 120);
 }
 
+let detailRefreshTimer = null;
+function scheduleDetailRefresh(id) {
+  if (detailRefreshTimer) clearTimeout(detailRefreshTimer);
+  detailRefreshTimer = setTimeout(async () => {
+    detailRefreshTimer = null;
+    if (id !== selectedId || detailModal.classList.contains("hidden")) return;
+    try {
+      const res = await fetch(`/api/tasks/${id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.task || data.task.id !== selectedId) return;
+      tasks.set(id, data.task);
+      schedulePaintDetail(data.task);
+    } catch {
+      /* keep the last full detail */
+    }
+  }, 300);
+}
+
 function connectEvents() {
   const es = new EventSource("/api/events");
   es.addEventListener("hello", (ev) => {
@@ -1727,10 +1747,15 @@ function connectEvents() {
   });
   es.addEventListener("task_upsert", (ev) => {
     const data = JSON.parse(ev.data);
-    tasks.set(data.task.id, data.task);
+    const prev = tasks.get(data.task.id);
+    const merged = mergeBoardTask(prev, data.task);
+    tasks.set(data.task.id, merged);
     scheduleRenderList();
     if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
-      schedulePaintDetail(data.task);
+      schedulePaintDetail(merged);
+      if (data.task.boardSummary && (data.task.outputTruncated || data.task.promptTruncated)) {
+        scheduleDetailRefresh(data.task.id);
+      }
     }
   });
   es.addEventListener("task_delete", (ev) => {
