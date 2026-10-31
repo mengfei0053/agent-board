@@ -99,3 +99,44 @@ export class WorkspaceIdempotency {
     }
   }
 }
+
+/**
+ * Successful command results only. The factory's return value is what gets stored.
+ * Callers must not put a raw `cmd.settings.put` body in `T`.
+ */
+export class SuccessCache<T> {
+  private completed = new Map<string, T>();
+  private order: string[] = [];
+  private inflight = new Map<string, Promise<T>>();
+
+  constructor(private readonly cap = RELAY_LIMITS.idempotencyCache) {}
+
+  run(key: string, factory: () => Promise<T>): Promise<T> {
+    const hit = this.completed.get(key);
+    if (hit !== undefined) return Promise.resolve(hit);
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+    const promise = factory()
+      .then((value) => {
+        this.remember(key, value);
+        return value;
+      })
+      .finally(() => {
+        if (this.inflight.get(key) === promise) this.inflight.delete(key);
+      });
+    this.inflight.set(key, promise);
+    return promise;
+  }
+
+  private remember(key: string, value: T): void {
+    if (this.completed.has(key)) {
+      this.order = this.order.filter((item) => item !== key);
+    }
+    this.completed.set(key, value);
+    this.order.push(key);
+    while (this.order.length > this.cap) {
+      const oldest = this.order.shift();
+      if (oldest) this.completed.delete(oldest);
+    }
+  }
+}

@@ -3,11 +3,18 @@ import { mapBoardTask, type CreateBody, type MappedTask } from "./map.js";
 import type { WorkspaceStub } from "./workspaces.js";
 
 export class BoardHttpError extends Error {
+  readonly detail: string;
+  readonly code: string;
+
   constructor(
     readonly status: number,
     readonly path: string,
+    detail = "",
+    code = "",
   ) {
     super(`${path} returned ${status}`);
+    this.detail = detail;
+    this.code = code;
   }
 }
 
@@ -75,6 +82,30 @@ export class BoardClient {
     return payload;
   }
 
+  getSettings(): Promise<unknown> {
+    return this.request("/api/settings", { method: "GET" });
+  }
+
+  putSettings(body: Record<string, unknown>): Promise<unknown> {
+    return this.request("/api/settings", { method: "PUT", body });
+  }
+
+  getWorkspaceRecord(id: string): Promise<unknown> {
+    return this.request(`/api/workspaces/${encodeURIComponent(id)}`, { method: "GET" });
+  }
+
+  patchWorkspace(id: string, body: Record<string, unknown>): Promise<unknown> {
+    return this.request(`/api/workspaces/${encodeURIComponent(id)}`, { method: "PATCH", body });
+  }
+
+  workspaceGitStatus(id: string): Promise<unknown> {
+    return this.request(`/api/workspaces/${encodeURIComponent(id)}/git-status`, { method: "GET" });
+  }
+
+  archiveTask(id: string): Promise<unknown> {
+    return this.request(`/api/tasks/${encodeURIComponent(id)}/archive`, { method: "POST", body: {} });
+  }
+
   private async send(path: string, init: { method: string; body?: unknown }): Promise<MappedTask> {
     const payload = await this.request(path, init);
     const task = mapBoardTask(isRecord(payload) && payload.task !== undefined ? payload.task : payload);
@@ -94,7 +125,10 @@ export class BoardClient {
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
       });
       if (response.status >= 300 && response.status < 400) throw new BoardHttpError(response.status, path);
-      if (!response.ok) throw new BoardHttpError(response.status, path);
+      if (!response.ok) {
+        const failure = await safeErrorBody(response);
+        throw new BoardHttpError(response.status, path, failure.detail, failure.code);
+      }
       if (response.status === 204) return {};
       return (await response.json()) as unknown;
     } catch (error) {
@@ -108,4 +142,17 @@ export class BoardClient {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function safeErrorBody(response: Response): Promise<{ detail: string; code: string }> {
+  try {
+    const payload = (await response.json()) as unknown;
+    if (!isRecord(payload)) return { detail: "", code: "" };
+    const code = typeof payload.code === "string" && /^[a-z0-9_]{1,64}$/.test(payload.code) ? payload.code : "";
+    const raw = typeof payload.error === "string" ? payload.error : "";
+    const detail = !raw || raw.length > 180 || /[\\/@]|:\/\//.test(raw) ? "" : raw;
+    return { detail, code };
+  } catch {
+    return { detail: "", code: "" };
+  }
 }

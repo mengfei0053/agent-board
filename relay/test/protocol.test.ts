@@ -209,6 +209,46 @@ function frame(type: string, id: string, payload: Record<string, unknown>) {
   return { v: 1, id, type, ts: 1761890000000, payload };
 }
 
+test("board.register accepts wave-1 capability names and still rejects unknown commands", () => {
+  const parsed = parseMessage({
+    v: 1,
+    id: "reg-caps",
+    type: "board.register",
+    ts: 1,
+    payload: {
+      boardId: "thinkbook-main",
+      token: "board-token",
+      capabilities: ["archive.list", "archive.write", "workspace.settings", "board.settings"],
+    },
+  });
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok || parsed.kind !== "board.register") return;
+  assert.deepEqual(parsed.capabilities, [
+    "archive.list",
+    "archive.write",
+    "workspace.settings",
+    "board.settings",
+  ]);
+  const unknown = parseMessage({
+    v: 1,
+    id: "reg-bad",
+    type: "board.register",
+    ts: 1,
+    payload: { boardId: "thinkbook-main", token: "board-token", capabilities: ["archive.list", "nope"] },
+  });
+  assert.equal(unknown.ok, false);
+  const command = parseMessage({
+    v: 1,
+    id: "settings-get",
+    type: "cmd.settings.get",
+    ts: 1,
+    payload: { boardId: "thinkbook-main", idempotencyKey: "settings-get-1" },
+  });
+  assert.equal(command.ok, false);
+  if (command.ok) return;
+  assert.equal(command.code, "bad_type");
+});
+
 test("PROTOCOL.md websocket examples parse", () => {
   const text = readFileSync(path.join(root, "PROTOCOL.md"), "utf8");
   const blocks = [...text.matchAll(/```json\n([\s\S]*?)```/g)];

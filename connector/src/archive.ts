@@ -35,16 +35,21 @@ export function mapArchiveRow(raw: unknown, full: boolean): ArchiveRow | null {
   return row;
 }
 
-export function pageArchiveRows(rows: ArchiveRow[], cursor: string | undefined, limit: number):
-  { ok: true; tasks: ArchiveRow[]; nextCursor?: string; restarted?: boolean } | { ok: false; message: string } {
+export function pageArchiveRows(
+  rows: ArchiveRow[],
+  cursor: string | undefined,
+  limit: number,
+  workspaceId?: string,
+): { ok: true; tasks: ArchiveRow[]; nextCursor?: string; restarted?: boolean } | { ok: false; message: string } {
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) return { ok: false, message: "limit is invalid" };
   const parsed = cursor === undefined ? null : parseArchiveCursor(cursor);
   if (cursor !== undefined && !parsed) return { ok: false, message: "cursor is invalid" };
-  const sorted = [...rows].sort((a, b) => {
+  const scoped = workspaceId ? rows.filter((row) => row.workspaceId === workspaceId) : rows;
+  const sorted = [...scoped].sort((a, b) => {
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
-  const revision = archiveRevision(sorted);
+  const revision = archiveRevision(sorted, workspaceId ?? "");
   const restarted = parsed != null && parsed.revision !== revision;
   let start = 0;
   if (parsed && !restarted) {
@@ -63,17 +68,22 @@ export function pageArchiveRows(rows: ArchiveRow[], cursor: string | undefined, 
 }
 
 /** Fingerprint of archived id + updatedAt. A changed set invalidates the cursor. */
-export function archiveRevision(rows: { id: string; updatedAt: number }[]): string {
-  let hash = 2166136261;
+export function archiveRevision(rows: { id: string; updatedAt: number }[], scope = ""): string {
+  let hash = mix(2166136261, `scope=${scope}\n`);
   const ordered = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const row of ordered) {
-    const text = `${row.id}=${row.updatedAt}\n`;
-    for (let i = 0; i < text.length; i += 1) {
-      hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
+    hash = mix(hash, `${row.id}=${row.updatedAt}\n`);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function mix(hash: number, text: string): number {
+  let next = hash;
+  for (let i = 0; i < text.length; i += 1) {
+    next ^= text.charCodeAt(i);
+    next = Math.imul(next, 16777619);
+  }
+  return next;
 }
 
 function parseArchiveCursor(cursor: string): { at: number; id: string; revision?: string } | null {

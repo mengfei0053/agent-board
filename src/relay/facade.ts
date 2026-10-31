@@ -1,9 +1,11 @@
 import { nanoid } from "nanoid";
 import { publish as publishBoardEvent, subscribe } from "../bus.js";
+import { workspaceGitStatus, type GitWorkspaceStatus } from "../gitStatus.js";
 import { getGitWorktreeEligibility } from "../gitWorktree.js";
 import { HttpError } from "../httpError.js";
 import { assertTextLimit, MAX_PROMPT_CHARS, MAX_TITLE_CHARS } from "../limits.js";
 import {
+  archiveTerminalTask,
   boardSnapshot,
   continueTask,
   createAndStart,
@@ -11,10 +13,14 @@ import {
   workspaceSnapshot,
 } from "../manager.js";
 import { resolveAllowedDirectory } from "../paths.js";
-import { deleteWorkspace as removeWorkspace, getTask as readStoredTask, upsertWorkspace as saveWorkspace } from "../store.js";
+import { readSettingsDocument, writeSettingsDocument, type SettingsDocument } from "../settingsDocument.js";
+import { deleteWorkspace as removeWorkspace, getTask as readStoredTask, getWorkspace as readWorkspace, upsertWorkspace as saveWorkspace } from "../store.js";
+import { ArchivedReadonlyError } from "../taskErrors.js";
 import type { AgentKind, BoardEvent, CreateTaskInput, Task, Workspace } from "../types.js";
+import { applyWorkspacePatch } from "../workspaceRecord.js";
 import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import { isAgentKind, WORKSPACE_ID } from "./map.js";
+import { summarizeWorkspaceGit, wireWorkspaceCard, type PhoneWorkspaceCard } from "./workspaceCard.js";
 
 export type FacadeCreateInput = {
   kind: AgentKind;
@@ -53,7 +59,29 @@ export type BoardFacade = {
    * Refuses the default workspace and any workspace that still has tasks.
    */
   deleteWorkspace(id: string): Promise<void>;
+  /** Same document as `GET /api/workspaces/:id`, plus worktree bit and git summary. */
+  getWorkspace(id: string): Promise<PhoneWorkspaceCard>;
+  /**
+   * Same write as `PATCH /api/workspaces/:id`. `settings` replaces the stored object.
+   * Ack matches `getWorkspace`. A git failure does not fail the save.
+   */
+  updateWorkspace(input: FacadeWorkspaceUpdate): Promise<PhoneWorkspaceCard>;
+  /** Same document as `GET /api/settings` (proxy userinfo redacted). */
+  getSettings(): Promise<SettingsDocument>;
+  /** Same write as `PUT /api/settings` except `clear: true` is rejected. */
+  putSettings(body: Record<string, unknown>): Promise<SettingsDocument>;
+  /**
+   * Terminal-only archive under the task lock. Ack is `{ taskId }` with no hot-list task.
+   */
+  archive(id: string): Promise<{ taskId: string }>;
   subscribe(fn: (ev: BoardEvent) => void): () => void;
+};
+
+export type FacadeWorkspaceUpdate = {
+  workspaceId: string;
+  name: string;
+  path: string;
+  settings: unknown;
 };
 
 export type BoardFacadeDeps = {
@@ -68,6 +96,12 @@ export type BoardFacadeDeps = {
   resolveAllowedDirectory?: (input: string, label?: string) => string;
   upsertWorkspace?: (ws: Workspace) => Promise<Workspace>;
   removeWorkspace?: (id: string) => Promise<boolean>;
+  readWorkspace?: (id: string) => Workspace | undefined;
+  applyWorkspacePatch?: (id: string, body: Record<string, unknown>) => Promise<Workspace>;
+  readSettings?: () => Promise<SettingsDocument>;
+  writeSettings?: (body: Record<string, unknown>) => Promise<SettingsDocument>;
+  archiveTerminalTask?: (id: string) => Promise<{ taskId: string }>;
+  workspaceGitStatus?: (path: string) => Promise<GitWorkspaceStatus>;
   publish?: (ev: BoardEvent) => void;
   allocateWorkspaceId?: () => string;
   now?: () => string;
@@ -91,6 +125,12 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
   const resolveDir = deps.resolveAllowedDirectory ?? resolveAllowedDirectory;
   const upsert = deps.upsertWorkspace ?? saveWorkspace;
   const remove = deps.removeWorkspace ?? removeWorkspace;
+  const readSpace = deps.readWorkspace ?? readWorkspace;
+  const patchSpace = deps.applyWorkspacePatch ?? applyWorkspacePatch;
+  const readSettings = deps.readSettings ?? readSettingsDocument;
+  const writeSettings = deps.writeSettings ?? ((body: Record<string, unknown>) => writeSettingsDocument(body, { allowClear: false }));
+  const archiveTask = deps.archiveTerminalTask ?? archiveTerminalTask;
+  const gitStatus = deps.workspaceGitStatus ?? ((path: string) => workspaceGitStatus(path));
   const emit = deps.publish ?? publishBoardEvent;
   const allocateId = deps.allocateWorkspaceId ?? (() => nanoid(10));
   const now = deps.now ?? (() => new Date().toISOString());
@@ -103,6 +143,23 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
     create: (input) => createWithHttpGates(input, start, resolveDir),
     createWorkspace: (input) => createWorkspaceWithGates(input, resolveDir, upsert, emit, allocateId, now),
     deleteWorkspace: (id) => deleteWorkspaceWithGates(id, remove, emit),
+    getWorkspace: (id) => readWorkspaceCard(id, readSpace, eligibility, gitStatus),
+    updateWorkspace: (input) => updateWorkspaceCard(input, patchSpace, readSpace, eligibility, gitStatus),
+    getSettings: () => readSettings(),
+    putSettings: async (body) => {
+      try {
+        return await writeSettings(body);
+      } catch (err) {
+        throw relayErrorFrom(err);
+      }
+    },
+    archive: async (id) => {
+      try {
+        return await archiveTask(id);
+      } catch (err) {
+        throw mapArchiveError(err);
+      }
+    },
     stop: async (id) => {
       try {
         return await stop(id);
@@ -238,6 +295,90 @@ async function deleteWorkspaceWithGates(
     throw relayErrorFrom(err);
   }
   emit({ type: "workspace_delete", workspaceIds: [id] });
+}
+
+async function readWorkspaceCard(
+  id: string,
+  readSpace: (id: string) => Workspace | undefined,
+  eligibility: (path: string) => Promise<{ ok: boolean }>,
+  gitStatus: (path: string) => Promise<GitWorkspaceStatus>,
+): Promise<PhoneWorkspaceCard> {
+  if (!WORKSPACE_ID.test(id)) throw new RelayCommandError("bad_request", "workspaceId is invalid");
+  const ws = readSpace(id);
+  if (!ws) throw new RelayCommandError("not_found", "workspace not found");
+  return presentWorkspace(ws, eligibility, gitStatus);
+}
+
+async function updateWorkspaceCard(
+  input: FacadeWorkspaceUpdate,
+  patchSpace: (id: string, body: Record<string, unknown>) => Promise<Workspace>,
+  readSpace: (id: string) => Workspace | undefined,
+  eligibility: (path: string) => Promise<{ ok: boolean }>,
+  gitStatus: (path: string) => Promise<GitWorkspaceStatus>,
+): Promise<PhoneWorkspaceCard> {
+  if (!WORKSPACE_ID.test(input.workspaceId)) {
+    throw new RelayCommandError("bad_request", "workspaceId is invalid");
+  }
+  if (typeof input.name !== "string") throw new RelayCommandError("bad_request", "name is required");
+  try {
+    assertTextLimit(input.name, MAX_TITLE_CHARS, "name");
+  } catch (err) {
+    throw relayErrorFrom(err);
+  }
+  const name = input.name.trim();
+  if (!name) throw new RelayCommandError("bad_request", "name is required");
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new RelayCommandError("bad_request", "name is invalid");
+  if (typeof input.path !== "string" || !input.path.trim()) {
+    throw new RelayCommandError("bad_request", "path is required");
+  }
+  if (!readSpace(input.workspaceId)) throw new RelayCommandError("not_found", "workspace not found");
+  let ws: Workspace;
+  try {
+    ws = await patchSpace(input.workspaceId, {
+      name,
+      path: input.path,
+      settings: input.settings,
+    });
+  } catch (err) {
+    if (err instanceof HttpError && err.statusCode === 404) {
+      throw new RelayCommandError("not_found", "workspace not found");
+    }
+    throw pathCommandError(err);
+  }
+  return presentWorkspace(ws, eligibility, gitStatus);
+}
+
+async function presentWorkspace(
+  ws: Workspace,
+  eligibility: (path: string) => Promise<{ ok: boolean }>,
+  gitStatus: (path: string) => Promise<GitWorkspaceStatus>,
+): Promise<PhoneWorkspaceCard> {
+  let isGit = false;
+  try {
+    isGit = (await eligibility(ws.path)).ok === true;
+  } catch {
+    isGit = false;
+  }
+  let git = summarizeWorkspaceGit(null, "git status failed");
+  try {
+    git = summarizeWorkspaceGit(await gitStatus(ws.path), null);
+  } catch {
+    git = summarizeWorkspaceGit(null, "git status failed");
+  }
+  return wireWorkspaceCard(ws, isGit, git);
+}
+
+function mapArchiveError(err: unknown): RelayCommandError {
+  if (err instanceof ArchivedReadonlyError) return new RelayCommandError(err.code, err.message);
+  if (err instanceof HttpError) {
+    if (err.message === "task is still running" || err.message === "draft cannot be archived") {
+      return new RelayCommandError("bad_request", err.message);
+    }
+  }
+  if (err instanceof Error && err.message === "not found") {
+    return new RelayCommandError("task_not_found", "task not found");
+  }
+  return relayErrorFrom(err);
 }
 
 /** Path failures stay generic. The phone must not see the rejected path. */

@@ -48,6 +48,7 @@ import {
 } from "./uploads.js";
 import { resolveAllowedDirectory } from "./paths.js";
 import { HttpError } from "./httpError.js";
+import { ArchivedReadonlyError } from "./taskErrors.js";
 import {
   addOwnedWorktree,
   cleanupOwnedWorktree,
@@ -444,6 +445,7 @@ export function startTask(id: string): Promise<Task> {
 async function startTaskBody(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
+  if (t.status === "archived") throw new ArchivedReadonlyError();
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is already running");
   }
@@ -496,6 +498,7 @@ export function continueTask(id: string, prompt?: string): Promise<Task> {
 async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
+  if (t.status === "archived") throw new ArchivedReadonlyError();
   if (t.status === "draft") {
     throw new Error("draft has no session yet; start it first (drag to Todo)");
   }
@@ -601,6 +604,7 @@ export function stopTask(id: string): Promise<Task> {
 async function stopTaskBody(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
+  if (t.status === "archived") throw new ArchivedReadonlyError();
   // Flush first, then read sideJobs so a just-merged job is not dropped.
   flushPendingPatch(id);
   const fresh = getTask(id) ?? t;
@@ -704,20 +708,7 @@ async function moveTaskBody(id: string, lane: BoardLane): Promise<Task> {
         /* ignore */
       }
     }
-    const prior =
-      t.status === "succeeded" || t.status === "failed" || t.status === "stopped"
-        ? t.status
-        : "stopped";
-    const archived = await patchDurable(id, {
-      status: "archived",
-      pid: undefined,
-      endedAt: t.endedAt || now(),
-      summary: t.summary ?? "archived",
-      lastEvent: `archive:${prior}`,
-    });
-    // Archived cards keep prompts + per-round replies; drop raw task_logs to save space.
-    clearTaskLogs([id]);
-    return archived;
+    return commitArchived(getTask(id) ?? t);
   }
 
   // done
@@ -740,6 +731,57 @@ async function moveTaskBody(id: string, lane: BoardLane): Promise<Task> {
     });
   }
   return stopTaskBody(id);
+}
+
+const TERMINAL_ARCHIVE: TaskStatus[] = ["succeeded", "failed", "stopped"];
+
+/**
+ * Phone archive. Holds the same per-task lock as `moveTask` and re-reads status
+ * inside that lock, so a continue/start that was already waiting cannot be
+ * archived, and an archive that wins the lock cannot be continued afterwards.
+ * Already archived, draft, queued, running, and blocked are rejected without
+ * stopping a process. Web `moveTask(..., "archived")` still stops an active card.
+ */
+export function archiveTerminalTask(id: string): Promise<{ taskId: string }> {
+  return withTaskLock(id, () => archiveTerminalBody(id));
+}
+
+async function archiveTerminalBody(id: string): Promise<{ taskId: string }> {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  assertTerminalArchive(t);
+  if (handles.has(id)) throw new HttpError(400, "task is still running");
+  const fresh = getTask(id);
+  if (!fresh) throw new Error("not found");
+  assertTerminalArchive(fresh);
+  if (handles.has(id)) throw new HttpError(400, "task is still running");
+  await commitArchived(fresh);
+  const after = getTask(id);
+  if (!after || after.status !== "archived") {
+    throw new HttpError(400, "task is still running");
+  }
+  return { taskId: id };
+}
+
+function assertTerminalArchive(t: Task): void {
+  if (t.status === "archived") throw new ArchivedReadonlyError();
+  if (t.status === "draft") throw new HttpError(400, "draft cannot be archived");
+  if (!TERMINAL_ARCHIVE.includes(t.status)) {
+    throw new HttpError(400, "task is still running");
+  }
+}
+
+async function commitArchived(t: Task): Promise<Task> {
+  const prior = TERMINAL_ARCHIVE.includes(t.status) ? t.status : "stopped";
+  const archived = await patchDurable(t.id, {
+    status: "archived",
+    pid: undefined,
+    endedAt: t.endedAt || now(),
+    summary: t.summary ?? "archived",
+    lastEvent: `archive:${prior}`,
+  });
+  clearTaskLogs([t.id]);
+  return archived;
 }
 
 type RemoveTasksResult = {

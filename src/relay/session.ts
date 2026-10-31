@@ -4,11 +4,13 @@ import { eventsFromBoardEvent } from "./dialect.js";
 import type { Envelope } from "./envelope.js";
 import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import type { BoardFacade } from "./facade.js";
-import { CreateIdempotency, WorkspaceIdempotency } from "./idempotency.js";
+import { CreateIdempotency, SuccessCache, WorkspaceIdempotency } from "./idempotency.js";
 import { RELAY_LIMITS } from "./limits.js";
-import { pageArchivedTasks, wireArchivePage } from "./archive.js";
+import { isArchiveCursor, pageArchivedTasks, wireArchivePage } from "./archive.js";
 import { isAgentKind, mapBoardTask, wireMappedTask, WORKSPACE_ID, type MappedTask } from "./map.js";
+import type { SettingsDocument } from "../settingsDocument.js";
 import { enrichWorkspaces } from "./workspaces.js";
+import type { PhoneWorkspaceCard } from "./workspaceCard.js";
 
 const VISIBLE_KEY = /^[\x21-\x7E]{8,80}$/;
 
@@ -42,6 +44,9 @@ export class ConnectorSession {
   private drainingJobs = false;
   private readonly jobs: SessionJob[] = [];
   private readonly workspaceOps: WorkspaceIdempotency;
+  private readonly workspaceUpdates = new SuccessCache<PhoneWorkspaceCard>();
+  private readonly settingsPuts = new SuccessCache<SettingsDocument>();
+  private readonly archives = new SuccessCache<{ taskId: string }>();
 
   constructor(
     private readonly opts: {
@@ -252,6 +257,26 @@ export class ConnectorSession {
         await this.applyArchiveList(message);
         return;
       }
+      if (message.type === "cmd.archive") {
+        await this.applyArchive(message);
+        return;
+      }
+      if (message.type === "cmd.workspace.get") {
+        await this.applyWorkspaceGet(message);
+        return;
+      }
+      if (message.type === "cmd.workspace.update") {
+        await this.applyWorkspaceUpdate(message);
+        return;
+      }
+      if (message.type === "cmd.settings.get") {
+        await this.applySettingsGet(message);
+        return;
+      }
+      if (message.type === "cmd.settings.put") {
+        await this.applySettingsPut(message);
+        return;
+      }
       this.fail(message, new RelayCommandError("bad_request", "unsupported command"));
     } catch (err) {
       this.fail(message, relayErrorFrom(err));
@@ -339,7 +364,12 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError(parsed.code, parsed.message));
       return;
     }
-    const page = pageArchivedTasks(this.opts.facade.boardSnapshot(), parsed.cursor, parsed.limit);
+    const page = pageArchivedTasks(
+      this.opts.facade.boardSnapshot(),
+      parsed.cursor,
+      parsed.limit,
+      parsed.workspaceId,
+    );
     if (!page.ok) {
       this.fail(message, new RelayCommandError("bad_request", page.message));
       return;
@@ -398,6 +428,97 @@ export class ConnectorSession {
     }, message.id);
   }
 
+  private async applyWorkspaceGet(message: Envelope): Promise<void> {
+    const parsed = parseWorkspaceGet(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const workspace = await this.opts.facade.getWorkspace(parsed.workspaceId);
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      workspace,
+    }, message.id);
+  }
+
+  private async applyWorkspaceUpdate(message: Envelope): Promise<void> {
+    const parsed = parseWorkspaceUpdate(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const workspace = await this.workspaceUpdates.run(parsed.key, () => this.opts.facade.updateWorkspace(parsed.input));
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      workspace,
+    }, message.id);
+  }
+
+  private async applySettingsGet(message: Envelope): Promise<void> {
+    const parsed = parseSettingsGet(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const settings = await this.opts.facade.getSettings();
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      settings,
+    }, message.id);
+  }
+
+  /**
+   * The request body can contain a new proxy password. It is not logged, not
+   * stored in the success cache, and not copied into the error frame. The ack
+   * is the redacted settings document from the same writer as HTTP PUT.
+   */
+  private async applySettingsPut(message: Envelope): Promise<void> {
+    const parsed = parseSettingsPut(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const settings = await this.settingsPuts.run(parsed.key, () => this.opts.facade.putSettings(parsed.body));
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      settings,
+    }, message.id);
+  }
+
+  private async applyArchive(message: Envelope): Promise<void> {
+    const parsed = parseTaskCommand(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const archived = await this.archives.run(parsed.key, () => this.opts.facade.archive(parsed.taskId));
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      archived: true,
+      taskId: archived.taskId,
+    }, message.id);
+  }
+
   private fail(message: Envelope, err: unknown): void {
     if (this.closed) return;
     const safe = relayErrorFrom(err);
@@ -422,8 +543,13 @@ function isLiveCommand(type: string): boolean {
     || type === "cmd.stop"
     || type === "cmd.detail"
     || type === "cmd.archive.list"
+    || type === "cmd.archive"
     || type === "cmd.workspace.create"
-    || type === "cmd.workspace.delete";
+    || type === "cmd.workspace.delete"
+    || type === "cmd.workspace.get"
+    || type === "cmd.workspace.update"
+    || type === "cmd.settings.get"
+    || type === "cmd.settings.put";
 }
 
 function readContinuePrompt(
@@ -522,10 +648,79 @@ function parseWorkspaceDelete(
   return { ok: true, key: key.key, workspaceId };
 }
 
+function parseWorkspaceGet(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; workspaceId: string } | { ok: false; code: string; message: string } {
+  return parseWorkspaceDelete(payload, boardId);
+}
+
+function parseWorkspaceUpdate(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; input: { workspaceId: string; name: string; path: string; settings: unknown } } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  const workspaceId = payload.workspaceId;
+  if (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId)) {
+    return { ok: false, code: "bad_request", message: "workspaceId is invalid" };
+  }
+  if (typeof payload.name !== "string") return { ok: false, code: "bad_request", message: "name is required" };
+  const name = payload.name.trim();
+  if (!name || name.length > 200) return { ok: false, code: "bad_request", message: "name is required" };
+  if ([...name].some((ch) => ch < " " || ch === "\u007f")) {
+    return { ok: false, code: "bad_request", message: "name is invalid" };
+  }
+  if (typeof payload.path !== "string") return { ok: false, code: "bad_request", message: "path is required" };
+  const pathError = localPathError(payload.path, "path");
+  if (pathError) return { ok: false, code: "bad_request", message: pathError };
+  if (!isPayloadRecord(payload.settings)) return { ok: false, code: "bad_request", message: "settings must be an object" };
+  for (const field of ["systemPrompt", "skills", "mcp"] as const) {
+    if (!(field in payload.settings)) {
+      return { ok: false, code: "bad_request", message: `settings.${field} is required` };
+    }
+  }
+  return {
+    ok: true,
+    key: key.key,
+    input: { workspaceId, name, path: payload.path.trim(), settings: payload.settings },
+  };
+}
+
+function parseSettingsGet(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  return { ok: true, key: key.key };
+}
+
+function parseSettingsPut(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; body: Record<string, unknown> } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  if (payload.clear === true) return { ok: false, code: "bad_request", message: "clear is not allowed" };
+  const body: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(payload)) {
+    if (field === "boardId" || field === "idempotencyKey") continue;
+    body[field] = value;
+  }
+  return { ok: true, key: key.key, body };
+}
+
 function parseArchiveList(
   payload: Record<string, unknown>,
   boardId: string,
-): { ok: true; key: string; limit: number; cursor?: string } | { ok: false; code: string; message: string } {
+): { ok: true; key: string; limit: number; cursor?: string; workspaceId?: string } | { ok: false; code: string; message: string } {
   const foreign = requireBoard(payload, boardId);
   if (foreign) return foreign;
   const key = requireKey(payload);
@@ -539,12 +734,29 @@ function parseArchiveList(
   }
   let cursor: string | undefined;
   if ("cursor" in payload && payload.cursor != null && payload.cursor !== "") {
-    if (typeof payload.cursor !== "string" || !/^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/.test(payload.cursor)) {
+    if (typeof payload.cursor !== "string" || !isArchiveCursor(payload.cursor)) {
       return { ok: false, code: "bad_request", message: "cursor is invalid" };
     }
     cursor = payload.cursor;
   }
-  return { ok: true, key: key.key, limit, ...(cursor ? { cursor } : {}) };
+  let workspaceId: string | undefined;
+  if ("workspaceId" in payload && payload.workspaceId != null && payload.workspaceId !== "") {
+    if (typeof payload.workspaceId !== "string" || !WORKSPACE_ID.test(payload.workspaceId)) {
+      return { ok: false, code: "bad_request", message: "workspaceId is invalid" };
+    }
+    workspaceId = payload.workspaceId;
+  }
+  return {
+    ok: true,
+    key: key.key,
+    limit,
+    ...(cursor ? { cursor } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
+  };
+}
+
+function isPayloadRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseTaskCommand(

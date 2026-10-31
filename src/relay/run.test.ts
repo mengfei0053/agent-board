@@ -34,6 +34,12 @@ describe("embedded relay run", { concurrency: 1 }, () => {
       assert.notEqual(ack.id, register.id);
       assert.equal(ack.payload.ref, register.id);
       assert.equal(ack.payload.generation, 1);
+      assert.deepEqual(register.payload.capabilities, [
+        "archive.list",
+        "archive.write",
+        "workspace.settings",
+        "board.settings",
+      ]);
     } finally {
       await dialer.close();
       await relay.close();

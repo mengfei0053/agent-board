@@ -3,7 +3,12 @@ import { mapBoardTask, wireMappedTask, type MappedTask } from "./map.js";
 
 export const ARCHIVE_PAGE_DEFAULT = 20;
 export const ARCHIVE_PAGE_MAX = 50;
-const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::([a-f0-9]{8}))?$/;
+/** `updatedAt:id` or `updatedAt:id:revision` (8 hex chars). Same shape as the public relay. */
+export const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::([a-f0-9]{8}))?$/;
+
+export function isArchiveCursor(value: string): boolean {
+  return ARCHIVE_CURSOR.test(value);
+}
 
 export type ArchivePage = {
   tasks: MappedTask[];
@@ -14,23 +19,29 @@ export type ArchivePage = {
 
 /**
  * Newest `updatedAt` first. Equal timestamps break ties by id ascending.
- * The cursor is `updatedAt:id:revision`. `revision` is a fingerprint of every
- * archived id and updatedAt. If that set changes, the next page restarts at
- * the top instead of walking a resorted list.
+ * The cursor is `updatedAt:id:revision`. `revision` fingerprints the archived
+ * id and updatedAt set, plus the workspace scope. A scoped page is filtered
+ * before the limit and the cursor, so a cursor from another workspace restarts
+ * instead of skipping rows. If the set changes, the next page restarts at the top.
  */
-export function pageArchivedTasks(tasks: Task[], cursor: string | undefined, limit: number):
-  { ok: true; page: ArchivePage } | { ok: false; message: string } {
+export function pageArchivedTasks(
+  tasks: Task[],
+  cursor: string | undefined,
+  limit: number,
+  workspaceId?: string,
+): { ok: true; page: ArchivePage } | { ok: false; message: string } {
   if (!Number.isInteger(limit) || limit < 1 || limit > ARCHIVE_PAGE_MAX) {
     return { ok: false, message: "limit is invalid" };
   }
   const parsed = cursor === undefined ? null : parseArchiveCursor(cursor);
   if (cursor !== undefined && !parsed) return { ok: false, message: "cursor is invalid" };
-  const rows = tasks.flatMap((task) => {
+  const scoped = workspaceId ? tasks.filter((task) => task.workspaceId === workspaceId) : tasks;
+  const rows = scoped.flatMap((task) => {
     const mapped = mapBoardTask(task, true);
     return mapped?.status === "archived" ? [mapped] : [];
   });
   rows.sort(compareArchive);
-  const revision = archiveRevision(rows);
+  const revision = archiveRevision(rows, workspaceId ?? "");
   const restarted = parsed != null && parsed.revision !== revision;
   let start = 0;
   if (parsed && !restarted) {
@@ -50,17 +61,22 @@ export function pageArchivedTasks(tasks: Task[], cursor: string | undefined, lim
   };
 }
 
-export function archiveRevision(rows: { id: string; updatedAt: number }[]): string {
-  let hash = 2166136261;
+export function archiveRevision(rows: { id: string; updatedAt: number }[], scope = ""): string {
+  let hash = mix(2166136261, `scope=${scope}\n`);
   const ordered = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const row of ordered) {
-    const text = `${row.id}=${row.updatedAt}\n`;
-    for (let i = 0; i < text.length; i += 1) {
-      hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
+    hash = mix(hash, `${row.id}=${row.updatedAt}\n`);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function mix(hash: number, text: string): number {
+  let next = hash;
+  for (let i = 0; i < text.length; i += 1) {
+    next ^= text.charCodeAt(i);
+    next = Math.imul(next, 16777619);
+  }
+  return next;
 }
 
 export function wireArchivePage(page: ArchivePage): Record<string, unknown> {
