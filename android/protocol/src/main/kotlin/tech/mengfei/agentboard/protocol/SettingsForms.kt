@@ -95,30 +95,41 @@ fun readWorkspaceSettingsForm(payload: JsonObject): WorkspaceSettingsForm? {
     val workspace = payload.obj("workspace") ?: return null
     val name = workspace.text("name") ?: return null
     val path = workspace.text("path") ?: return null
-    val settings = workspace.obj("settings")
-    val skills = settings?.array("skills")?.joinToString("\n") { item ->
-        (item as? JsonPrimitive)?.content.orEmpty()
-    }.orEmpty()
-    return WorkspaceSettingsForm(
-        name = name,
-        path = path,
-        systemPrompt = settings?.text("systemPrompt").orEmpty(),
-        skills = skills,
-        mcp = settings?.text("mcp").orEmpty(),
-    )
+    if ("settings" !in workspace) return null
+    val settings = workspace.obj("settings") ?: return null
+    if ("systemPrompt" !in settings || "skills" !in settings || "mcp" !in settings) return null
+    val systemPrompt = settings.text("systemPrompt") ?: return null
+    val mcp = settings.text("mcp") ?: return null
+    val skillsArray = settings.array("skills") ?: return null
+    val lines = ArrayList<String>(skillsArray.size)
+    for (item in skillsArray) {
+        val primitive = item as? JsonPrimitive ?: return null
+        if (!primitive.isString) return null
+        lines.add(primitive.content)
+    }
+    return WorkspaceSettingsForm(name, path, systemPrompt, lines.joinToString("\n"), mcp)
 }
 
 fun readQuickPrompts(payload: JsonObject): List<QuickPromptChip>? {
     val settings = payload.obj("settings") ?: return null
-    if ("quickPrompts" !in settings) return emptyList()
-    val array = settings.array("quickPrompts") ?: return emptyList()
-    return array.mapNotNull { item ->
-        val row = item as? JsonObject ?: return@mapNotNull null
-        val id = row.text("id") ?: return@mapNotNull null
-        val label = row.text("label") ?: return@mapNotNull null
-        val content = row.text("content") ?: return@mapNotNull null
-        QuickPromptChip(id, label, content)
+    if ("quickPrompts" !in settings) return null
+    val array = settings.array("quickPrompts") ?: return null
+    val prompts = ArrayList<QuickPromptChip>(array.size)
+    for (item in array) {
+        val row = item as? JsonObject ?: return null
+        val id = row.text("id")?.takeIf { it.isNotBlank() } ?: return null
+        val label = row.text("label") ?: return null
+        val content = row.text("content") ?: return null
+        prompts.add(QuickPromptChip(id, label, content))
     }
+    return prompts
+}
+
+/** True only when this command's executed body is a complete settings document. */
+fun settingsDocumentOk(command: String, payload: JsonObject): Boolean = when (command) {
+    "cmd.workspace.get", "cmd.workspace.update" -> readWorkspaceSettingsForm(payload) != null
+    "cmd.settings.get", "cmd.settings.put" -> readQuickPrompts(payload) != null
+    else -> false
 }
 
 private fun settingsFrame(id: String, ts: Long, type: String, payload: JsonObject): Envelope {

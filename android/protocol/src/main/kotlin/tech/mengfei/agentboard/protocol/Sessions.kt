@@ -574,6 +574,13 @@ fun pairPrecheck(sessionCount: Int, repair: Boolean): PairPrecheck {
     return PairPrecheck.Post
 }
 
+/** Every committed catalog row counts, including a row whose secret is currently unreadable. */
+fun committedSessionCount(disk: PhoneDisk): Int {
+    val catalog = disk.catalog ?: return 0
+    if (catalog.migrationState != MigrationState.COMMITTED) return 0
+    return catalog.sessions.size
+}
+
 fun forgetEnabled(sessionCount: Int): Boolean = sessionCount > 1
 
 fun planPair(disk: PhoneDisk, request: PairRequest): PairOutcome {

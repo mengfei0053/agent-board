@@ -28,7 +28,9 @@ import tech.mengfei.agentboard.protocol.failedStepKeepsCatalog
 import tech.mengfei.agentboard.protocol.invalidateSnapshotForNewEpoch
 import tech.mengfei.agentboard.protocol.pairBodyOutcome
 import tech.mengfei.agentboard.protocol.planActivate
-import tech.mengfei.agentboard.protocol.proofRedrawWait
+import tech.mengfei.agentboard.protocol.committedSessionCount
+import tech.mengfei.agentboard.protocol.proofRedrawDelay
+import tech.mengfei.agentboard.protocol.settingsDocumentOk
 import tech.mengfei.agentboard.protocol.readableSessions
 import tech.mengfei.agentboard.protocol.BoardProof
 import tech.mengfei.agentboard.protocol.BoardReducer
@@ -622,7 +624,7 @@ class BoardViewModel(
             return
         }
         val repairId = _state.value.repairSessionId
-        when (val pre = pairPrecheck(sessionCount(), repairId != null)) {
+        when (val pre = pairPrecheck(committedSessionCount(disk), repairId != null)) {
             is PairPrecheck.Refuse -> {
                 banner = pre.message
                 render()
@@ -1022,7 +1024,6 @@ class BoardViewModel(
             val active = session(activeId)
             if (active?.credentialId == credentialId) loadArchive(reset = true)
         }
-        armProofs()
         render()
     }
 
@@ -1108,16 +1109,16 @@ class BoardViewModel(
     private fun onSettings(sessionId: String, command: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         val holder = slot(sessionId)
         val executed = message.type == "ack" && message.text("stage") == "executed"
-        val documentOk = when (command) {
-            "cmd.workspace.get", "cmd.workspace.update" -> readWorkspaceSettingsForm(message.payload) != null
-            "cmd.settings.get", "cmd.settings.put" -> readQuickPrompts(message.payload) != null
-            else -> false
-        }
+        val documentOk = settingsDocumentOk(command, message.payload)
         val effect = settingsAckEffect(activeId, sessionId, command, executed, documentOk)
         if (!executed || !documentOk) {
-            if (sessionId == activeId && !executed) {
-                formError = interpretCommand(message)?.summary?.let { say(it) } ?: UNSUPPORTED_COPY
-                if (message.text("code") == "unsupported" || message.text("code") == "bad_type") holder.settingsBlocked = UNSUPPORTED_COPY
+            if (sessionId == activeId) {
+                if (!executed) {
+                    formError = interpretCommand(message)?.summary?.let { say(it) } ?: UNSUPPORTED_COPY
+                    if (message.text("code") == "unsupported" || message.text("code") == "bad_type") holder.settingsBlocked = UNSUPPORTED_COPY
+                } else {
+                    formError = zh("设置没有读全，没有保存。", "The settings document could not be read. Nothing was saved.")
+                }
             }
             if (command == "cmd.settings.get" || command == "cmd.settings.put") holder.settingsLoaded = false
             render()
@@ -1428,8 +1429,7 @@ class BoardViewModel(
         sessions().forEach { session ->
             val holder = slots[session.sessionId] ?: return@forEach
             val at = holder.proof?.at ?: return@forEach
-            val connected = pillFor(session).kind == PillKind.CONNECTED
-            val wait = proofRedrawWait(at, clock(), connected, foreground) ?: return@forEach
+            val wait = proofRedrawDelay(pillFor(session).kind, at, clock(), foreground) ?: return@forEach
             if (wait == 0L) return@forEach
             val sessionId = session.sessionId
             keep += sessionId
@@ -1600,6 +1600,7 @@ class BoardViewModel(
             reading = screen == Screen.Reading,
             createdHidden = _state.value.createdHidden,
         )
+        armProofs()
     }
 
     private fun pillFor(session: PhoneSession): LinkPill {

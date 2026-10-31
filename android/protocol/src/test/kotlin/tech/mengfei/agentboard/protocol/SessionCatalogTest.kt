@@ -152,6 +152,22 @@ class SessionCatalogTest {
     }
 
     @Test
+    fun twentyCommittedWithOneUnreadableDoesNotPostAGeneralAdd() {
+        val sessions = (0 until 20).map { index ->
+            session("s$index", if (index == 19) "c-missing" else "c0", "board-$index")
+        }
+        val disk = PhoneDisk(
+            credentials = mapOf("c0" to secret("c0", "dt_old", (0 until 19).map { "board-$it" })),
+            catalog = catalog(sessions, "s0"),
+        )
+        assertEquals(20, committedSessionCount(disk))
+        assertEquals(19, readableSessions(disk).size)
+        assertTrue(pairPrecheck(committedSessionCount(disk), repair = false) is PairPrecheck.Refuse)
+        assertTrue(pairPrecheck(readableSessions(disk).size, repair = false) is PairPrecheck.Post)
+        assertTrue(pairPrecheck(committedSessionCount(disk), repair = true) is PairPrecheck.Post)
+    }
+
+    @Test
     fun generalAddAtCapDoesNotPostAndRepairOfTheTargetIsAllowed() {
         val start = manyDisk(20)
         assertTrue(pairPrecheck(20, repair = false) is PairPrecheck.Refuse)
@@ -373,6 +389,26 @@ class SessionCatalogTest {
         assertFalse(settingsAckEffect("sA", "sA", "cmd.settings.get", executed = true, documentOk = false).markLoaded)
         assertEquals(PROMPTS_SAVED_COPY, settingsAckEffect("sA", "sA", "cmd.settings.put", executed = true, documentOk = true).toast)
         assertFalse(settingsAckEffect("sA", "sA", "cmd.settings.put", executed = false, documentOk = true).toastSaved)
+        val emptySettings = parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"stage":"executed","settings":{}}}""",
+        ).payload
+        assertNull(readQuickPrompts(emptySettings))
+        assertFalse(settingsDocumentOk("cmd.settings.put", emptySettings))
+        assertFalse(settingsAckEffect("sA", "sA", "cmd.settings.put", true, settingsDocumentOk("cmd.settings.put", emptySettings)).toastSaved)
+        val malformedPrompts = parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"stage":"executed","settings":{"quickPrompts":[{"label":"x"}]}}}""",
+        ).payload
+        assertNull(readQuickPrompts(malformedPrompts))
+        val nameOnly = parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"stage":"executed","workspace":{"id":"ws_app","name":"App","path":"/src","isGit":true}}}""",
+        ).payload
+        assertNull(readWorkspaceSettingsForm(nameOnly))
+        assertFalse(settingsAckEffect("sA", "sA", "cmd.workspace.update", true, settingsDocumentOk("cmd.workspace.update", nameOnly)).toastSaved)
+        val validPrompts = parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"stage":"executed","settings":{"quickPrompts":[{"id":"q1","label":"Go","content":"continue"}]}}}""",
+        ).payload
+        assertEquals(1, readQuickPrompts(validPrompts)?.size)
+        assertEquals(PROMPTS_SAVED_COPY, settingsAckEffect("sA", "sA", "cmd.settings.put", true, settingsDocumentOk("cmd.settings.put", validPrompts)).toast)
         assertEquals(UNSUPPORTED_COPY, settingsEntry(listOf("archive.list"), CAP_WORKSPACE_SETTINGS))
         assertNull(settingsEntry(listOf(CAP_BOARD_SETTINGS), CAP_BOARD_SETTINGS))
         val note = recordRateLimit(3)
@@ -604,6 +640,11 @@ class PresenceTest {
         assertEquals(0L, proofRedrawWait(1_000, 1_000 + PROOF_TTL_MS, connected = true, foreground = true))
         assertNull(proofRedrawWait(1_000, 1_000 + PROOF_TTL_MS, connected = false, foreground = true))
         assertNull(proofRedrawWait(1_000, 1_500, connected = true, foreground = false))
+        assertNull(proofRedrawDelay(PillKind.WEAK, 1_000, 1_000, foreground = true))
+        val afterSnapshot = proofRedrawDelay(PillKind.CONNECTED, 1_000, 1_500, foreground = true)
+        assertEquals(59_500L, afterSnapshot)
+        assertEquals(59_500L, proofRedrawDelay(PillKind.OFFLINE, 1_000, 1_500, foreground = true))
+        assertNull(proofRedrawDelay(PillKind.CONNECTED, 1_000, 1_000 + PROOF_TTL_MS, foreground = true))
     }
 
     @Test

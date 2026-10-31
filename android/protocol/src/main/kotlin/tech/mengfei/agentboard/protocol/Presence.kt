@@ -163,6 +163,19 @@ fun proofRedrawWait(proofAt: Long, now: Long, connected: Boolean, foreground: Bo
     return (proofAt + PROOF_TTL_MS - now).coerceAtLeast(0)
 }
 
+/** 已连接 and a fresh 离线 both expire into 弱连接. 正在同步 does not start the timer. */
+fun shouldArmProofRedraw(kind: PillKind): Boolean = kind == PillKind.CONNECTED || kind == PillKind.OFFLINE
+
+/**
+ * Delay until this pill must be redrawn, or null when it is not a fresh connected/offline proof.
+ * List-before-snapshot stays null. The snapshot that first paints 已连接 returns the remaining wait.
+ */
+fun proofRedrawDelay(kind: PillKind, proofAt: Long?, now: Long, foreground: Boolean): Long? {
+    val at = proofAt ?: return null
+    val wait = proofRedrawWait(at, now, shouldArmProofRedraw(kind), foreground) ?: return null
+    return wait.takeIf { it > 0L }
+}
+
 data class EpochSlot(
     val appliedGeneration: Long?,
     val needsResync: Boolean,
