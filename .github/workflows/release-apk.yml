@@ -19,7 +19,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Default packages include obsolete `tools`, which sdkmanager no longer finds.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK 35
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
@@ -35,7 +38,12 @@ jobs:
           src=$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
           test -n "$src"
           tag="${GITHUB_REF_NAME}"
-          dest="agent-board-${tag}.apk"
+          short=$(git rev-parse --short=7 HEAD)
+          dest="agent-board-${tag}-${short}.apk"
+          # Prefer short SHA name for workflow_dispatch on main
+          if [[ "$tag" == "main" ]]; then
+            dest="agent-board-${short}.apk"
+          fi
           cp "$src" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
           echo "Built $dest from $src (unsigned; no keystore secrets are used)."
