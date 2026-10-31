@@ -141,6 +141,44 @@ fun planSubmit(
 }
 
 /** A second stop or continue after lookup is an explicit new command. Create and workspace commands stay on lookup. */
+/**
+ * Where a settled command may move the UI.
+ * A result for a board the phone is no longer viewing stays available for lookup
+ * and does not change the open board or push that board's detail.
+ */
+data class CompletionNavigation(
+    val selectBoardId: String? = null,
+    val selectTaskId: String? = null,
+    val openDetail: Boolean = false,
+    val popWorkspaceCreate: Boolean = false,
+)
+
+fun completionNavigation(
+    viewedBoardId: String?,
+    onDetail: Boolean,
+    onWorkspaceCreate: Boolean,
+    commandBoardId: String,
+    cmd: String,
+    taskId: String?,
+    hasWorkspace: Boolean,
+    settled: Boolean,
+): CompletionNavigation {
+    if (!settled || viewedBoardId.isNullOrEmpty() || viewedBoardId != commandBoardId) {
+        return CompletionNavigation()
+    }
+    if (cmd == "cmd.create" && !taskId.isNullOrBlank()) {
+        return CompletionNavigation(
+            selectBoardId = commandBoardId,
+            selectTaskId = taskId,
+            openDetail = !onDetail,
+        )
+    }
+    if (cmd == "cmd.workspace.create" && hasWorkspace && onWorkspaceCreate) {
+        return CompletionNavigation(popWorkspaceCreate = true)
+    }
+    return CompletionNavigation()
+}
+
 fun explicitResendAllowed(cmd: String, last: CommandInterpretation?): Boolean {
     return (cmd == "cmd.stop" || cmd == "cmd.continue") && last?.retry == Retry.LookupOnly
 }

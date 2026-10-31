@@ -1,6 +1,7 @@
 package tech.mengfei.agentboard.ui
 
-fun prefersEnglish(language: String): Boolean = language.equals("en", ignoreCase = true) || language.startsWith("en_") || language.startsWith("en-")
+/** English is the default catalog. Simplified Chinese is used only for `zh` locales. */
+fun prefersEnglish(language: String): Boolean = !language.lowercase().startsWith("zh")
 
 fun localize(english: Boolean, text: String): String {
     if (english) return text
@@ -66,6 +67,7 @@ private val EXACT = mapOf(
     "This board cannot list archived tasks yet." to "此看板暂不支持归档浏览。需要更新后的中继和看板连接。",
     "Could not load the archive." to "归档列表没有加载成功。",
     "Could not read the archive page." to "归档这一页无法解析。",
+    "The archive changed. The list restarted from the first page." to "归档有变化，已从第一页重新加载。上一页不能当作完整列表。",
     "Archive is not available on this relay." to "当前中继还不支持归档列表。",
     "This board is offline. The relay will not queue a command." to "看板不在线，中继不会排队。",
     "title is required, up to 200 characters" to "请填写标题，最多 200 字。",

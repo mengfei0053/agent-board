@@ -20,8 +20,18 @@ describe("archive pages", () => {
     const second = pageArchivedTasks(tasks, first.page.nextCursor, 2);
     assert.equal(second.ok, true);
     if (!second.ok) return;
+    assert.equal(second.page.restarted, undefined);
     assert.deepEqual(second.page.tasks.map((task) => task.id), ["a"]);
     assert.equal(second.page.nextCursor, undefined);
+
+    const moved = tasks.map((task) => task.id === "b"
+      ? { ...task, updatedAt: "2026-10-31T00:00:05.000Z" }
+      : task);
+    const restarted = pageArchivedTasks(moved, first.page.nextCursor, 2);
+    assert.equal(restarted.ok, true);
+    if (!restarted.ok) return;
+    assert.equal(restarted.page.restarted, true);
+    assert.deepEqual(restarted.page.tasks.map((task) => task.id), ["c", "a"]);
     assert.equal(pageArchivedTasks(tasks, "nope", 2).ok, false);
   });
 });

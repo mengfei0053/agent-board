@@ -1253,7 +1253,7 @@ function acceptTaskStatus(value: string, allowArchived: boolean): value is Task[
   return isTaskStatus(value);
 }
 
-const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$/;
 const KNOWN_CAPABILITIES = new Set<string>([ARCHIVE_CAPABILITY]);
 
 function readCapabilities(value: unknown): { ok: true; value: string[] } | { ok: false; message: string } {
@@ -1296,6 +1296,10 @@ function readArchive(value: unknown): { ok: true; value: JsonObject } | { ok: fa
     const cursor = readArchiveCursor(value.nextCursor);
     if (!cursor.ok) return cursor;
     body.nextCursor = cursor.value;
+  }
+  if (value.restarted !== undefined) {
+    if (typeof value.restarted !== "boolean") return { ok: false, message: "archive.restarted must be a boolean" };
+    if (value.restarted) body.restarted = true;
   }
   return { ok: true, value: body };
 }

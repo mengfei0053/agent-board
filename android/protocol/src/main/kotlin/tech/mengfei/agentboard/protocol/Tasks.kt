@@ -81,6 +81,7 @@ data class BoardInfo(
 data class ArchivePage(
     val tasks: List<RelayTask>,
     val nextCursor: String?,
+    val restarted: Boolean = false,
 )
 
 data class DetailRequest(
@@ -416,22 +417,38 @@ fun canStopStatus(status: String): Boolean = status == "queued" || status == "ru
 fun canContinueStatus(status: String): Boolean =
     status != "queued" && status != "running" && status != ARCHIVED_STATUS
 
-fun continueHint(task: RelayTask): String {
-    if (task.status == ARCHIVED_STATUS) return "归档任务只读"
-    if (!canContinueStatus(task.status)) return "任务运行中，请先停止再继续"
+fun continueHint(task: RelayTask, english: Boolean = false): String {
+    if (task.status == ARCHIVED_STATUS) {
+        return if (english) "Archived tasks are read-only." else "归档任务只读"
+    }
+    if (!canContinueStatus(task.status)) {
+        return if (english) "The task is running. Stop it before continuing." else "任务运行中，请先停止再继续"
+    }
     val session = task.sessionId
-    return if (!session.isNullOrBlank()) "将续会话 $session" else "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+    return if (!session.isNullOrBlank()) {
+        if (english) "Will resume session $session" else "将续会话 $session"
+    } else if (english) {
+        "Without a sessionId the board tries the CLI continue for the latest session in this directory."
+    } else {
+        "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+    }
 }
 
-fun resumeCommandLabel(task: RelayTask): String {
+fun resumeCommandLabel(task: RelayTask, english: Boolean = false): String {
     val command = task.resumeCommand
     if (!command.isNullOrBlank()) return command
-    return if (task.sessionId.isNullOrBlank()) "尚无会话" else "—"
+    return if (task.sessionId.isNullOrBlank()) {
+        if (english) "No session yet" else "尚无会话"
+    } else {
+        "—"
+    }
 }
 
 fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
 
-fun detailRounds(task: RelayTask): List<DetailRound> {
+fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
+    val initial = if (english) "Initial" else "初始"
+    val follow = if (english) "Continue" else "继续"
     val turns = task.turns
     if (!turns.isNullOrEmpty()) {
         val live = task.status == "queued" || task.status == "running" || task.status == "paused"
@@ -439,7 +456,7 @@ fun detailRounds(task: RelayTask): List<DetailRound> {
         return turns.map { turn ->
             DetailRound(
                 iteration = turn.iteration,
-                kindLabel = if (turn.iteration <= 1) "初始" else "继续",
+                kindLabel = if (turn.iteration <= 1) initial else follow,
                 prompt = turn.prompt,
                 output = turn.output,
                 pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
@@ -451,17 +468,29 @@ fun detailRounds(task: RelayTask): List<DetailRound> {
     if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
     val iteration = task.iteration ?: 1
     val live = task.status == "queued" || task.status == "running" || task.status == "paused"
-    return listOf(DetailRound(iteration, if (iteration <= 1) "初始" else "继续", prompt, output, live && output.isNullOrBlank()))
+    return listOf(DetailRound(iteration, if (iteration <= 1) initial else follow, prompt, output, live && output.isNullOrBlank()))
 }
 
-fun detailError(task: RelayTask): String? {
+fun detailError(task: RelayTask, english: Boolean = false): String? {
     val hasOutput = !task.output.isNullOrBlank() || !task.outputPreview.isNullOrBlank() ||
         task.turns?.any { !it.output.isNullOrBlank() } == true
     if (task.status != "failed" && !(task.status == "stopped" && !hasOutput)) return null
     val bits = mutableListOf<String>()
     if (!task.error.isNullOrBlank()) bits.add(task.error)
-    if (task.exitCode != null && task.exitCode != 0) bits.add("退出码 ${task.exitCode}")
-    if (bits.isEmpty()) bits.add(if (task.status == "stopped") "已由用户停止" else "任务失败")
+    if (task.exitCode != null && task.exitCode != 0) {
+        bits.add(if (english) "Exit code ${task.exitCode}" else "退出码 ${task.exitCode}")
+    }
+    if (bits.isEmpty()) {
+        bits.add(
+            if (task.status == "stopped") {
+                if (english) "Stopped by the user" else "已由用户停止"
+            } else if (english) {
+                "Task failed"
+            } else {
+                "任务失败"
+            },
+        )
+    }
     return bits.joinToString("\n")
 }
 
@@ -522,10 +551,16 @@ fun visibleTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>, select
     return tasks.filter { it.workspaceId == selectedId }
 }
 
-fun workspaceSwitchItems(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<WorkspaceSwitchItem> {
+fun unassignedLabel(english: Boolean = false): String = if (english) "Unassigned" else UNASSIGNED_LABEL
+
+fun workspaceSwitchItems(
+    tasks: List<RelayTask>,
+    workspaces: List<ThinWorkspace>,
+    english: Boolean = false,
+): List<WorkspaceSwitchItem> {
     val items = workspaces.map { WorkspaceSwitchItem(it.id, it.name, it.path) }
     if (unassignedTasks(tasks, workspaces).isEmpty()) return items
-    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, UNASSIGNED_LABEL, null)
+    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, unassignedLabel(english), null)
 }
 
 data class WorkspaceSelectionUpdate(val selectedId: String?, val persist: Boolean)
@@ -567,17 +602,20 @@ fun resolveWorkspaceSelection(
     return null
 }
 
-fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>): WorkspaceBanner {
-    if (selectedId == null) return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
-    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(UNASSIGNED_LABEL, "这些任务没有对应的工作区")
-    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>, english: Boolean = false): WorkspaceBanner {
+    val missing = if (english) "No workspace selected" else "未选择工作区"
+    val pick = if (english) "Create or choose a workspace" else "请新建或选择工作区"
+    val unassignedDetail = if (english) "These tasks have no workspace" else "这些任务没有对应的工作区"
+    if (selectedId == null) return WorkspaceBanner(missing, pick)
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(unassignedLabel(english), unassignedDetail)
+    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner(missing, pick)
     return WorkspaceBanner(workspace.name, workspace.path)
 }
 
-/** Web detail uses the workspace name. A missing id is 「未分配」. */
-fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>): String {
-    if (workspaceId.isNullOrBlank()) return UNASSIGNED_LABEL
-    return workspaces.find { it.id == workspaceId }?.name ?: UNASSIGNED_LABEL
+/** Web detail uses the workspace name. A missing id is 「未分配」 / Unassigned. */
+fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>, english: Boolean = false): String {
+    if (workspaceId.isNullOrBlank()) return unassignedLabel(english)
+    return workspaces.find { it.id == workspaceId }?.name ?: unassignedLabel(english)
 }
 
 /** Opening New task copies the selected workspace path unless the user already typed another cwd. */
@@ -708,12 +746,22 @@ fun readArchivePage(payload: JsonObject): ArchivePage? {
         if (task.status != ARCHIVED_STATUS) return null
         tasks.add(task)
     }
-    return ArchivePage(tasks, archive.text("nextCursor")?.takeIf { it.isNotBlank() })
+    return ArchivePage(
+        tasks,
+        archive.text("nextCursor")?.takeIf { it.isNotBlank() },
+        restarted = archive.bool("restarted") == true,
+    )
 }
 
 fun mergeArchivePages(existing: List<RelayTask>, more: List<RelayTask>): List<RelayTask> {
     val seen = existing.mapTo(HashSet()) { it.id }
     return existing + more.filter { seen.add(it.id) }
+}
+
+/** A restarted page replaces the list. Appending would keep rows the new order skipped or repeated. */
+fun applyArchivePage(existing: List<RelayTask>, page: ArchivePage, reset: Boolean): List<RelayTask> {
+    if (reset || page.restarted) return page.tasks
+    return mergeArchivePages(existing, page.tasks)
 }
 
 /** A newly selected board shows its own rows only. A mismatch is loading, not the previous board. */

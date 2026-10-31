@@ -911,10 +911,23 @@ class ArchiveAndBoardSwitchTest {
             """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"boards":[{"boardId":"thinkbook-main","online":true,"capabilities":["archive.list"]}]}}""",
         ).payload)
         assertEquals(listOf(ARCHIVE_CAPABILITY), boards?.single()?.capabilities)
-        val built = validateArchiveList("m-arch", 10, "thinkbook-main", "archive-key-1", "9:task_01", 20)
+        val built = validateArchiveList("m-arch", 10, "thinkbook-main", "archive-key-1", "9:task_01:ab12cd34", 20)
         val ok = built as Validated.Ok
         assertEquals("cmd.archive.list", ok.value.type)
-        assertEquals("9:task_01", ok.value.payload.text("cursor"))
+        assertEquals("9:task_01:ab12cd34", ok.value.payload.text("cursor"))
+    }
+
+    @Test
+    fun restartedArchivePageReplacesInsteadOfAppending() {
+        val kept = listOf(RelayTask("a", "A", ARCHIVED_STATUS, 30), RelayTask("b", "B", ARCHIVED_STATUS, 20))
+        val restarted = ArchivePage(
+            listOf(RelayTask("a", "A", ARCHIVED_STATUS, 30), RelayTask("c", "C", ARCHIVED_STATUS, 10)),
+            "10:c:aabbccdd",
+            restarted = true,
+        )
+        assertEquals(listOf("a", "c"), applyArchivePage(kept, restarted, reset = false).map { it.id })
+        val more = ArchivePage(listOf(RelayTask("c", "C", ARCHIVED_STATUS, 10)), null)
+        assertEquals(listOf("a", "b", "c"), applyArchivePage(kept, more, reset = false).map { it.id })
     }
 
     private fun applied(reducer: BoardReducer, view: BoardView, message: Envelope): BoardView {
@@ -932,4 +945,72 @@ class ArchiveAndBoardSwitchTest {
     )
 
     private fun env(type: String, payload: String) = parseEnvelope("""{"v":1,"id":"m1","type":"$type","ts":10,"payload":$payload}""")
+}
+
+class LateCreateBoardSwitchTest {
+    @Test
+    fun createAckAfterSwitchingToBDoesNotOpenA() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-b",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertFalse(nav.openDetail)
+        assertNull(nav.selectBoardId)
+        assertNull(nav.selectTaskId)
+        assertFalse(nav.popWorkspaceCreate)
+    }
+
+    @Test
+    fun lookupOfThatCreateAlsoStaysOnB() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-b",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertFalse(nav.openDetail)
+        assertNull(nav.selectBoardId)
+    }
+
+    @Test
+    fun createAckOnTheBoardBeingViewedStillOpensDetail() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-a",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertTrue(nav.openDetail)
+        assertEquals("board-a", nav.selectBoardId)
+        assertEquals("task_a", nav.selectTaskId)
+    }
+}
+
+class EnglishPresentationTest {
+    @Test
+    fun detailCopyHasAnEnglishFallback() {
+        val running = RelayTask("task_01", "Fix", "running", 1, sessionId = "sess", prompt = "go")
+        assertEquals("The task is running. Stop it before continuing.", continueHint(running, english = true))
+        assertEquals("Will resume session sess", continueHint(running.copy(status = "failed"), english = true))
+        assertEquals("No session yet", resumeCommandLabel(running.copy(sessionId = null, resumeCommand = null), english = true))
+        assertEquals("Task failed", detailError(RelayTask("task_01", "Fix", "failed", 1), english = true))
+        assertEquals("Initial", detailRounds(running, english = true).single().kindLabel)
+        assertEquals("Unassigned", unassignedLabel(english = true))
+        assertEquals("No workspace selected", workspaceBanner(null, emptyList(), english = true).title)
+        assertFalse(continueHint(running, english = true).any { it.code > 0x7F })
+    }
 }

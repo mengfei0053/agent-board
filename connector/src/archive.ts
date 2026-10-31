@@ -1,5 +1,5 @@
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::([a-f0-9]{8}))?$/;
 
 export type ArchiveRow = {
   id: string;
@@ -36,25 +36,50 @@ export function mapArchiveRow(raw: unknown, full: boolean): ArchiveRow | null {
 }
 
 export function pageArchiveRows(rows: ArchiveRow[], cursor: string | undefined, limit: number):
-  { ok: true; tasks: ArchiveRow[]; nextCursor?: string } | { ok: false; message: string } {
+  { ok: true; tasks: ArchiveRow[]; nextCursor?: string; restarted?: boolean } | { ok: false; message: string } {
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) return { ok: false, message: "limit is invalid" };
-  if (cursor !== undefined && !ARCHIVE_CURSOR.test(cursor)) return { ok: false, message: "cursor is invalid" };
+  const parsed = cursor === undefined ? null : parseArchiveCursor(cursor);
+  if (cursor !== undefined && !parsed) return { ok: false, message: "cursor is invalid" };
   const sorted = [...rows].sort((a, b) => {
     if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
+  const revision = archiveRevision(sorted);
+  const restarted = parsed != null && parsed.revision !== revision;
   let start = 0;
-  if (cursor) {
-    const split = cursor.indexOf(":");
-    const at = Number(cursor.slice(0, split));
-    const id = cursor.slice(split + 1);
-    const idx = sorted.findIndex((row) => row.updatedAt < at || (row.updatedAt === at && row.id > id));
+  if (parsed && !restarted) {
+    const idx = sorted.findIndex((row) => row.updatedAt < parsed.at || (row.updatedAt === parsed.at && row.id > parsed.id));
     start = idx < 0 ? sorted.length : idx;
   }
   const tasks = sorted.slice(start, start + limit);
   const last = tasks.at(-1);
   const more = start + tasks.length < sorted.length;
-  return { ok: true, tasks, ...(more && last ? { nextCursor: `${last.updatedAt}:${last.id}` } : {}) };
+  return {
+    ok: true,
+    tasks,
+    ...(more && last ? { nextCursor: `${last.updatedAt}:${last.id}:${revision}` } : {}),
+    ...(restarted ? { restarted: true } : {}),
+  };
+}
+
+/** Fingerprint of archived id + updatedAt. A changed set invalidates the cursor. */
+export function archiveRevision(rows: { id: string; updatedAt: number }[]): string {
+  let hash = 2166136261;
+  const ordered = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  for (const row of ordered) {
+    const text = `${row.id}=${row.updatedAt}\n`;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function parseArchiveCursor(cursor: string): { at: number; id: string; revision?: string } | null {
+  const match = ARCHIVE_CURSOR.exec(cursor);
+  if (!match) return null;
+  return { at: Number(match[1]), id: match[2] ?? "", ...(match[3] ? { revision: match[3] } : {}) };
 }
 
 export function wireArchiveRow(row: ArchiveRow, full: boolean): Record<string, unknown> {

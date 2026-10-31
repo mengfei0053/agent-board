@@ -163,7 +163,7 @@ fun validateContinue(
     return validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null, clean)
 }
 
-private val archiveCursorPattern = Regex("^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$")
+private val archiveCursorPattern = Regex("^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$")
 
 fun validateArchiveList(
     id: String,

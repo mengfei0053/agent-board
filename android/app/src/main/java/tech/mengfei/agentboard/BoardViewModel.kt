@@ -70,7 +70,8 @@ import tech.mengfei.agentboard.protocol.archiveReplySettled
 import tech.mengfei.agentboard.protocol.archivedDetailTask
 import tech.mengfei.agentboard.protocol.detailReplySettled
 import tech.mengfei.agentboard.protocol.inspectPairCode
-import tech.mengfei.agentboard.protocol.mergeArchivePages
+import tech.mengfei.agentboard.protocol.applyArchivePage
+import tech.mengfei.agentboard.protocol.completionNavigation
 import tech.mengfei.agentboard.protocol.pairHttpFailure
 import tech.mengfei.agentboard.protocol.pairIssueMessage
 import tech.mengfei.agentboard.protocol.pairSubmitAllowed
@@ -832,11 +833,11 @@ class BoardViewModel(
                 if (page == null) {
                     archiveError = say("Could not read the archive page.")
                 } else {
-                    archiveTasks = if (archive.reset) page.tasks else mergeArchivePages(archiveTasks, page.tasks)
+                    archiveTasks = applyArchivePage(archiveTasks, page, archive.reset)
                     archiveNextCursor = page.nextCursor
                     archiveLoaded = true
                     archiveStale = false
-                    archiveError = null
+                    archiveError = if (page.restarted) say("The archive changed. The list restarted from the first page.") else null
                 }
             }
             render()
@@ -1022,12 +1023,24 @@ class BoardViewModel(
                 store.saveSelectedWorkspace(current.boardId, null)
             }
         }
-        if (current != null && task != null && current.cmd == "cmd.create" && interpreted?.retry == Retry.None) {
-            _state.updateCopy { copy(selectedTaskId = task.id, selectedBoardId = current.boardId) }
-            if (_state.value.screen !is Screen.Detail) push(Screen.Detail(current.boardId, task.id))
-        }
-        if (current != null && workspace != null && current.cmd == "cmd.workspace.create" && interpreted?.retry == Retry.None) {
-            if (_state.value.screen is Screen.WorkspaceCreate) pop()
+        if (current != null) {
+            val nav = completionNavigation(
+                viewedBoardId = _state.value.selectedBoardId,
+                onDetail = _state.value.screen is Screen.Detail,
+                onWorkspaceCreate = _state.value.screen is Screen.WorkspaceCreate,
+                commandBoardId = current.boardId,
+                cmd = current.cmd,
+                taskId = task?.id,
+                hasWorkspace = workspace != null,
+                settled = interpreted?.retry == Retry.None,
+            )
+            val nextBoard = nav.selectBoardId
+            val nextTask = nav.selectTaskId
+            if (nextBoard != null && nextTask != null) {
+                _state.updateCopy { copy(selectedTaskId = nextTask, selectedBoardId = nextBoard) }
+                if (nav.openDetail) push(Screen.Detail(nextBoard, nextTask))
+            }
+            if (nav.popWorkspaceCreate) pop()
         }
         render()
     }

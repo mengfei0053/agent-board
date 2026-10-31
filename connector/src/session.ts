@@ -183,6 +183,7 @@ export class ConnectorSession {
         archive: {
           tasks: page.tasks.map((row) => wireArchiveRow(row, false)),
           ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+          ...(page.restarted ? { restarted: true } : {}),
         },
       },
     });
