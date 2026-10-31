@@ -2,6 +2,53 @@
 
 import type { OutputTurn, PromptTurn } from "./types.js";
 
+/** Child process stream a stored log line came from. Board lines omit this. */
+export type LogStreamSource = "stdout" | "stderr";
+
+/**
+ * Persist a child log line with its stream. Trusted output merge reads `stdout`
+ * only; `stderr` stays in the log for diagnostics.
+ */
+export function encodeStreamLogLine(stream: LogStreamSource, line: string): string {
+  return JSON.stringify({ type: "agent_stream", stream, line });
+}
+
+/** Inverse of `encodeStreamLogLine`. Impersonation notices without `line` are not envelopes. */
+export function decodeStreamLogLine(
+  stored: string,
+): { stream: LogStreamSource; line: string } | undefined {
+  const trimmed = stored.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const ev = JSON.parse(trimmed) as { type?: string; stream?: string; line?: unknown };
+    if (ev.type !== "agent_stream") return undefined;
+    if ((ev.stream !== "stdout" && ev.stream !== "stderr") || typeof ev.line !== "string") {
+      return undefined;
+    }
+    return { stream: ev.stream, line: ev.line };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Lines whose body may update task output. stderr envelopes are dropped.
+ * Untagged lines stay (board events and logs stored before stream tagging).
+ */
+export function linesForOutputMerge(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of lines) {
+    const decoded = decodeStreamLogLine(raw ?? "");
+    if (!decoded) {
+      out.push(raw ?? "");
+      continue;
+    }
+    if (decoded.stream === "stderr") continue;
+    out.push(decoded.line);
+  }
+  return out;
+}
+
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
@@ -195,6 +242,7 @@ export function extractOutputsByIteration(
   lines: string[],
   fallbackIteration = 1,
 ): OutputTurn[] {
+  lines = linesForOutputMerge(lines);
   type Seg = { start: number; iteration: number };
   const segs: Seg[] = [];
   let currentIter = 1;

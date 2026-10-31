@@ -1,4 +1,4 @@
-import { extractTextFromEventLine, isBoardMetaLine } from "./extractOutput.js";
+import { isBoardMetaLine } from "./extractOutput.js";
 
 /** Cap a single stored/displayed log line. */
 export const MAX_LOG_LINE_CHARS = 8_000;
@@ -18,23 +18,36 @@ export function truncateLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS): st
 }
 
 /**
+ * JSON wrapper that stays within `maxChars`. The preview is a diagnostic hint.
+ * The full assistant answer belongs on the task output, not back inside the log line.
+ */
+function boundedTruncationMarker(raw: string, maxChars: number): string {
+  const originalChars = raw.length;
+  const shell = (preview: string) =>
+    JSON.stringify({ type: "log_truncated", originalChars, preview });
+  const minimal = shell("");
+  if (minimal.length > maxChars) return truncateLogLine(minimal, maxChars);
+  let lo = 0;
+  let hi = raw.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (shell(raw.slice(0, mid)).length <= maxChars) lo = mid;
+    else hi = mid - 1;
+  }
+  return shell(raw.slice(0, lo));
+}
+
+/**
  * Persist a bounded line. JSON-looking lines are wrapped so a mid-string cut
- * is not later treated as assistant prose. Display truncation stays separate.
+ * is not later treated as assistant prose. The wrapper keeps a short preview,
+ * not the recovered answer. Display truncation stays separate.
  */
 export function boundStoredLogLine(line: string, maxChars = MAX_LOG_LINE_CHARS): string {
   const raw = line.endsWith("\n") ? line.slice(0, -1) : line;
   if (raw.length <= maxChars) return raw;
-  const head = raw.slice(0, maxChars);
-  const trimmed = head.trimStart();
+  const trimmed = raw.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    // Parse the full event so a long final result stays recoverable. A cut
-    // prefix is not valid JSON and would lose the text to an older short result.
-    const recovered = extractTextFromEventLine(raw) || extractTextFromEventLine(head);
-    return JSON.stringify({
-      type: "log_truncated",
-      originalChars: raw.length,
-      ...(recovered ? { recoveredText: recovered } : { preview: head.slice(0, 240) }),
-    });
+    return boundedTruncationMarker(raw, maxChars);
   }
   return truncateLogLine(raw, maxChars);
 }

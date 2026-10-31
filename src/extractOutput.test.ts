@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  encodeStreamLogLine,
   extractFinalOutput,
   extractOutputsByIteration,
   extractPromptsByIteration,
   extractTextFromEventLine,
+  linesForOutputMerge,
   formatErrorMessage,
   isBoardMetaLine,
   latestOutputText,
@@ -144,6 +146,38 @@ describe("isBoardMetaLine / extractOutputsByIteration", () => {
     assert.deepEqual(extractOutputsByIteration(lines, 3), [
       { iteration: 3, text: "only" },
     ]);
+  });
+
+  it("merges stdout only and drops stderr result plus plain text", () => {
+    const lines = [
+      JSON.stringify({ type: "start" }),
+      encodeStreamLogLine("stderr", JSON.stringify({ type: "result", result: "from-err" })),
+      encodeStreamLogLine("stderr", "plain stderr noise"),
+      encodeStreamLogLine("stdout", JSON.stringify({ type: "result", result: "from-out" })),
+    ];
+    assert.equal(linesForOutputMerge(lines).some((l) => l.includes("from-err")), false);
+    assert.deepEqual(extractOutputsByIteration(lines), [{ iteration: 1, text: "from-out" }]);
+    assert.equal(extractFinalOutput(lines), "from-out");
+  });
+
+  it("keeps stdout plain text and skips stderr plain text", () => {
+    const lines = [
+      encodeStreamLogLine("stderr", "noise from err"),
+      encodeStreamLogLine("stdout", "hello from out"),
+    ];
+    const turns = extractOutputsByIteration(lines);
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.text, "hello from out");
+  });
+
+  it("does not treat a preview-only truncation wrapper as the answer", () => {
+    const stored = JSON.stringify({
+      type: "log_truncated",
+      originalChars: 20_000,
+      preview: '{"type":"result","result":"short"}',
+    });
+    assert.equal(extractTextFromEventLine(stored), undefined);
+    assert.deepEqual(extractOutputsByIteration([stored]), []);
   });
 });
 

@@ -21,6 +21,28 @@ describe("stream line buffer", () => {
     assert.equal(endStream(state), "tail");
   });
 
+  it("returns earlier complete lines when the same chunk ends in an overlong line", () => {
+    const state = createStreamLineState();
+    const head = '{"type":"result","result":"ok"}\n';
+    const huge = Buffer.alloc(1_000_001, 0x61);
+    const pushed = pushStreamBytes(state, Buffer.concat([Buffer.from(head), huge]));
+    assert.equal(pushed.truncated, true);
+    assert.deepEqual(pushed.lines, ['{"type":"result","result":"ok"}']);
+    assert.equal(pushed.droppedLines, 0);
+  });
+
+  it("keeps short lines that surround one overlong complete line", () => {
+    const state = createStreamLineState();
+    const chunk = Buffer.concat([
+      Buffer.from("short-a\n"),
+      Buffer.alloc(1_000_001, 0x4c),
+      Buffer.from("\nshort-b\n"),
+    ]);
+    const pushed = pushStreamBytes(state, chunk);
+    assert.equal(pushed.truncated, true);
+    assert.deepEqual(pushed.lines, ["short-a", "short-b"]);
+  });
+
   it("drops an unterminated line that exceeds the cap", () => {
     const state = createStreamLineState();
     const huge = Buffer.alloc(1_000_001, 0x61);

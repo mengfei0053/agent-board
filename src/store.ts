@@ -59,6 +59,8 @@ let persistChain: Promise<void> = Promise.resolve();
 let defaultWorkspaceId: string | null = null;
 /** Unit tests flip this off so task mutations stay in memory. */
 let persistWrites = true;
+/** Unit tests: queued persist jobs succeed without Postgres. */
+let persistDryRun = false;
 
 type TasksDeletedListener = (ids: string[]) => void;
 /** Fired with ids just removed from the in-memory map (before async persist). */
@@ -107,6 +109,11 @@ let logBatch: LogRow[] = [];
 let logBatchTimer: ReturnType<typeof setTimeout> | null = null;
 let logBatchQueued = false;
 const MAX_LOG_BATCH = 5_000;
+/** flushPersist stops and reports failure if the queue is still busy after this many passes. */
+const FLUSH_PERSIST_MAX_ROUNDS = 100;
+let flushPersistMaxRounds = FLUSH_PERSIST_MAX_ROUNDS;
+/** Test hook: runs after a log batch is accepted, before the queue is checked again. */
+let afterLogInsertForTests: ((rows: LogRow[]) => void) | null = null;
 
 function consumePersistFault(op: PersistOp): void {
   const idx = persistFaults.findIndex((f) => f.op === op);
@@ -119,6 +126,35 @@ function consumePersistFault(op: PersistOp): void {
 /** Queued fault injection for tests. Each call fails one later matching persist op. */
 export function failNextPersistForTests(op: PersistOp, error = new Error("persist failed")): void {
   persistFaults.push({ op, error });
+}
+
+/** Skip Postgres inside queued persist jobs. Turns writes back on so the queue actually runs. */
+export function setPersistDryRunForTests(on: boolean): void {
+  persistDryRun = on;
+  if (on) persistWrites = true;
+}
+
+/** Cap flushPersist rounds. `null` restores the production cap. */
+export function setFlushPersistMaxRoundsForTests(rounds: number | null): void {
+  flushPersistMaxRounds =
+    rounds == null ? FLUSH_PERSIST_MAX_ROUNDS : Math.max(1, Math.trunc(rounds));
+}
+
+/** Invoked after a log batch is stored and before the flusher checks for more work. */
+export function setAfterLogInsertForTests(fn: ((rows: LogRow[]) => void) | null): void {
+  afterLogInsertForTests = fn;
+}
+
+export function persistQueueDepthForTests(): {
+  logs: number;
+  tasks: number;
+  logQueued: boolean;
+} {
+  return {
+    logs: logBatch.length,
+    tasks: pendingTaskWrites.size,
+    logQueued: logBatchQueued,
+  };
 }
 
 export function isPersistDegraded(): boolean {
@@ -218,6 +254,7 @@ function queueLogFlush(): void {
     if (!rows.length) return;
     try {
       await insertLogRows(rows);
+      afterLogInsertForTests?.(rows);
       if (!logBatch.length) {
         logPersistFailed = false;
         logRetryQueued = false;
@@ -259,19 +296,39 @@ function enqueueLogLine(taskId: string, line: string): void {
   logBatchTimer.unref?.();
 }
 
+function persistQueueIdle(seen: Promise<void>): boolean {
+  return (
+    seen === persistChain &&
+    logBatch.length === 0 &&
+    !logBatchQueued &&
+    pendingTaskWrites.size === 0 &&
+    !coalesceQueued
+  );
+}
+
 export async function flushPersist(): Promise<void> {
-  for (let i = 0; i < 100; i++) {
+  let drained = false;
+  for (let i = 0; i < flushPersistMaxRounds; i++) {
     if (logBatch.length && !logBatchQueued) queueLogFlush();
     kickTaskCoalesce();
     const seen = persistChain;
     await seen;
-    const idle =
-      seen === persistChain &&
-      logBatch.length === 0 &&
-      !logBatchQueued &&
-      pendingTaskWrites.size === 0 &&
-      !coalesceQueued;
-    if (idle) break;
+    if (persistQueueIdle(seen)) {
+      drained = true;
+      break;
+    }
+  }
+  if (!drained) {
+    const pending = unreportedFailure;
+    unreportedFailure = null;
+    const why = pending instanceof Error ? pending.message : pending ? String(pending) : "";
+    const rounds =
+      flushPersistMaxRounds === 1 ? "1 round" : `${flushPersistMaxRounds} rounds`;
+    const err = new Error(
+      `flushPersist did not drain after ${rounds} (logs=${logBatch.length}, logQueued=${logBatchQueued}, tasks=${pendingTaskWrites.size}, taskQueued=${coalesceQueued})${why ? `: ${why}` : ""}`,
+    );
+    if (pending instanceof Error) err.cause = pending;
+    throw err;
   }
   if (unreportedFailure) {
     const err = unreportedFailure;
@@ -557,6 +614,7 @@ async function pruneTaskLogsInDb(
   keep = MAX_LOG_LINES_KEPT,
   maxChars = MAX_LOG_CHARS_KEPT,
 ): Promise<void> {
+  if (persistDryRun) return;
   if (keep <= 0 || maxChars <= 0) {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [taskId]);
     return;
@@ -623,6 +681,7 @@ export async function pruneTaskLogsForTests(
 async function insertLogRows(rows: LogRow[]): Promise<void> {
   if (!rows.length) return;
   consumePersistFault("log");
+  if (persistDryRun) return;
   await getPool().query(
     `INSERT INTO task_logs (task_id, line)
      SELECT * FROM UNNEST($1::text[], $2::text[])`,
@@ -736,7 +795,9 @@ async function loadAllFromPg(): Promise<void> {
   );
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
-    arr.push(truncateLogLine(r.line));
+    // Same bound as live appendLog. A mid-string cut would make reload
+    // extraction disagree with the line that was stored.
+    arr.push(boundStoredLogLine(r.line));
     logs.set(r.task_id, arr);
   }
   for (const arr of logs.values()) {
@@ -1193,7 +1254,20 @@ export function countTasksInWorkspace(workspaceId: string): number {
  * Unit tests: in-memory tasks/workspaces and no Postgres writes.
  * Returns the seeded default workspace id.
  */
+function resetPersistTestHooks(): void {
+  persistDryRun = false;
+  afterLogInsertForTests = null;
+  flushPersistMaxRounds = FLUSH_PERSIST_MAX_ROUNDS;
+  if (logBatchTimer) {
+    clearTimeout(logBatchTimer);
+    logBatchTimer = null;
+  }
+  logBatchQueued = false;
+  coalesceQueued = false;
+}
+
 export function enableMemoryStoreForTests(): string {
+  resetPersistTestHooks();
   persistWrites = false;
   persistFaults = [];
   persistDegraded = null;
@@ -1226,10 +1300,13 @@ export function enableMemoryStoreForTests(): string {
 
 /** Undo enableMemoryStoreForTests. Does not touch an open Postgres pool. */
 export function disableMemoryStoreForTests(): void {
+  resetPersistTestHooks();
   persistWrites = true;
   tasks = new Map();
   workspaces = new Map();
   logs = new Map();
+  logBatch = [];
+  pendingTaskWrites.clear();
   defaultWorkspaceId = null;
   ready = false;
 }
