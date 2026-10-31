@@ -126,6 +126,19 @@ pnpm dev
 
 首次启动若存在 `data/db.json`，会自动迁移到 Postgres，并将 JSON 改名为 `db.json.migrated-*`。
 
+## Android、中继、connector
+
+本仓库同时包含 ThinkBook 看板、公网中继、本机 connector，以及 Android 客户端。看板 HTTP 仍只应绑在 `127.0.0.1`。手机只连中继。
+
+| 目录 | 作用 |
+| --- | --- |
+| `android/` | Kotlin Compose APK，`tech.mengfei.agentboard`。本地 `./gradlew :protocol:test` 与 `assembleRelease`（未签名） |
+| `relay/` | Node 中继（HTTP 配对 + WebSocket）。不调用看板、不 spawn CLI |
+| `connector/` | ThinkBook 上的独立进程，把中继命令译成本机 `127.0.0.1:8791` |
+| [PROTOCOL.md](./PROTOCOL.md) | 信封、配对、幂等与 `useGitWorktree` |
+
+发布 APK：在 GitHub 上 **Publish a release**。`.github/workflows/release-apk.yml` 会用 JDK 17 和 Android SDK 35 跑 `./gradlew :app:assembleRelease`，并把未签名包 `agent-board-<tag>.apk` 挂到该 Release。不需要签名密钥。说明见 [android/README.md](./android/README.md)。
+
 ## 测试
 
 ```bash
