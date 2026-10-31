@@ -28,6 +28,18 @@ export type SideJob = {
   endedAt?: string;
 };
 
+/**
+ * Board-owned git worktree created for this task.
+ * `baseHead` is the commit recorded at create time and is informational only.
+ * Delete checks `owned`, `path`, and `branch` — not `baseHead`.
+ */
+export type TaskWorktree = {
+  path: string;
+  branch: string;
+  baseHead: string;
+  owned: true;
+};
+
 /** File attached when creating a task (stored under data/uploads) */
 export type TaskAttachment = {
   /** Stored filename on disk (safe id + ext) */
@@ -117,6 +129,8 @@ export type Task = {
   sideJobs?: SideJob[];
   /** Files attached at create time */
   attachments?: TaskAttachment[];
+  /** Set when this task was created inside a board-owned git worktree. */
+  worktree?: TaskWorktree;
 };
 
 
@@ -130,6 +144,12 @@ export type CreateTaskInput = {
   prompt: string;
   model?: string;
   attachments?: TaskAttachment[];
+  /**
+   * When true, create a git worktree under the resolved cwd and spawn there.
+   * Omitted or false keeps the workspace / cwd path. Non-boolean values are
+   * rejected at the HTTP boundary.
+   */
+  useGitWorktree?: boolean;
 };
 
 export type CreateWorkspaceInput = {

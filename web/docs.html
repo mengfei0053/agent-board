@@ -69,6 +69,7 @@
             <tr><td><code>title</code></td><td></td><td>可选标题</td></tr>
             <tr><td><code>start</code></td><td></td><td><code>true</code> → 创建并开跑</td></tr>
             <tr><td><code>lane</code> / <code>mode</code></td><td></td><td><code>draft</code>（默认）或 <code>todo</code></td></tr>
+            <tr><td><code>useGitWorktree</code></td><td></td><td>可选布尔，默认关。仅当 <code>cwd</code> / 工作区路径是带可用 HEAD 的 git 工作树根时可为 <code>true</code>；其它类型 → 400</td></tr>
           </tbody>
         </table>
         <p>响应：<code>201 { task, started }</code></p>
@@ -108,6 +109,7 @@ npm start</code></pre>
             <tr><td><code>prompt</code></td><td>✅</td><td>任务内容</td></tr>
             <tr><td><code>title</code> / <code>model</code></td><td></td><td>可选</td></tr>
             <tr><td><code>start</code></td><td></td><td><code>true</code> → 创建并开跑（等同「新建 Todo」）</td></tr>
+            <tr><td><code>useGitWorktree</code></td><td></td><td>可选布尔，默认关。为 <code>true</code> 时在工作区根下创建 <code>.agent-board/worktrees/&lt;id&gt;</code>，任务 cwd 指向该目录。不合格、无提交、路径已存在 → 400，且不留下任务或 worktree</td></tr>
           </tbody>
         </table>
         <h3>新建草稿</h3>
@@ -159,7 +161,7 @@ npm start</code></pre>
       <section id="batch">
         <h2>批量删除</h2>
         <p><code>POST /api/tasks/batch-delete</code> body <code>{ "ids": ["id1","id2"] }</code></p>
-        <p><code>queued</code> / <code>running</code> 会进入 <code>skipped</code>，需先 stop。</p>
+        <p><code>queued</code> / <code>running</code> 会进入 <code>skipped</code>，需先 stop。若任务拥有 git worktree，删除会移除该目录；目录里有未提交改动时保留，并在 <code>warnings</code> 中说明。</p>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/batch-delete \
   -H 'content-type: application/json' \
   -d '{ "ids": ["TASK_ID"] }'</code></pre>
@@ -173,6 +175,8 @@ npm start</code></pre>
         <pre><code>curl -sS http://127.0.0.1:8791/api/tasks</code></pre>
         <h3>任务详情（含 log 尾部与最终 output）</h3>
         <pre><code>curl -sS http://127.0.0.1:8791/api/tasks/TASK_ID</code></pre>
+        <h3>工作区是否可建 git worktree</h3>
+        <p><code>GET /api/workspaces/:id/git-worktree-eligibility</code> → <code>{ ok: true, root, head }</code> 或 <code>{ ok: false, reason }</code>。看板勾选框只用这个结果，不用 git-status 的 <code>relPath</code>。</p>
         <h3>浏览目录（选 cwd）</h3>
         <pre><code>curl -sS 'http://127.0.0.1:8791/api/browse?path=/home/menghongfei/projects'</code></pre>
       </section>

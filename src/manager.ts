@@ -47,6 +47,14 @@ import {
   stripImageMarkdown,
 } from "./uploads.js";
 import { resolveAllowedDirectory } from "./paths.js";
+import { HttpError } from "./httpError.js";
+import {
+  addOwnedWorktree,
+  cleanupOwnedWorktree,
+  getGitWorktreeEligibility,
+  type OwnedWorktreeCleanup,
+  type WorktreeCleanupWarning,
+} from "./gitWorktree.js";
 import { BOARD_FIELD_CHARS } from "./limits.js";
 
 const handles = new Map<string, RunnerHandle>();
@@ -337,20 +345,56 @@ async function patchDurable(id: string, partial: Partial<Task>): Promise<Task> {
   return stored;
 }
 
+let nextTaskIdForTests: string | null = null;
+
+/** Unit/integration tests: the next createDraft uses this id once. */
+export function setNextTaskIdForTests(id: string | null): void {
+  nextTaskIdForTests = id;
+}
+
+function allocateTaskId(): string {
+  const forced = nextTaskIdForTests;
+  nextTaskIdForTests = null;
+  if (forced != null) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(forced)) {
+      throw new HttpError(400, "invalid task id");
+    }
+    return forced;
+  }
+  return nanoid(10);
+}
+
 /** Create a draft — do not spawn. */
 export async function createDraft(input: CreateTaskInput): Promise<Task> {
-  const id = nanoid(10);
+  const id = allocateTaskId();
   const { workspaceId, cwd } = resolveCreateCwd(input);
   const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
   const title = input.title?.trim() || plainPrompt.slice(0, 48) || `${input.kind} task`;
   const createdAt = now();
   const attachments = input.attachments?.length ? input.attachments : undefined;
+
+  let taskCwd = cwd;
+  let worktree: Task["worktree"];
+  // Opt-in only. A false/omitted flag must not touch git.
+  if (input.useGitWorktree === true) {
+    const eligibility = await getGitWorktreeEligibility(cwd);
+    if (!eligibility.ok) throw new HttpError(400, eligibility.reason);
+    const created = await addOwnedWorktree(eligibility.root, id, eligibility.head);
+    taskCwd = created.path;
+    worktree = {
+      path: created.path,
+      branch: created.branch,
+      baseHead: created.baseHead,
+      owned: true,
+    };
+  }
+
   const task: Task = {
     id,
     title,
     kind: input.kind,
     workspaceId,
-    cwd,
+    cwd: taskCwd,
     prompt: input.prompt,
     model: input.model?.trim() || resolveDefaultModel(input.kind),
     iteration: 1,
@@ -359,10 +403,36 @@ export async function createDraft(input: CreateTaskInput): Promise<Task> {
     updatedAt: createdAt,
     prompts: [{ iteration: 1, prompt: input.prompt, at: createdAt }],
     attachments,
+    ...(worktree ? { worktree } : {}),
   };
-  await saveTaskDurable(task);
+  try {
+    await saveTaskDurable(task);
+  } catch (err) {
+    // Roll back only when the row never became durable. createAndStart failing
+    // after this save keeps the draft and its worktree.
+    if (worktree?.owned) {
+      await cleanupOwnedWorktree({
+        taskId: id,
+        path: worktree.path,
+        branch: worktree.branch,
+        owned: true,
+      });
+    }
+    throw err;
+  }
   publish({ type: "task_upsert", task: getTask(id) ?? task });
   writeLog(id, JSON.stringify({ type: "draft_created" }));
+  if (worktree) {
+    writeLog(
+      id,
+      JSON.stringify({
+        type: "worktree_created",
+        path: worktree.path,
+        branch: worktree.branch,
+        baseHead: worktree.baseHead,
+      }),
+    );
+  }
   return getTask(id)!;
 }
 
@@ -676,6 +746,7 @@ type RemoveTasksResult = {
   deleted: string[];
   stopped: string[];
   skipped: { id: string; status: TaskStatus; reason: string }[];
+  warnings: WorktreeCleanupWarning[];
 };
 
 /** Stop live processes if needed, then remove tasks + logs. Skips queued/running. */
@@ -683,6 +754,7 @@ export async function removeTasks(ids: string[]): Promise<RemoveTasksResult> {
   const stopped: string[] = [];
   const skipped: { id: string; status: TaskStatus; reason: string }[] = [];
   const deletable: string[] = [];
+  const worktreeCleanups: OwnedWorktreeCleanup[] = [];
   const unique = [...new Set(ids.filter(Boolean))];
 
   for (const id of unique) {
@@ -707,6 +779,14 @@ export async function removeTasks(ids: string[]): Promise<RemoveTasksResult> {
       stopped.push(id);
     }
     deletable.push(id);
+    if (t.worktree?.owned === true) {
+      worktreeCleanups.push({
+        taskId: t.id,
+        path: t.worktree.path,
+        branch: t.worktree.branch,
+        owned: true,
+      });
+    }
   }
 
   // After stop(), which may have logged and armed a new timer. Discard — do not
@@ -725,7 +805,16 @@ export async function removeTasks(ids: string[]): Promise<RemoveTasksResult> {
     }
   }
   if (deleted.length) publish({ type: "task_delete", taskIds: deleted });
-  return { deleted, stopped, skipped };
+  const warnings: WorktreeCleanupWarning[] = [];
+  const deletedSet = new Set(deleted);
+  for (const item of worktreeCleanups) {
+    if (!deletedSet.has(item.taskId)) continue;
+    // Captured before deleteTasks. Logging stays on the process console
+    // because the task log row is already gone.
+    const warning = await cleanupOwnedWorktree(item);
+    if (warning) warnings.push(warning);
+  }
+  return { deleted, stopped, skipped, warnings };
 }
 
 function clipBoardText(s: string | undefined): string | undefined {
@@ -844,7 +933,11 @@ export function taskLogTail(id: string, maxLines = 500): {
   };
 }
 
-/** Create draft then immediately start (queued → runner). */
+/**
+ * Create draft then immediately start (queued → runner).
+ * A start failure after the draft is durable does not roll the worktree back;
+ * the user can delete the draft.
+ */
 export async function createAndStart(input: CreateTaskInput): Promise<Task> {
   const draft = await createDraft(input);
   return startTask(draft.id);

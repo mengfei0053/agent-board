@@ -15,8 +15,9 @@ import { spawnCollect } from "./spawnCollect.js";
  * - maxFilesPerRepo: porcelain rows kept per repository (`filesTruncated` if more).
  *
  * Directories named in `GIT_STATUS_SKIP_DIRS` are never entered. That skips
- * `node_modules`, `.git` internals, and common large vendor / build trees, so a
- * nested clone inside those folders is not reported.
+ * `node_modules`, `.git` internals, `.agent-board` (board-owned worktrees),
+ * and common large vendor / build trees, so a nested clone inside those
+ * folders is not reported.
  */
 export const GIT_STATUS_LIMITS = {
   maxDepth: 6,
@@ -50,6 +51,7 @@ export const GIT_STATUS_SKIP_DIRS: readonly string[] = [
   ".git",
   ".hg",
   ".svn",
+  ".agent-board",
 ];
 
 const SKIP_DIRS = new Set(GIT_STATUS_SKIP_DIRS);

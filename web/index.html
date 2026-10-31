@@ -190,6 +190,11 @@
           <span class="muted prompt-img-hint">支持粘贴截图 / 选图，上限 8MB</span>
           <span class="prompt-img-status muted" data-for="create-prompt" hidden></span>
         </div>
+        <label id="create-use-worktree-label" class="create-worktree-field" hidden>
+          <input type="checkbox" id="create-use-worktree" />
+          <span>在 git worktree 中启动</span>
+        </label>
+        <p id="create-worktree-note" class="muted create-worktree-note" hidden>将在工作区 <code>.agent-board/worktrees/</code> 下新建目录，分支为 <code>agent-board/&lt;任务 id&gt;</code>。删除任务时会移除干净的 worktree 目录；若有未提交改动则保留。请自行把 <code>.agent-board/</code> 加入 gitignore（看板不会修改仓库的 ignore 文件）。</p>
         <div class="attach-field">
           <div class="attach-head">
             <span>附件（可选）</span>

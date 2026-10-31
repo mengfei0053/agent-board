@@ -50,6 +50,7 @@ import type {
 import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
 import { workspaceGitStatus } from "./gitStatus.js";
+import { getGitWorktreeEligibility } from "./gitWorktree.js";
 import {
   CLI_COMMAND_KEYS,
   applyCliPathMemory,
@@ -195,6 +196,15 @@ function parseStrictBool(v: unknown, key: string): boolean | undefined {
   throw new HttpError(400, `${key} must be a boolean`);
 }
 
+/** Absent or false → false. Any other JSON value, including null, is 400. */
+function parseUseGitWorktree(body: Record<string, unknown>): boolean {
+  if (!("useGitWorktree" in body)) return false;
+  const v = body.useGitWorktree;
+  if (v === true) return true;
+  if (v === false) return false;
+  throw new HttpError(400, "useGitWorktree must be a boolean");
+}
+
 
 function webhookSecret(): string | null {
   const s = process.env.AGENT_BOARD_WEBHOOK_SECRET?.trim();
@@ -273,11 +283,13 @@ async function createTaskViaWebhook(c: Context) {
 
   let prompt = "";
   let start = false;
+  let useGitWorktree = false;
   try {
     prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
     if (body.title != null) requireString(body, "title", { max: MAX_TITLE_CHARS });
     if (body.model != null) requireString(body, "model", { max: MAX_MODEL_CHARS });
     start = resolveHookStart(body);
+    useGitWorktree = parseUseGitWorktree(body);
   } catch (e) {
     return errorJson(c, e);
   }
@@ -318,6 +330,7 @@ async function createTaskViaWebhook(c: Context) {
     prompt,
     title: typeof body.title === "string" ? body.title : undefined,
     model: typeof body.model === "string" ? body.model : undefined,
+    useGitWorktree: useGitWorktree || undefined,
   };
   try {
     const task = start ? await createAndStart(input) : await createDraft(input);
@@ -387,6 +400,19 @@ app.get("/api/workspaces/:id/git-status", async (c) => {
     return c.json({ workspaceId: id, ...status });
   } catch (e) {
     return errorJson(c, e, 400);
+  }
+});
+
+/** Same helper as create-time checks. `relPath === "."` from git-status is not this. */
+app.get("/api/workspaces/:id/git-worktree-eligibility", async (c) => {
+  const id = c.req.param("id");
+  const ws = getWorkspace(id);
+  if (!ws) return c.json({ error: "not found" }, 404);
+  try {
+    const result = await getGitWorktreeEligibility(ws.path);
+    return c.json(result);
+  } catch (e) {
+    return errorJson(c, e, 500);
   }
 });
 
@@ -493,6 +519,7 @@ app.post("/api/tasks", async (c) => {
     } else {
       return c.json({ error: "workspaceId or cwd required" }, 400);
     }
+    const useGitWorktree = parseUseGitWorktree(body);
     const attachments = normalizeAttachmentsInput(body.attachments);
     const input: CreateTaskInput = {
       kind: kindRaw as AgentKind,
@@ -502,6 +529,7 @@ app.post("/api/tasks", async (c) => {
       title: title || undefined,
       model: model || undefined,
       attachments: attachments.length ? attachments : undefined,
+      useGitWorktree: useGitWorktree || undefined,
     };
     const task = start ? await createAndStart(input) : await createDraft(input);
     return c.json({ task }, 201);

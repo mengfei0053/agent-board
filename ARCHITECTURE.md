@@ -160,10 +160,21 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 
 - `GET /api/workspaces/:id/git-status`（`?refresh=1` 跳过缓存）
 - 只读：对工作区 `path` 下每个 `.git`（目录或文件）跑 `git status --porcelain=v1 -b -z` 与 `git log -1`
-- 发现上限：深度 **6**（根为 0）、仓库 **32**、目录 **4000**、每仓库文件行 **200**；不进入 `node_modules` / `vendor` / `dist` / `build` / `target` / `.git` 内部等目录
+- 发现上限：深度 **6**（根为 0）、仓库 **32**、目录 **4000**、每仓库文件行 **200**；不进入 `node_modules` / `vendor` / `dist` / `build` / `target` / `.git` 内部 / `.agent-board` 等目录（避免把看板 worktree 扫成额外仓库）
 - 结果内存缓存约 3 秒；扫描与 git 调用异步，不阻塞其它请求
 - 路径只来自已保存的工作区，忽略客户端传入的 path；子进程去掉 `GIT_DIR` 等会把 git 指到别处的环境变量
 - UI：看板当前工作区横幅下，以及 `/workspaces/:id/settings`
+
+## 可选 git worktree
+
+- 资格只认 **work tree 根** 且 **HEAD 可解析**（无提交的 unborn 仓库不合格）。嵌套在非 git 工作区里的仓库不合格。实现是 `getGitWorktreeEligibility`：先 `resolveAllowedDirectory`（realpath），所有 git 子进程去掉 `GIT_*`，读操作超时与 git status 相同。
+- `GET /api/workspaces/:id/git-worktree-eligibility` 与创建时复验都走这个 helper。`git-status` 里 `relPath === "."` 不能代替它。
+- `POST /api/tasks` 与 webhook 接受可选 `useGitWorktree`（布尔，默认关）。非布尔、不合格、unborn、目标路径或 `agent-board/<id>` 分支已存在 → **400**，不留下任务行，也不留下本次新建的 worktree。git 启动失败或其它文件系统错误 → **500**。
+- 成功时 `task.cwd` 为 `<base>/.agent-board/worktrees/<taskId>`，并保存 `worktree: { path, branch, baseHead, owned: true }`。`baseHead` 只作记录，删除时不拿它当身份。
+- 只在任务**删除**时清理。须 `owned`、realpath 落在预期路径、`git worktree list` 仍登记该路径与分支 `agent-board/<taskId>`。目录有未提交改动则 **不** `worktree remove --force`，保留目录并在删除结果里给出 `warnings`。干净则 `worktree remove`（不带 `--force`），再尽力 `git branch -D`。
+- 持久化失败（行还没落上）会回滚刚加的 worktree。`createAndStart` 在草稿已经落库之后失败 **不** 回滚。
+- 未匹配到工作区的自由 cwd 仍挂到默认工作区（与以前相同）；worktree 建在该 cwd 的 git 根下。看板新建表单始终传当前 `workspaceId`。
+- 不修改用户的 `.gitignore`。建议忽略 `.agent-board/`。
 
 ## 任务内容图片
 

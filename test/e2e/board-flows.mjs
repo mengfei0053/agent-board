@@ -330,7 +330,89 @@ async function main() {
       console.log("[e2e-board] E4 bulk-delete skip ok");
     }
 
-    console.log("[e2e-board] all E1–E4 passed");
+    // E5: worktree checkbox follows eligibility, defaults off, submit sets cwd.
+    {
+      state.workspaces.get("ws_default").gitWorktreeEligible = false;
+      state.workspaces.get("ws_extra").gitWorktreeEligible = true;
+      await selectWorkspace(page, "ws_default");
+      await page.click("#btn-new");
+      await page.waitForSelector("#create-modal:not(.hidden)");
+      await page.waitForFunction(
+        () => document.getElementById("create-use-worktree-label")?.dataset.elig === "no",
+      );
+      assert.equal(
+        await page.$eval("#create-use-worktree-label", (el) => el.hidden),
+        true,
+      );
+      await page.click("#create-close");
+      await page.waitForSelector("#create-modal.hidden");
+
+      await selectWorkspace(page, "ws_extra");
+      await page.click("#btn-new");
+      await page.waitForSelector("#create-modal:not(.hidden)");
+      await page.waitForFunction(
+        () => document.getElementById("create-use-worktree-label")?.dataset.elig === "yes",
+      );
+      assert.equal(await page.$eval("#create-use-worktree", (el) => el.checked), false);
+      assert.equal(
+        await page.$eval("#create-use-worktree-label", (el) => el.hidden),
+        false,
+      );
+      assert.match(
+        await page.$eval("#create-use-worktree-label", (el) => el.textContent || ""),
+        /在 git worktree 中启动/,
+      );
+      await page.click("#create-close");
+      await page.click("#btn-new");
+      await page.waitForFunction(
+        () => document.getElementById("create-use-worktree-label")?.dataset.elig === "yes",
+      );
+      assert.equal(await page.$eval("#create-use-worktree", (el) => el.checked), false);
+
+      await page.click("#create-use-worktree");
+      assert.equal(await page.$eval("#create-use-worktree", (el) => el.checked), true);
+      await selectWorkspace(page, "ws_default");
+      await page.waitForFunction(
+        () => document.getElementById("create-use-worktree-label")?.dataset.elig === "no",
+      );
+      assert.equal(await page.$eval("#create-use-worktree", (el) => el.checked), false);
+      assert.equal(
+        await page.$eval("#create-use-worktree-label", (el) => el.hidden),
+        true,
+      );
+      await selectWorkspace(page, "ws_extra");
+      await page.waitForFunction(
+        () => document.getElementById("create-use-worktree-label")?.dataset.elig === "yes",
+      );
+      assert.equal(await page.$eval("#create-use-worktree", (el) => el.checked), false);
+
+      await page.click("#create-use-worktree");
+      await page.click('input[name="title"]', { clickCount: 3 });
+      await page.type('input[name="title"]', "worktree 任务");
+      await page.click("#create-prompt", { clickCount: 3 });
+      await page.type("#create-prompt", "在 worktree 里做");
+      await Promise.all([
+        page.waitForSelector("#detail-modal:not(.hidden)"),
+        page.click("#create-submit"),
+      ]);
+      const created = [...state.tasks.values()].find((t) => t.title === "worktree 任务");
+      assert.ok(created);
+      assert.equal(created.workspaceId, "ws_extra");
+      assert.match(created.cwd, /\/\.agent-board\/worktrees\/task_e2e_/);
+      assert.equal(created.worktree?.owned, true);
+      assert.equal(created.worktree?.branch, `agent-board/${created.id}`);
+
+      const dlgP = waitDialog(page, "dismiss");
+      await page.click("#delete-btn");
+      const dlg = await dlgP;
+      assert.match(dlg.message, /worktree/);
+      assert.match(dlg.message, /移除/);
+      assert.equal(state.tasks.has(created.id), true);
+      await page.click("#detail-close");
+      console.log("[e2e-board] E5 worktree checkbox ok");
+    }
+
+    console.log("[e2e-board] all E1–E5 passed");
   } finally {
     await browser.close();
     server.close();

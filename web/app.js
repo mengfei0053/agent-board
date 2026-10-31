@@ -50,6 +50,10 @@ const wsFormError = document.getElementById("ws-form-error");
 const wsNameInput = document.getElementById("ws-name");
 const wsPathInput = document.getElementById("ws-path");
 const createWsHint = document.getElementById("create-ws-hint");
+const createUseWorktreeLabel = document.getElementById("create-use-worktree-label");
+const createUseWorktree = document.getElementById("create-use-worktree");
+const createWorktreeNote = document.getElementById("create-worktree-note");
+let worktreeEligSeq = 0;
 const bulkCount = document.getElementById("bulk-count");
 
 /** @type {Map<string, any>} */
@@ -787,9 +791,52 @@ function openCreate(mode = "draft") {
   }
   refreshModelSuggestions(createKindSelect?.value);
   createModal.classList.remove("hidden");
+  if (createUseWorktree) createUseWorktree.checked = false;
+  void refreshCreateWorktreeEligibility();
+}
+function hideCreateWorktree() {
+  if (createUseWorktree) createUseWorktree.checked = false;
+  if (createUseWorktreeLabel) createUseWorktreeLabel.hidden = true;
+  if (createWorktreeNote) createWorktreeNote.hidden = true;
+}
+async function refreshCreateWorktreeEligibility() {
+  const seq = ++worktreeEligSeq;
+  const wsId = selectedWorkspaceId;
+  hideCreateWorktree();
+  if (createUseWorktreeLabel) createUseWorktreeLabel.dataset.elig = "pending";
+  if (!wsId || createModal.classList.contains("hidden")) {
+    if (seq === worktreeEligSeq && createUseWorktreeLabel) createUseWorktreeLabel.dataset.elig = "no";
+    return;
+  }
+  try {
+    const res = await fetch(`/api/workspaces/${encodeURIComponent(wsId)}/git-worktree-eligibility`);
+    if (seq !== worktreeEligSeq || selectedWorkspaceId !== wsId || createModal.classList.contains("hidden")) return;
+    if (!res.ok) {
+      hideCreateWorktree();
+      createUseWorktreeLabel.dataset.elig = "no";
+      return;
+    }
+    const data = await res.json();
+    if (seq !== worktreeEligSeq || selectedWorkspaceId !== wsId || createModal.classList.contains("hidden")) return;
+    if (data && data.ok === true) {
+      if (createUseWorktree) createUseWorktree.checked = false;
+      createUseWorktreeLabel.hidden = false;
+      if (createWorktreeNote) createWorktreeNote.hidden = false;
+      createUseWorktreeLabel.dataset.elig = "yes";
+    } else {
+      hideCreateWorktree();
+      createUseWorktreeLabel.dataset.elig = "no";
+    }
+  } catch {
+    if (seq !== worktreeEligSeq) return;
+    hideCreateWorktree();
+    if (createUseWorktreeLabel) createUseWorktreeLabel.dataset.elig = "no";
+  }
 }
 function closeCreate() {
+  worktreeEligSeq += 1;
   createModal.classList.add("hidden");
+  hideCreateWorktree();
   clearCreatePrompt();
   clearPendingAttachments();
   try { form.reset(); } catch { /* ignore */ }
@@ -1088,6 +1135,7 @@ function paintDetail(task) {
     resumeMetaItem(task),
     metaItem("工作区", (task.workspaceId && workspaces.get(task.workspaceId)?.name) || task.workspaceId || "—"),
     metaItem("工作目录", task.cwd, true),
+    ...(task.worktree?.branch ? [metaItem("Git 分支", task.worktree.branch, true)] : []),
     metaItem("初始提示词", task.prompt, true, { markdown: true }),
   ].join("");
 
@@ -1287,6 +1335,12 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   const fd = new FormData(form);
+  const worktreeOn = Boolean(
+    createUseWorktreeLabel &&
+    !createUseWorktreeLabel.hidden &&
+    createUseWorktree &&
+    createUseWorktree.checked
+  );
   const body = {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
@@ -1295,6 +1349,7 @@ form.addEventListener("submit", async (e) => {
     prompt: fd.get("prompt"),
     start: createMode === "todo",
     attachments: pendingAttachments.length ? pendingAttachments : undefined,
+    ...(worktreeOn ? { useGitWorktree: true } : {}),
   };
   const res = await fetch("/api/tasks", {
     method: "POST",
@@ -1365,7 +1420,7 @@ deleteBtn.addEventListener("click", async () => {
     window.alert("Todo/进行中的任务不可删除，请先停止或等其结束");
     return;
   }
-  if (!window.confirm(`确认删除任务「${t.title}」？`)) return;
+  if (!window.confirm(`确认删除任务「${t.title}」？${worktreeDeleteNotice([t])}`)) return;
   const res = await fetch("/api/tasks/batch-delete", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1382,6 +1437,8 @@ deleteBtn.addEventListener("click", async () => {
   }
   closeDetail();
   renderList();
+  const warn = worktreeWarningText(data);
+  if (warn) window.alert(warn);
 });
 
 continueBtn.addEventListener("click", async () => {
@@ -1436,6 +1493,7 @@ document.getElementById("bulk-delete").onclick = async () => {
   }
   let msg = `确认删除选中的 ${allowed.length} 个任务？`;
   if (blocked.length) msg += `\n将跳过 ${blocked.length} 个 Todo/进行中任务。`;
+  msg += worktreeDeleteNotice(allowed.map((id) => tasks.get(id)));
   if (!window.confirm(msg)) return;
   const res = await fetch("/api/tasks/batch-delete", {
     method: "POST",
@@ -1453,8 +1511,11 @@ document.getElementById("bulk-delete").onclick = async () => {
     if (selectedId === id) closeDetail();
   }
   const skipped = data.skipped || [];
+  const warn = worktreeWarningText(data);
   if (skipped.length) {
-    window.alert(`已删除 ${data.deleted?.length || 0} 个；跳过 ${skipped.length} 个不可删任务（Todo/进行中）。`);
+    window.alert(`已删除 ${data.deleted?.length || 0} 个；跳过 ${skipped.length} 个不可删任务（Todo/进行中）。${warn ? `\n${warn}` : ""}`);
+  } else if (warn) {
+    window.alert(warn);
   }
   updateBulkBar();
   renderList();
@@ -1556,6 +1617,22 @@ function ensureSelectedWorkspace(fallbackId) {
   if (selectedWorkspaceId) localStorage.setItem("agent-board.workspaceId", selectedWorkspaceId);
 }
 
+function taskOwnsWorktree(task) {
+  return Boolean(task && task.worktree && task.worktree.owned === true);
+}
+
+function worktreeDeleteNotice(list) {
+  const owned = list.filter(taskOwnsWorktree);
+  if (!owned.length) return "";
+  return `\n\n其中 ${owned.length} 个任务使用了 git worktree。删除时会移除对应的 worktree 目录。若目录里有未提交改动，则保留该目录，并在删除后提示。`;
+}
+
+function worktreeWarningText(data) {
+  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  if (!warnings.length) return "";
+  return warnings.map((w) => w.message || w.code || "worktree 清理未完成").join("\n");
+}
+
 function selectWorkspace(id) {
   if (!workspaces.has(id)) return;
   selectedWorkspaceId = id;
@@ -1567,6 +1644,12 @@ function selectWorkspace(id) {
   }
   renderWorkspaces();
   renderList();
+  if (createModal && !createModal.classList.contains("hidden")) {
+    const ws = workspaces.get(id);
+    if (createWsHint && ws) createWsHint.textContent = `工作区：${ws.name} · ${ws.path}`;
+    if (createUseWorktree) createUseWorktree.checked = false;
+    void refreshCreateWorktreeEligibility();
+  }
 }
 
 function renderWorkspaces() {

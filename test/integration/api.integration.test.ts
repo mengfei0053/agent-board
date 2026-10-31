@@ -16,7 +16,7 @@ import {
   ensureDir,
 } from "./harness.js";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { clearGitStatusCacheForTests, gitReadOnlyEnv } from "../../src/gitStatus.js";
 import { browseHome } from "../../src/fsbrowse.js";
@@ -37,7 +37,7 @@ const {
   logLineCount,
   getTask,
 } = await import("../../src/store.js");
-const { clearHandlesForTests } = await import("../../src/manager.js");
+const { clearHandlesForTests, setNextTaskIdForTests } = await import("../../src/manager.js");
 const { runners } = await import("../../src/runners/index.js");
 
 await initStore();
@@ -1026,5 +1026,315 @@ describe("integration I1–I12", () => {
     const gone = await app.request(`/api/workspaces/${workspace.id}/git-status?refresh=1`);
     assert.equal(gone.status, 400);
   });
+
+function gitEnv(): NodeJS.ProcessEnv {
+  return gitReadOnlyEnv({
+    ...process.env,
+    GIT_AUTHOR_NAME: "Tester",
+    GIT_AUTHOR_EMAIL: "tester@example.com",
+    GIT_COMMITTER_NAME: "Tester",
+    GIT_COMMITTER_EMAIL: "tester@example.com",
+  });
+}
+
+function gitExec(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, env: gitEnv(), stdio: "pipe" }).toString("utf8");
+}
+
+function initGitRepo(dir: string, commit = true): void {
+  gitExec(dir, ["init", "-b", "main"]);
+  if (!commit) return;
+  writeFileSync(join(dir, "README.md"), "hi\n");
+  gitExec(dir, ["add", "README.md"]);
+  gitExec(dir, ["commit", "-m", "init"]);
+}
+
+function worktreeNames(root: string): string[] {
+  const dir = join(root, ".agent-board", "worktrees");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir);
+}
+
+describe("git worktree HTTP", () => {
+  const roots: string[] = [];
+
+  beforeEach(async () => {
+    clearHandlesForTests();
+    installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
+    await resetStoreForTests();
+    setNextTaskIdForTests(null);
+    clearGitStatusCacheForTests();
+  });
+
+  after(async () => {
+    setNextTaskIdForTests(null);
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  async function makeWorkspace(path: string): Promise<{ id: string; path: string }> {
+    roots.push(path);
+    const create = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "wt", path }),
+    });
+    assert.equal(create.status, 201);
+    const { workspace } = await jsonOf(create);
+    return workspace;
+  }
+
+  async function taskCount(): Promise<number> {
+    const body = await jsonOf(await app.request("/api/tasks"));
+    return body.tasks.length;
+  }
+
+  it("reports eligibility and round-trips an opted-in create", async () => {
+    const path = freshWorkspacePath();
+    initGitRepo(path);
+    const workspace = await makeWorkspace(path);
+    const head = gitExec(path, ["rev-parse", "HEAD"]).trim();
+
+    const elig = await app.request(`/api/workspaces/${workspace.id}/git-worktree-eligibility`);
+    assert.equal(elig.status, 200);
+    const eligBody = await jsonOf(elig);
+    assert.equal(eligBody.ok, true);
+    assert.equal(eligBody.root, workspace.path);
+    assert.equal(eligBody.head, head);
+
+    const missing = await app.request("/api/workspaces/nope/git-worktree-eligibility");
+    assert.equal(missing.status, 404);
+
+    const off = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "stay on the root",
+        title: "off",
+        useGitWorktree: false,
+      }),
+    });
+    assert.equal(off.status, 201);
+    const offTask = (await jsonOf(off)).task;
+    assert.equal(offTask.cwd, workspace.path);
+    assert.equal(offTask.worktree, undefined);
+
+    const created = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "use a worktree",
+        title: "on",
+        useGitWorktree: true,
+        start: true,
+      }),
+    });
+    assert.equal(created.status, 201);
+    const task = (await jsonOf(created)).task;
+    assert.equal(task.workspaceId, workspace.id);
+    assert.equal(task.cwd, join(workspace.path, ".agent-board", "worktrees", task.id));
+    assert.equal(task.worktree.owned, true);
+    assert.equal(task.worktree.branch, `agent-board/${task.id}`);
+    assert.equal(task.worktree.baseHead, head);
+    assert.equal(existsSync(task.cwd), true);
+    assert.equal(gitExec(task.cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), task.worktree.branch);
+
+    await flushPersist();
+    const row = await getPool().query(`SELECT cwd, worktree FROM tasks WHERE id = $1`, [task.id]);
+    const stored = typeof row.rows[0].worktree === "string" ? JSON.parse(row.rows[0].worktree) : row.rows[0].worktree;
+    assert.equal(row.rows[0].cwd, task.cwd);
+    assert.equal(stored.branch, task.worktree.branch);
+    assert.equal(stored.owned, true);
+
+    const hook = await app.request("/api/hooks/tasks", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-webhook-secret",
+      },
+      body: JSON.stringify({
+        prompt: "webhook worktree",
+        agent: "pi",
+        workspaceId: workspace.id,
+        useGitWorktree: true,
+      }),
+    });
+    assert.equal(hook.status, 201);
+    const hooked = (await jsonOf(hook)).task;
+    assert.equal(hooked.cwd, join(workspace.path, ".agent-board", "worktrees", hooked.id));
+    assert.equal(hooked.worktree.owned, true);
+
+    const del = await app.request("/api/tasks/batch-delete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [task.id] }),
+    });
+    assert.equal(del.status, 200);
+    const delBody = await jsonOf(del);
+    assert.deepEqual(delBody.warnings, []);
+    assert.equal(existsSync(task.cwd), false);
+    assert.throws(() => gitExec(workspace.path, ["show-ref", "--verify", "--quiet", `refs/heads/${task.worktree.branch}`]));
+  });
+
+  it("returns 400 for ineligible, unborn, invalid boolean, and existing path without leftovers", async () => {
+    const plain = freshWorkspacePath();
+    writeFileSync(join(plain, "note.txt"), "x\n");
+    const plainWs = await makeWorkspace(plain);
+    const plainElig = await jsonOf(await app.request(`/api/workspaces/${plainWs.id}/git-worktree-eligibility`));
+    assert.equal(plainElig.ok, false);
+
+    const plainCreate = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: plainWs.id,
+        prompt: "nope",
+        useGitWorktree: true,
+      }),
+    });
+    assert.equal(plainCreate.status, 400);
+    assert.match((await jsonOf(plainCreate)).error, /git work tree root/);
+    assert.equal(await taskCount(), 0);
+    assert.deepEqual(worktreeNames(plain), []);
+
+    const unbornPath = freshWorkspacePath();
+    initGitRepo(unbornPath, false);
+    const unbornWs = await makeWorkspace(unbornPath);
+    const unbornElig = await jsonOf(await app.request(`/api/workspaces/${unbornWs.id}/git-worktree-eligibility`));
+    assert.equal(unbornElig.ok, false);
+    assert.match(unbornElig.reason, /no commits/);
+    const unbornCreate = await app.request("/webhook/tasks", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-webhook-secret": "test-webhook-secret",
+      },
+      body: JSON.stringify({
+        prompt: "unborn",
+        agent: "pi",
+        workspaceId: unbornWs.id,
+        useGitWorktree: true,
+      }),
+    });
+    assert.equal(unbornCreate.status, 400);
+    assert.match((await jsonOf(unbornCreate)).error, /no commits/);
+    assert.equal(await taskCount(), 0);
+    assert.deepEqual(worktreeNames(unbornPath), []);
+
+    const repo = freshWorkspacePath();
+    initGitRepo(repo);
+    const ws = await makeWorkspace(repo);
+    const badBool = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: ws.id,
+        prompt: "bad",
+        useGitWorktree: "yes",
+      }),
+    });
+    assert.equal(badBool.status, 400);
+    assert.match((await jsonOf(badBool)).error, /useGitWorktree must be a boolean/);
+    const badHook = await app.request("/api/hooks/tasks", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-webhook-secret",
+      },
+      body: JSON.stringify({
+        prompt: "bad",
+        agent: "pi",
+        workspaceId: ws.id,
+        useGitWorktree: 1,
+      }),
+    });
+    assert.equal(badHook.status, 400);
+    assert.match((await jsonOf(badHook)).error, /useGitWorktree must be a boolean/);
+    assert.equal(await taskCount(), 0);
+    assert.deepEqual(worktreeNames(repo), []);
+
+    const id = "exists-http-1";
+    const dest = join(repo, ".agent-board", "worktrees", id);
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, "keep.txt"), "keep\n");
+    setNextTaskIdForTests(id);
+    const existsRes = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: ws.id,
+        prompt: "exists",
+        useGitWorktree: true,
+      }),
+    });
+    assert.equal(existsRes.status, 400);
+    assert.match((await jsonOf(existsRes)).error, /already exists/);
+    assert.equal(await taskCount(), 0);
+    assert.equal(readFileSync(join(dest, "keep.txt"), "utf8"), "keep\n");
+  });
+
+  it("keeps a dirty worktree on delete and returns a warning", async () => {
+    const path = freshWorkspacePath();
+    initGitRepo(path);
+    const workspace = await makeWorkspace(path);
+    const created = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "pi",
+        workspaceId: workspace.id,
+        prompt: "dirty",
+        title: "dirty",
+        useGitWorktree: true,
+      }),
+    });
+    assert.equal(created.status, 201);
+    const task = (await jsonOf(created)).task;
+    writeFileSync(join(task.cwd, "wip.txt"), "wip\n");
+    const del = await app.request("/api/tasks/batch-delete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [task.id] }),
+    });
+    assert.equal(del.status, 200);
+    const body = await jsonOf(del);
+    assert.ok(body.deleted.includes(task.id));
+    assert.equal(body.warnings[0].code, "worktree_cleanup_skipped_dirty");
+    assert.equal(existsSync(join(task.cwd, "wip.txt")), true);
+    assert.equal(await taskCount(), 0);
+  });
+
+  it("returns 500 when git cannot be spawned and does not leave a task", async () => {
+    const path = freshWorkspacePath();
+    initGitRepo(path);
+    const workspace = await makeWorkspace(path);
+    const saved = process.env.PATH;
+    process.env.PATH = join(freshWorkspacePath(), "missing-bin");
+    try {
+      const res = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "no git",
+          useGitWorktree: true,
+        }),
+      });
+      assert.equal(res.status, 500);
+      assert.match((await jsonOf(res)).error, /git /);
+    } finally {
+      process.env.PATH = saved;
+    }
+    assert.equal(await taskCount(), 0);
+    assert.deepEqual(worktreeNames(path), []);
+  });
+});
 });
 
