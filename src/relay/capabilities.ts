@@ -1,8 +1,8 @@
 /**
  * Commands the embedded dialer can run.
- * `board.register` advertises every name. The public relay must allowlist the
- * same names before this process dials production; unknown names reject register.
- * Command-type forwarding (`cmd.workspace.get` and the rest) is still wave 2.
+ * `board.register` advertises every name. Production UCloud 101 must be running
+ * a relay that allowlists these names and the matching command types before
+ * this process dials. An older relay rejects the whole register.
  */
 export const BOARD_CAPABILITIES = [
   "archive.list",

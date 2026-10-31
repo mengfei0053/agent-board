@@ -38,8 +38,9 @@ export class BoardClient {
     return this.send(`/api/tasks/${encodeURIComponent(id)}/stop`, { method: "POST", body: {} });
   }
 
-  continueTask(id: string): Promise<MappedTask> {
-    return this.send(`/api/tasks/${encodeURIComponent(id)}/continue`, { method: "POST", body: {} });
+  continueTask(id: string, prompt?: string): Promise<MappedTask> {
+    const body = prompt ? { prompt } : {};
+    return this.send(`/api/tasks/${encodeURIComponent(id)}/continue`, { method: "POST", body });
   }
 
   async listWorkspaces(): Promise<WorkspaceStub[]> {
