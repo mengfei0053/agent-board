@@ -13,9 +13,13 @@ import tech.mengfei.agentboard.data.RelayApi
 import tech.mengfei.agentboard.data.SessionStore
 import tech.mengfei.agentboard.data.SocketListener
 import tech.mengfei.agentboard.notify.DoneNotifier
+import tech.mengfei.agentboard.protocol.ARCHIVE_CAPABILITY
+import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
+import tech.mengfei.agentboard.protocol.ArchiveRequest
 import tech.mengfei.agentboard.protocol.BoardInfo
 import tech.mengfei.agentboard.protocol.BoardReducer
 import tech.mengfei.agentboard.protocol.BoardView
+import tech.mengfei.agentboard.protocol.DetailRequest
 import tech.mengfei.agentboard.protocol.CommandAction
 import tech.mengfei.agentboard.protocol.CommandInterpretation
 import tech.mengfei.agentboard.protocol.EventIdDeduper
@@ -61,7 +65,20 @@ import tech.mengfei.agentboard.protocol.validateContinue
 import tech.mengfei.agentboard.protocol.validateDetail
 import tech.mengfei.agentboard.protocol.ThinWorkspace
 import tech.mengfei.agentboard.protocol.cwdForNewTask
+import tech.mengfei.agentboard.protocol.activeDetailTask
+import tech.mengfei.agentboard.protocol.archiveReplySettled
+import tech.mengfei.agentboard.protocol.archivedDetailTask
 import tech.mengfei.agentboard.protocol.detailReplySettled
+import tech.mengfei.agentboard.protocol.inspectPairCode
+import tech.mengfei.agentboard.protocol.applyArchivePage
+import tech.mengfei.agentboard.protocol.completionNavigation
+import tech.mengfei.agentboard.protocol.pairHttpFailure
+import tech.mengfei.agentboard.protocol.pairIssueMessage
+import tech.mengfei.agentboard.protocol.pairSubmitAllowed
+import tech.mengfei.agentboard.protocol.readArchivePage
+import tech.mengfei.agentboard.protocol.tasksAfterBoardSwitch
+import tech.mengfei.agentboard.protocol.trimOuter
+import tech.mengfei.agentboard.protocol.validateArchiveList
 import tech.mengfei.agentboard.protocol.nextWorkspaceSelection
 import tech.mengfei.agentboard.protocol.validateCreate
 import tech.mengfei.agentboard.protocol.validateStop
@@ -72,6 +89,7 @@ import tech.mengfei.agentboard.protocol.withWorkspace
 import tech.mengfei.agentboard.protocol.withoutWorkspace
 import tech.mengfei.agentboard.protocol.workspaceIdForCreate
 import tech.mengfei.agentboard.protocol.workspaceListKey
+import tech.mengfei.agentboard.ui.localize
 import tech.mengfei.agentboard.protocol.worktreeAllowedFresh
 import java.io.IOException
 
@@ -127,6 +145,18 @@ data class UiState(
     val confirmDeleteWorkspace: Boolean = false,
     val continuePrompt: String = "",
     val canPop: Boolean = false,
+    val englishUi: Boolean = false,
+    val sawSnapshot: Boolean = false,
+    val lane: String = "active",
+    val archiveTasks: List<RelayTask> = emptyList(),
+    val archiveNextCursor: String? = null,
+    val archiveLoaded: Boolean = false,
+    val archiveStale: Boolean = false,
+    val archiveBusy: Boolean = false,
+    val archiveError: String? = null,
+    val archiveSupported: Boolean = false,
+    val detailArchived: Boolean = false,
+    val archiveDetail: RelayTask? = null,
 )
 
 class BoardViewModel(
@@ -136,6 +166,7 @@ class BoardViewModel(
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val ids: () -> String = { newMessageId() },
     private val keys: () -> String = { newIdempotencyKey() },
+    private val englishUi: Boolean = false,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -150,7 +181,18 @@ class BoardViewModel(
     private var resyncJob: Job? = null
     private var pendingHello: String? = null
     private var pendingList: String? = null
-    private var pendingDetailId: String? = null
+    private var boardEpoch = 0
+    private var pendingDetail: DetailRequest? = null
+    private var pendingArchive: ArchiveRequest? = null
+    private var archiveTasks: List<RelayTask> = emptyList()
+    private var archiveNextCursor: String? = null
+    private var archiveLoaded = false
+    private var archiveStale = false
+    private var archiveBusy = false
+    private var archiveError: String? = null
+    private var lane = "active"
+    private var detailArchived = false
+    private var archiveDetail: RelayTask? = null
     private val doneDedupe = EventIdDeduper()
     private var reducer = BoardReducer(doneDedupe = doneDedupe)
     private var view = BoardView("")
@@ -174,7 +216,7 @@ class BoardViewModel(
         val saved = store.read()
         token = saved.deviceToken
         connection = if (token.isNullOrBlank()) "signed out" else "connecting"
-        banner = if (saved.secure) null else "Secure storage is unavailable, so this phone cannot keep a device token."
+        banner = if (saved.secure) null else say("Secure storage is unavailable, so this phone cannot keep a device token.")
         _state.value = UiState(
             screen = if (token.isNullOrBlank()) Screen.Pair else Screen.Boards,
             httpBase = saved.httpBase,
@@ -186,6 +228,7 @@ class BoardViewModel(
             expiresAt = saved.expiresAt,
             connection = connection,
             banner = banner,
+            englishUi = englishUi,
         )
         if (!token.isNullOrBlank()) connect()
     }
@@ -269,19 +312,46 @@ class BoardViewModel(
         }
     }
 
+    fun pastePairCode(raw: String) {
+        _state.updateCopy { copy(pairCode = trimOuter(raw)) }
+    }
+
+    fun showActive() {
+        lane = "active"
+        render()
+    }
+
+    fun showArchive() {
+        lane = "archive"
+        if (!archiveSupportedNow()) {
+            archiveError = say("This board cannot list archived tasks yet.")
+            render()
+            return
+        }
+        archiveError = null
+        render()
+        if (!archiveLoaded || archiveStale) loadArchive(reset = true)
+    }
+
+    fun loadMoreArchive() {
+        if (archiveBusy || archiveNextCursor == null) return
+        loadArchive(reset = false)
+    }
+
     fun pair() {
         if (!store.secure) {
-            banner = "Secure storage is unavailable, so this phone cannot store a device token."
+            banner = say("Secure storage is unavailable, so this phone cannot store a device token.")
             render()
             return
         }
-        val code = _state.value.pairCode.trim()
+        val issue = inspectPairCode(_state.value.pairCode)
+        if (issue != null || !pairSubmitAllowed(_state.value.pairCode, _state.value.httpBase, secure = true, busy = false)) {
+            banner = issue?.let { pairIssueMessage(it, englishUi) } ?: say("Enter an http or https relay URL.")
+            render()
+            return
+        }
+        val code = trimOuter(_state.value.pairCode)
         val name = _state.value.deviceName.trim().ifBlank { "Android phone" }
-        if (code.isEmpty()) {
-            banner = "Enter the pair code from the relay."
-            render()
-            return
-        }
         viewModelScope.launch {
             busy = true
             banner = null
@@ -294,7 +364,7 @@ class BoardViewModel(
                 val result = relay.request("POST", "$base/auth/pair", encodePairBody(code, name))
                 if (result.code !in 200..299) {
                     busy = false
-                    banner = parseRelayError(result.body)
+                    banner = pairHttpFailure(result.code, result.body, englishUi)
                     render()
                     return@launch
                 }
@@ -303,7 +373,7 @@ class BoardViewModel(
                     is PairGate.Hold -> {
                         busy = false
                         token = null
-                        banner = gate.message
+                        banner = say(gate.message)
                         render()
                         return@launch
                     }
@@ -328,11 +398,11 @@ class BoardViewModel(
                 }
             } catch (error: RelayFormatException) {
                 busy = false
-                banner = error.message
+                banner = say(error.message ?: "relay URL is invalid")
                 render()
             } catch (error: IOException) {
                 busy = false
-                banner = "Could not reach the relay."
+                banner = say("Could not reach the relay.")
                 render()
             }
         }
@@ -350,19 +420,20 @@ class BoardViewModel(
                 busy = false
                 banner = if (result.code in 200..299) {
                     val health = parseHealth(result.body)
-                    if (health == null) "The relay answered, but /health was not recognized."
-                    else "Relay is up. Boards online: ${health.boardsOnline}."
+                    if (health == null) say("The relay answered, but /health was not recognized.")
+                    else if (englishUi) "Relay is up. Boards online: ${health.boardsOnline}."
+                    else "中继正常。在线看板：${health.boardsOnline}。"
                 } else {
-                    parseRelayError(result.body)
+                    say(parseRelayError(result.body))
                 }
                 render()
             } catch (error: RelayFormatException) {
                 busy = false
-                banner = error.message
+                banner = say(error.message ?: "relay URL is invalid")
                 render()
             } catch (error: IOException) {
                 busy = false
-                banner = "Could not reach the relay."
+                banner = say("Could not reach the relay.")
                 render()
             }
         }
@@ -374,11 +445,11 @@ class BoardViewModel(
             val ws = deriveWsUrl(base)
             val name = _state.value.deviceName.trim().ifBlank { "Android phone" }
             store.saveRelay(base, ws, name)
-            banner = "Relay URL saved."
+            banner = say("Relay URL saved.")
             _state.updateCopy { copy(httpBase = base, wsUrl = ws, deviceName = name) }
             if (!token.isNullOrBlank()) connect() else render()
         } catch (error: RelayFormatException) {
-            banner = error.message
+            banner = say(error.message ?: "relay URL is invalid")
             render()
         }
     }
@@ -398,25 +469,25 @@ class BoardViewModel(
                     return@launch
                 }
                 if (result.code !in 200..299) {
-                    banner = parseRelayError(result.body)
+                    banner = say(parseRelayError(result.body))
                     reconnectAfter = true
                 } else {
                     val paired = parsePairResponse(result.body)
                     val saved = store.saveToken(paired)
                     token = paired.deviceToken
-                    banner = if (saved) {
+                    banner = say(if (saved) {
                         "Device token refreshed. Reconnecting."
                     } else {
                         "Token refreshed but could not be stored on this phone. Reconnecting for this session."
-                    }
+                    })
                     _state.updateCopy { copy(deviceId = paired.deviceId, expiresAt = paired.expiresAt) }
                     reconnectAfter = true
                 }
             } catch (error: RelayFormatException) {
-                banner = error.message
+                banner = say(error.message ?: "relay URL is invalid")
                 reconnectAfter = true
             } catch (error: IOException) {
-                banner = "Could not reach the relay."
+                banner = say("Could not reach the relay.")
                 reconnectAfter = true
             } finally {
                 refreshInFlight = false
@@ -446,7 +517,10 @@ class BoardViewModel(
         boards = emptyList()
         connection = "signed out"
         backStack.clear()
-        banner = message
+        clearArchive()
+        boardEpoch += 1
+        pendingDetail = null
+        banner = say(message)
         commandNote = null
         _state.updateCopy {
             copy(
@@ -473,6 +547,13 @@ class BoardViewModel(
     }
 
     fun openBoard(boardId: String) {
+        boardEpoch += 1
+        pendingDetail = null
+        pendingArchive = null
+        clearArchive()
+        lane = "active"
+        detailArchived = false
+        archiveDetail = null
         reducer = BoardReducer(doneDedupe = doneDedupe)
         view = BoardView(boardId)
         eligibilityFresh = false
@@ -485,6 +566,13 @@ class BoardViewModel(
             copy(
                 selectedBoardId = boardId,
                 selectedTaskId = null,
+                tasks = emptyList(),
+                logs = emptyList(),
+                archiveTasks = emptyList(),
+                archiveDetail = null,
+                detailArchived = false,
+                lane = "active",
+                sawSnapshot = false,
                 draftUseGitWorktree = false,
                 confirmDeleteWorkspace = false,
             )
@@ -494,9 +582,15 @@ class BoardViewModel(
         render()
     }
 
-    fun openTask(taskId: String) {
+    fun openTask(taskId: String) = openCard(taskId, archived = false)
+
+    fun openArchiveTask(taskId: String) = openCard(taskId, archived = true)
+
+    private fun openCard(taskId: String, archived: Boolean) {
         val boardId = _state.value.selectedBoardId ?: return
-        _state.updateCopy { copy(selectedTaskId = taskId, formError = null) }
+        detailArchived = archived
+        archiveDetail = if (archived) archiveTasks.find { it.id == taskId } else null
+        _state.updateCopy { copy(selectedTaskId = taskId, formError = null, detailArchived = archived, archiveDetail = archiveDetail) }
         push(Screen.Detail(boardId, taskId))
         requestDetail(boardId, taskId)
         render()
@@ -510,7 +604,7 @@ class BoardViewModel(
         val boardId = _state.value.selectedBoardId ?: return
         if (inflight != null) return
         settledByAction.remove(actionKey("cmd.create", boardId, null))
-        commandNote = "The next create uses a new idempotency key."
+        commandNote = say("The next create uses a new idempotency key.")
         _state.updateCopy { copy(draftUseGitWorktree = false) }
         render()
     }
@@ -519,7 +613,7 @@ class BoardViewModel(
         val boardId = _state.value.selectedBoardId ?: return
         if (inflight != null) return
         settledByAction.remove(actionKey("cmd.workspace.create", boardId, null))
-        commandNote = "The next workspace create uses a new idempotency key."
+        commandNote = say("The next workspace create uses a new idempotency key.")
         render()
     }
 
@@ -528,7 +622,7 @@ class BoardViewModel(
         val workspaceId = _state.value.selectedWorkspaceId ?: return
         if (inflight != null || workspaceId.isEmpty()) return
         settledByAction.remove(actionKey("cmd.workspace.delete", boardId, workspaceId))
-        commandNote = "The next workspace delete uses a new idempotency key."
+        commandNote = say("The next workspace delete uses a new idempotency key.")
         render()
     }
 
@@ -556,7 +650,7 @@ class BoardViewModel(
         when (val plan = planSubmit(cmd, inflight != null, settled?.interpretation, settled?.key, keys)) {
             SubmitPlan.Busy -> return
             is SubmitPlan.Lookup -> {
-                commandNote = "Checking the stored result. This command will not be sent again."
+                commandNote = say("Checking the stored result. This command will not be sent again.")
                 formError = null
                 beginLookup(Inflight(action, cmd, boardId, taskId, plan.idempotencyKey, requestId = "pending"))
                 render()
@@ -604,19 +698,25 @@ class BoardViewModel(
         }
         when (built) {
             is Validated.Invalid -> {
-                formError = built.message
+                formError = say(built.message)
                 render()
             }
             is Validated.Ok -> {
                 if (!send(built.value)) {
-                    commandNote = "Not connected to the relay."
+                    commandNote = say("Not connected to the relay.")
                     render()
                     return
                 }
                 inflight = Inflight(action, cmd, boardId, taskId, key, requestId)
                 settledByAction.remove(action)
                 formError = null
-                commandNote = if (reused) "Sending again with the same idempotency key." else "Sending ${cmd.removePrefix("cmd.")}."
+                commandNote = if (reused) {
+                    say("Sending again with the same idempotency key.")
+                } else if (englishUi) {
+                    "Sending $cmd."
+                } else {
+                    "正在发送 $cmd。"
+                }
                 render()
             }
         }
@@ -683,17 +783,62 @@ class BoardViewModel(
         if (ref != null && ref == pendingList && listed != null) {
             boards = listed
             render()
+            if (lane == "archive" && archiveSupportedNow() && (!archiveLoaded || archiveStale)) {
+                loadArchive(reset = true)
+            }
             return
         }
-        if (ref != null && ref == pendingDetailId) {
+        val detail = pendingDetail
+        if (detail != null && ref != null && ref == detail.requestId) {
             if (!detailReplySettled(message)) return
-            pendingDetailId = null
+            pendingDetail = null
             val interpreted = interpretCommand(message)
             val task = interpreted?.task
-            if (task != null && view.boardId == _state.value.selectedBoardId) {
-                view = view.withLocalTask(task)
+            val active = activeDetailTask(detail, boardEpoch, view.boardId, ref, task)
+            val archived = archivedDetailTask(detail, boardEpoch, view.boardId, ref, task)
+            if (active != null && active.status != ARCHIVED_STATUS) {
+                view = view.withLocalTask(active)
+            } else if (archived != null) {
+                archiveDetail = archived
+                detailArchived = true
             } else if (message.type == "err" || message.text("stage") in setOf("failed", "timeout", "unknown")) {
-                if (interpreted != null) formError = interpreted.summary
+                if (interpreted != null && detail.epoch == boardEpoch && detail.boardId == view.boardId) {
+                    formError = say(interpreted.summary)
+                }
+            }
+            render()
+            return
+        }
+        val archive = pendingArchive
+        if (archive != null && ref != null && ref == archive.requestId) {
+            if (!archiveReplySettled(message)) return
+            if (archive.epoch != boardEpoch || archive.boardId != view.boardId) {
+                pendingArchive = null
+                archiveBusy = false
+                render()
+                return
+            }
+            pendingArchive = null
+            archiveBusy = false
+            val code = message.text("code")
+            val stage = message.text("stage")
+            if (message.type == "err" || stage in setOf("failed", "timeout", "unknown")) {
+                archiveError = when (code) {
+                    "unsupported", "bad_type" -> say("Archive is not available on this relay.")
+                    "board_offline" -> say("This board is offline. The relay will not queue a command.")
+                    else -> say("Could not load the archive.")
+                }
+            } else if (stage == "executed") {
+                val page = readArchivePage(message.payload)
+                if (page == null) {
+                    archiveError = say("Could not read the archive page.")
+                } else {
+                    archiveTasks = applyArchivePage(archiveTasks, page, archive.reset)
+                    archiveNextCursor = page.nextCursor
+                    archiveLoaded = true
+                    archiveStale = false
+                    archiveError = if (page.restarted) say("The archive changed. The list restarted from the first page.") else null
+                }
             }
             render()
             return
@@ -707,7 +852,11 @@ class BoardViewModel(
             is tech.mengfei.agentboard.protocol.ApplyOutcome.Resync -> {
                 view = outcome.view
                 eligibilityFresh = false
-                banner = "Missed events (${outcome.reason}). Refreshing from a snapshot."
+                banner = if (englishUi) {
+                    "Missed events (${outcome.reason}). Refreshing from a snapshot."
+                } else {
+                    "漏收了事件（${outcome.reason}）。正在用快照刷新。"
+                }
                 armResync()
                 render()
             }
@@ -716,16 +865,24 @@ class BoardViewModel(
                 val staleSnapshot = message.type == "evt.snapshot" && outcome.view.needsResync
                 if (message.type == "evt.snapshot") {
                     eligibilityFresh = connection == "online" && freshSnapshot
+                    val previous = view.tasks.map { it.id }.toSet()
+                    val next = outcome.view.tasks.map { it.id }.toSet()
+                    if (previous.any { it !in next }) {
+                        archiveStale = true
+                        if (lane == "archive" && archiveSupportedNow()) loadArchive(reset = true)
+                    }
                 }
                 if (freshSnapshot) {
                     resync.onSnapshot()
                     resyncJob?.cancel()
-                    if (banner?.startsWith("Missed events") == true || banner?.startsWith("Task list is stale") == true) {
+                    if (banner?.startsWith("Missed events") == true || banner?.startsWith("漏收了事件") == true ||
+                        banner?.startsWith("Task list is stale") == true || banner?.startsWith("出现缺口后") == true
+                    ) {
                         banner = null
                     }
                 }
                 if (staleSnapshot) {
-                    banner = "Task list is stale after a gap. Refreshing again."
+                    banner = say("Task list is stale after a gap. Refreshing again.")
                     armResync()
                 }
                 view = outcome.view
@@ -742,14 +899,14 @@ class BoardViewModel(
             if (sessionRejected(message)) {
                 forget("The relay rejected this phone. Pair again.")
             } else {
-                banner = message.text("message") ?: "The relay did not accept this phone."
+                banner = message.text("message")?.let { say(it) } ?: say("The relay did not accept this phone.")
                 render()
             }
             return
         }
         backoffMs = 1_000
         connection = "online"
-        if (banner?.startsWith("Device token refreshed") == true) banner = null
+        if (banner?.startsWith("Device token refreshed") == true || banner?.startsWith("设备令牌已刷新") == true) banner = null
         recoverInflight()
         val listId = ids()
         pendingList = listId
@@ -764,7 +921,7 @@ class BoardViewModel(
         when (val step = recoverAfterHello(outstanding)) {
             null -> Unit
             is Recovery.Lookup -> {
-                commandNote = "Reconnected. Checking the stored result. The command will not be sent again."
+                commandNote = say("Reconnected. Checking the stored result. The command will not be sent again.")
                 if (!dispatchLookup(current, step.command)) releaseInflight(lookupSendFailed())
             }
             is Recovery.Poll -> {
@@ -787,11 +944,11 @@ class BoardViewModel(
         val interpreted = interpretCommand(message) ?: return
         when (nextCommandAction(current.lookupId != null, interpreted)) {
             CommandAction.Wait -> {
-                commandNote = interpreted.summary
+                commandNote = say(interpreted.summary)
                 render()
             }
             CommandAction.SendLookup -> {
-                commandNote = "Timed out. Checking the stored result instead of sending the command again."
+                commandNote = say("Timed out. Checking the stored result instead of sending the command again.")
                 beginLookup(current)
                 render()
             }
@@ -803,7 +960,7 @@ class BoardViewModel(
         val command = OutstandingCommand(current.cmd, current.boardId, current.key, current.polls)
         when (val step = recoverFromLookup(command, message)) {
             is Recovery.Poll -> {
-                commandNote = "The command is still in flight. Checking again without sending it."
+                commandNote = say("The command is still in flight. Checking again without sending it.")
                 inflight = current.copy(polls = step.command.polls)
                 pollJob?.cancel()
                 pollJob = viewModelScope.launch {
@@ -849,7 +1006,7 @@ class BoardViewModel(
         if (current != null && interpreted != null) {
             settledByAction[current.action] = Settled(interpreted, current.key)
         }
-        commandNote = step.summary
+        commandNote = say(step.summary)
         val task = interpreted?.task
         if (current != null && task != null && current.boardId == view.boardId) view = view.withLocalTask(task)
         val workspace = interpreted?.workspace
@@ -866,12 +1023,24 @@ class BoardViewModel(
                 store.saveSelectedWorkspace(current.boardId, null)
             }
         }
-        if (current != null && task != null && current.cmd == "cmd.create" && interpreted?.retry == Retry.None) {
-            _state.updateCopy { copy(selectedTaskId = task.id, selectedBoardId = current.boardId) }
-            if (_state.value.screen !is Screen.Detail) push(Screen.Detail(current.boardId, task.id))
-        }
-        if (current != null && workspace != null && current.cmd == "cmd.workspace.create" && interpreted?.retry == Retry.None) {
-            if (_state.value.screen is Screen.WorkspaceCreate) pop()
+        if (current != null) {
+            val nav = completionNavigation(
+                viewedBoardId = _state.value.selectedBoardId,
+                onDetail = _state.value.screen is Screen.Detail,
+                onWorkspaceCreate = _state.value.screen is Screen.WorkspaceCreate,
+                commandBoardId = current.boardId,
+                cmd = current.cmd,
+                taskId = task?.id,
+                hasWorkspace = workspace != null,
+                settled = interpreted?.retry == Retry.None,
+            )
+            val nextBoard = nav.selectBoardId
+            val nextTask = nav.selectTaskId
+            if (nextBoard != null && nextTask != null) {
+                _state.updateCopy { copy(selectedTaskId = nextTask, selectedBoardId = nextBoard) }
+                if (nav.openDetail) push(Screen.Detail(nextBoard, nextTask))
+            }
+            if (nav.popWorkspaceCreate) pop()
         }
         render()
     }
@@ -880,7 +1049,9 @@ class BoardViewModel(
         if (connection != "online") return
         val requestId = ids()
         val built = validateDetail(requestId, clock(), boardId, taskId, keys())
-        if (built is Validated.Ok && send(built.value)) pendingDetailId = requestId
+        if (built is Validated.Ok && send(built.value)) {
+            pendingDetail = DetailRequest(requestId, boardId, taskId, boardEpoch)
+        }
     }
 
     private fun resubscribe(boardId: String) {
@@ -930,9 +1101,10 @@ class BoardViewModel(
         val snapshot = _state.value
         val boardId = snapshot.selectedBoardId
         val taskId = snapshot.selectedTaskId
-        val spaces = if (view.boardId == boardId) view.workspaces else emptyList()
-        val taskRows = if (view.boardId == boardId) view.tasks else snapshot.tasks
-        val sawSnapshot = view.boardId == boardId && view.sawSnapshot
+        val sameBoard = !boardId.isNullOrEmpty() && view.boardId == boardId
+        val spaces = if (sameBoard) view.workspaces else emptyList()
+        val taskRows = tasksAfterBoardSwitch(view.boardId, boardId, view.tasks)
+        val sawSnapshot = sameBoard && view.sawSnapshot
         val selectedWorkspaceId = resolvedWorkspaceId(boardId, spaces, taskRows, sawSnapshot)
         val nextKey = workspaceListKey(spaces)
         val listChanged = nextKey != workspaceKey
@@ -943,7 +1115,18 @@ class BoardViewModel(
             connection = connection,
             boards = boards,
             tasks = taskRows,
-            logs = if (taskId == null) emptyList() else view.logs[taskId].orEmpty(),
+            logs = if (!sameBoard || taskId == null) emptyList() else view.logs[taskId].orEmpty(),
+            sawSnapshot = sawSnapshot,
+            lane = lane,
+            archiveTasks = if (sameBoard) archiveTasks else emptyList(),
+            archiveNextCursor = if (sameBoard) archiveNextCursor else null,
+            archiveLoaded = sameBoard && archiveLoaded,
+            archiveStale = sameBoard && archiveStale,
+            archiveBusy = sameBoard && archiveBusy,
+            archiveError = if (sameBoard) archiveError else null,
+            archiveSupported = archiveSupportedNow(),
+            detailArchived = detailArchived,
+            archiveDetail = archiveDetail,
             selectedOnline = boards.find { it.boardId == boardId }?.online,
             needsResync = view.needsResync,
             banner = banner,
@@ -1017,6 +1200,52 @@ class BoardViewModel(
         relay.closeSocket()
     }
 
+    private fun say(text: String): String = localize(englishUi, text)
+
+    private fun archiveSupportedNow(): Boolean {
+        val boardId = _state.value.selectedBoardId ?: return false
+        val board = boards.find { it.boardId == boardId } ?: return false
+        return board.online && board.capabilities.contains(ARCHIVE_CAPABILITY)
+    }
+
+    private fun clearArchive() {
+        pendingArchive = null
+        archiveTasks = emptyList()
+        archiveNextCursor = null
+        archiveLoaded = false
+        archiveStale = false
+        archiveBusy = false
+        archiveError = null
+    }
+
+    private fun loadArchive(reset: Boolean) {
+        val boardId = _state.value.selectedBoardId ?: return
+        if (!archiveSupportedNow() || view.boardId != boardId) {
+            archiveError = say("This board cannot list archived tasks yet.")
+            archiveBusy = false
+            render()
+            return
+        }
+        if (archiveBusy) return
+        val cursor = if (reset) null else archiveNextCursor
+        if (!reset && cursor == null) return
+        val requestId = ids()
+        val built = validateArchiveList(requestId, clock(), boardId, keys(), cursor, 20)
+        if (built is Validated.Invalid) {
+            archiveError = say(built.message)
+            render()
+            return
+        }
+        if (built is Validated.Ok && send(built.value)) {
+            pendingArchive = ArchiveRequest(requestId, boardId, boardEpoch, reset)
+            archiveBusy = true
+            archiveError = null
+        } else {
+            archiveError = say("Not connected to the relay.")
+        }
+        render()
+    }
+
     private fun MutableStateFlow<UiState>.updateCopy(block: UiState.() -> UiState) {
         value = value.block()
     }
@@ -1038,6 +1267,7 @@ class BoardViewModel(
 class BoardViewModelFactory(private val app: AgentBoardApp) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        return BoardViewModel(app.store, app.relay, app.notifier) as T
+        val english = tech.mengfei.agentboard.ui.prefersEnglish(java.util.Locale.getDefault().language)
+        return BoardViewModel(app.store, app.relay, app.notifier, englishUi = english) as T
     }
 }

@@ -115,7 +115,12 @@ export function startConnector(
         id: registerId,
         type: "board.register",
         ts: Date.now(),
-        payload: { boardId: config.boardId, token: config.boardToken, label: config.label },
+        payload: {
+          boardId: config.boardId,
+          token: config.boardToken,
+          label: config.label,
+          capabilities: ["archive.list"],
+        },
       }));
       const ack = await registered;
       if (ack.type !== "ack" || typeof ack.payload?.generation !== "number") {

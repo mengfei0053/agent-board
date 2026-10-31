@@ -163,6 +163,30 @@ fun validateContinue(
     return validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null, clean)
 }
 
+private val archiveCursorPattern = Regex("^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$")
+
+fun validateArchiveList(
+    id: String,
+    ts: Long,
+    boardId: String,
+    idempotencyKey: String,
+    cursor: String?,
+    limit: Int = 20,
+): Validated<Envelope> {
+    if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
+    if (!visibleKey.matches(idempotencyKey)) {
+        return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
+    }
+    if (limit !in 1..50) return Validated.Invalid("limit is invalid")
+    if (cursor != null && !archiveCursorPattern.matches(cursor)) return Validated.Invalid("cursor is invalid")
+    return Validated.Ok(frame(id, ts, "cmd.archive.list", buildJsonObject {
+        put("boardId", boardId)
+        put("idempotencyKey", idempotencyKey)
+        put("limit", limit)
+        if (!cursor.isNullOrBlank()) put("cursor", cursor)
+    }))
+}
+
 fun validateDetail(
     id: String,
     ts: Long,

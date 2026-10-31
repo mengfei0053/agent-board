@@ -816,3 +816,201 @@ class WorkspaceListTest {
         """{"v":1,"id":"m1","type":"evt.task","ts":$seq,"payload":{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"task-$seq","task":$task}}""",
     )
 }
+
+class PairCodeUxTest {
+    private val code = "pc_" + "A".repeat(43)
+
+    @Test
+    fun exactFortySixCanSubmitAndShorterOrLongerCannot() {
+        assertEquals(46, code.length)
+        assertNull(inspectPairCode(code))
+        assertNull(inspectPairCode("  $code\n"))
+        assertEquals(code, trimOuter("  $code\n"))
+        assertEquals(PairIssue.Short, inspectPairCode(code.dropLast(1)))
+        assertEquals(PairIssue.Long, inspectPairCode(code + "Z"))
+        assertEquals(PairIssue.Prefix, inspectPairCode("xx_" + "A".repeat(43)))
+        assertEquals(PairIssue.Alphabet, inspectPairCode("pc_" + "A".repeat(21) + "+" + "A".repeat(21)))
+        assertTrue(pairSubmitAllowed(code, "https://relay.mengfei.tech", secure = true, busy = false))
+        assertFalse(pairSubmitAllowed(code.dropLast(1), "https://relay.mengfei.tech", secure = true, busy = false))
+        assertFalse(pairSubmitAllowed(code + "Z", "https://relay.mengfei.tech", secure = true, busy = false))
+        assertFalse(pairSubmitAllowed(code, "https://relay.mengfei.tech", secure = false, busy = false))
+        assertFalse(pairSubmitAllowed(code, "https://relay.mengfei.tech", secure = true, busy = true))
+        assertFalse(pairSubmitAllowed(code, "not a url", secure = true, busy = false))
+    }
+
+    @Test
+    fun pairFailuresShareOneSentenceExceptRateLimit() {
+        val unknown = pairHttpFailure(401, """{"error":{"code":"unauthorized","message":"pair code rejected"}}""", english = false)
+        val expired = pairHttpFailure(401, """{"error":{"code":"unauthorized","message":"pair code expired"}}""", english = false)
+        val used = pairHttpFailure(401, """{"error":{"code":"unauthorized","message":"pair code already used"}}""", english = false)
+        assertEquals(unknown, expired)
+        assertEquals(unknown, used)
+        assertTrue(unknown.contains("无效或已过期"))
+        assertFalse(unknown.contains("pair code"))
+        val limited = pairHttpFailure(429, """{"error":{"code":"rate_limited","message":"too many pair attempts"}}""", english = false)
+        assertTrue(limited.contains("频繁"))
+        assertFalse(limited == unknown)
+    }
+}
+
+class ArchiveAndBoardSwitchTest {
+    private val reducer = BoardReducer()
+    private val active = """{"id":"task_01","title":"Live","status":"running","updatedAt":10}"""
+
+    @Test
+    fun archiveLeavesActiveWithoutADoneNotice() {
+        var view = applied(reducer, BoardView("thinkbook-main"), snapshot(active))
+        assertEquals(1, view.tasks.size)
+        val archived = reducer.apply(view, taskEvent("""{"id":"task_01","title":"Live","status":"archived","updatedAt":11}""", 2))
+        val appliedArchive = archived as ApplyOutcome.Applied
+        assertNull(appliedArchive.notice)
+        assertTrue(appliedArchive.view.tasks.isEmpty())
+        view = applied(reducer, BoardView("thinkbook-main"), snapshot(active, seq = 1))
+        val gone = reducer.apply(view, snapshot("", seq = 2))
+        assertTrue((gone as ApplyOutcome.Applied).view.tasks.isEmpty())
+        assertNull((gone as ApplyOutcome.Applied).notice)
+        val done = reducer.apply(BoardView("thinkbook-main"), env(
+            "evt.task.done",
+            """{"boardId":"thinkbook-main","taskId":"task_01","status":"archived","generation":1,"seq":3,"eventId":"done-arch","title":"Live"}""",
+        ))
+        assertTrue(done is ApplyOutcome.Ignored)
+    }
+
+    @Test
+    fun archivePageParsesSeparatelyAndDoesNotDuplicate() {
+        val page = readArchivePage(parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"archive":{"tasks":[{"id":"task_01","title":"Old","status":"archived","updatedAt":9}],"nextCursor":"9:task_01"}}}""",
+        ).payload)
+        assertEquals(ARCHIVED_STATUS, page?.tasks?.single()?.status)
+        assertEquals("9:task_01", page?.nextCursor)
+        val more = RelayTask("task_02", "Next", ARCHIVED_STATUS, 8)
+        val merged = mergeArchivePages(page!!.tasks, listOf(page.tasks.single(), more))
+        assertEquals(listOf("task_01", "task_02"), merged.map { it.id })
+        assertFalse(canContinueStatus(ARCHIVED_STATUS))
+        assertFalse(canStopStatus(ARCHIVED_STATUS))
+    }
+
+    @Test
+    fun boardSwitchDropsThePreviousDetail() {
+        val previous = listOf(RelayTask("task_a", "A", "running", 1))
+        assertTrue(tasksAfterBoardSwitch("board-a", "board-b", previous).isEmpty())
+        assertEquals("task_a", tasksAfterBoardSwitch("board-b", "board-b", previous).single().id)
+        val request = DetailRequest("req-1", "board-a", "task_a", epoch = 1)
+        val task = RelayTask("task_a", "A", "running", 1)
+        assertNull(activeDetailTask(request, epoch = 2, viewBoardId = "board-b", ref = "req-1", task = task))
+        assertNull(activeDetailTask(request, epoch = 1, viewBoardId = "board-b", ref = "req-1", task = task))
+        assertEquals(task, activeDetailTask(request, epoch = 1, viewBoardId = "board-a", ref = "req-1", task = task))
+        val archived = task.copy(status = ARCHIVED_STATUS)
+        assertNull(activeDetailTask(request.copy(taskId = "task_a"), 1, "board-a", "req-1", archived))
+        assertEquals(archived, archivedDetailTask(request, 1, "board-a", "req-1", archived))
+    }
+
+    @Test
+    fun boardListReadsArchiveCapability() {
+        val boards = parseBoardList(parseEnvelope(
+            """{"v":1,"id":"m","type":"ack","ts":1,"payload":{"boards":[{"boardId":"thinkbook-main","online":true,"capabilities":["archive.list"]}]}}""",
+        ).payload)
+        assertEquals(listOf(ARCHIVE_CAPABILITY), boards?.single()?.capabilities)
+        val built = validateArchiveList("m-arch", 10, "thinkbook-main", "archive-key-1", "9:task_01:ab12cd34", 20)
+        val ok = built as Validated.Ok
+        assertEquals("cmd.archive.list", ok.value.type)
+        assertEquals("9:task_01:ab12cd34", ok.value.payload.text("cursor"))
+    }
+
+    @Test
+    fun restartedArchivePageReplacesInsteadOfAppending() {
+        val kept = listOf(RelayTask("a", "A", ARCHIVED_STATUS, 30), RelayTask("b", "B", ARCHIVED_STATUS, 20))
+        val restarted = ArchivePage(
+            listOf(RelayTask("a", "A", ARCHIVED_STATUS, 30), RelayTask("c", "C", ARCHIVED_STATUS, 10)),
+            "10:c:aabbccdd",
+            restarted = true,
+        )
+        assertEquals(listOf("a", "c"), applyArchivePage(kept, restarted, reset = false).map { it.id })
+        val more = ArchivePage(listOf(RelayTask("c", "C", ARCHIVED_STATUS, 10)), null)
+        assertEquals(listOf("a", "b", "c"), applyArchivePage(kept, more, reset = false).map { it.id })
+    }
+
+    private fun applied(reducer: BoardReducer, view: BoardView, message: Envelope): BoardView {
+        return (reducer.apply(view, message) as ApplyOutcome.Applied).view
+    }
+
+    private fun snapshot(task: String, seq: Long = 1) = env(
+        "evt.snapshot",
+        """{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"snap-$seq","version":$seq,"tasks":[${task}]}""",
+    )
+
+    private fun taskEvent(task: String, seq: Long) = env(
+        "evt.task",
+        """{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"task-$seq","task":$task}""",
+    )
+
+    private fun env(type: String, payload: String) = parseEnvelope("""{"v":1,"id":"m1","type":"$type","ts":10,"payload":$payload}""")
+}
+
+class LateCreateBoardSwitchTest {
+    @Test
+    fun createAckAfterSwitchingToBDoesNotOpenA() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-b",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertFalse(nav.openDetail)
+        assertNull(nav.selectBoardId)
+        assertNull(nav.selectTaskId)
+        assertFalse(nav.popWorkspaceCreate)
+    }
+
+    @Test
+    fun lookupOfThatCreateAlsoStaysOnB() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-b",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertFalse(nav.openDetail)
+        assertNull(nav.selectBoardId)
+    }
+
+    @Test
+    fun createAckOnTheBoardBeingViewedStillOpensDetail() {
+        val nav = completionNavigation(
+            viewedBoardId = "board-a",
+            onDetail = false,
+            onWorkspaceCreate = false,
+            commandBoardId = "board-a",
+            cmd = "cmd.create",
+            taskId = "task_a",
+            hasWorkspace = false,
+            settled = true,
+        )
+        assertTrue(nav.openDetail)
+        assertEquals("board-a", nav.selectBoardId)
+        assertEquals("task_a", nav.selectTaskId)
+    }
+}
+
+class EnglishPresentationTest {
+    @Test
+    fun detailCopyHasAnEnglishFallback() {
+        val running = RelayTask("task_01", "Fix", "running", 1, sessionId = "sess", prompt = "go")
+        assertEquals("The task is running. Stop it before continuing.", continueHint(running, english = true))
+        assertEquals("Will resume session sess", continueHint(running.copy(status = "failed"), english = true))
+        assertEquals("No session yet", resumeCommandLabel(running.copy(sessionId = null, resumeCommand = null), english = true))
+        assertEquals("Task failed", detailError(RelayTask("task_01", "Fix", "failed", 1), english = true))
+        assertEquals("Initial", detailRounds(running, english = true).single().kindLabel)
+        assertEquals("Unassigned", unassignedLabel(english = true))
+        assertEquals("No workspace selected", workspaceBanner(null, emptyList(), english = true).title)
+        assertFalse(continueHint(running, english = true).any { it.code > 0x7F })
+    }
+}

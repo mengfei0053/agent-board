@@ -74,7 +74,8 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `cmd.stop` | phone | board | Stop a task. The connector emits `evt.task.done` once. |
 | `cmd.workspace.create` | phone | board | Create a workspace (`name` + `path`). |
 | `cmd.workspace.delete` | phone | board | Delete a workspace. Refuses the default workspace and any workspace that still has tasks. |
-| `cmd.detail` | phone | board | Read one task's detail card. Does not change the task. |
+| `cmd.detail` | phone | board | Read one task's detail card, including an archived task. Does not change the task. |
+| `cmd.archive.list` | phone | board | One page of archived tasks. Not part of `evt.snapshot`. |
 | `cmd.lookup` | phone | relay | Read the stored result of an idempotency key. |
 | `evt.task` | board | task subscribers | Task state changed. |
 | `evt.log` | board | log subscribers | One log line. |
@@ -191,7 +192,9 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 
 `cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters.
 
-`cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task.
+`cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task. An archived task uses the same card with `status: "archived"`. That status is rejected on `evt.snapshot` and `evt.task`, so old phones never see it in the hot list.
+
+`cmd.archive.list` is a read-only page. The phone sends it only after `board.list` shows `capabilities` containing `archive.list` (set on `board.register`). Boards that omit the capability get `err` `unsupported` and the command is not stored. The body is `boardId`, `idempotencyKey`, optional `limit` (1–50, default 20), and optional `cursor` (`updatedAt:id` of the last row already shown). The executed ack's `archive` is `{ tasks, nextCursor? }`. Rows are thin, newest `updatedAt` first, and every `status` is `archived`. A task that moves to archived is removed from the next `evt.snapshot` and does not emit `evt.task.done`.
 
 ```json
 {

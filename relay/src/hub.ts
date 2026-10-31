@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AuthStore } from "./auth.js";
 import type { LogFields } from "./log.js";
 import {
+  ARCHIVE_CAPABILITY,
   makeAck,
   makeErr,
   parseMessage,
@@ -25,6 +26,7 @@ type CommandRecord = {
   type: CommandType;
   stage: "accepted" | "executed" | "failed" | "timeout";
   task?: JsonObject;
+  archive?: JsonObject;
   workspace?: JsonObject;
   deleted?: string;
   errorCode?: string;
@@ -60,6 +62,7 @@ const PHONE_KINDS = new Set([
   "cmd.workspace.create",
   "cmd.workspace.delete",
   "cmd.detail",
+  "cmd.archive.list",
   "cmd.lookup",
 ]);
 
@@ -96,6 +99,8 @@ export class BoardConn {
   generation = 0;
   credentialId: string | null = null;
   connectedAt: number | null = null;
+  /** Feature flags from board.register. Empty on boards that do not advertise any. */
+  capabilities: string[] = [];
   closed = false;
 
   constructor(
@@ -172,6 +177,7 @@ export class RelayHub {
       case "cmd.workspace.create":
       case "cmd.workspace.delete":
       case "cmd.detail":
+      case "cmd.archive.list":
         this.forwardCmd(conn, parsed);
         return;
       default:
@@ -345,6 +351,7 @@ export class RelayHub {
     });
     conn.boardId = parsed.boardId;
     conn.label = parsed.label ?? null;
+    conn.capabilities = parsed.capabilities;
     conn.generation = generation;
     conn.credentialId = check.credentialId;
     conn.connectedAt = this.now();
@@ -369,6 +376,7 @@ export class RelayHub {
       }
       const entry: JsonObject = { boardId, online: Boolean(live), generation: state?.generation ?? 0 };
       if (live?.label) entry.label = live.label;
+      if (live) entry.capabilities = live.capabilities;
       if (live?.connectedAt !== null && live?.connectedAt !== undefined) entry.connectedAt = live.connectedAt;
       boards.push(entry);
     }
@@ -413,7 +421,7 @@ export class RelayHub {
 
   private forwardCmd(
     conn: PhoneConn,
-    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" | "cmd.detail" }>,
+    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" | "cmd.detail" | "cmd.archive.list" }>,
   ): void {
     if (!this.allow(conn, parsed.boardId, parsed.envelope.id)) return;
     const key = this.commandKey(parsed.kind, parsed.boardId, parsed.idempotencyKey);
@@ -429,6 +437,15 @@ export class RelayHub {
     if (!board) {
       this.deliver(conn.send, makeErr(this.now(), `board ${parsed.boardId} is not connected`, {
         code: "board_offline",
+        ref: parsed.envelope.id,
+        stage: "failed",
+        idempotencyKey: parsed.idempotencyKey,
+      }));
+      return;
+    }
+    if (parsed.kind === "cmd.archive.list" && !board.capabilities.includes(ARCHIVE_CAPABILITY)) {
+      this.deliver(conn.send, makeErr(this.now(), "archive list is not available", {
+        code: "unsupported",
         ref: parsed.envelope.id,
         stage: "failed",
         idempotencyKey: parsed.idempotencyKey,
@@ -495,11 +512,13 @@ export class RelayHub {
     }
     if (result.type === "ack") {
       const task = result.envelope.payload?.task;
+      const archive = result.envelope.payload?.archive;
       const workspace = result.envelope.payload?.workspace;
       const deleted = result.envelope.payload?.deleted;
       this.finishCommand(record, {
         stage: "executed",
         ...(isJsonObject(task) ? { task } : {}),
+        ...(isJsonObject(archive) ? { archive } : {}),
         ...(isJsonObject(workspace) ? { workspace } : {}),
         ...(typeof deleted === "string" ? { deleted } : {}),
       });
@@ -511,7 +530,7 @@ export class RelayHub {
   private finishCommand(
     record: CommandRecord,
     update:
-      | { stage: "executed"; task?: JsonObject; workspace?: JsonObject; deleted?: string }
+      | { stage: "executed"; task?: JsonObject; archive?: JsonObject; workspace?: JsonObject; deleted?: string }
       | { stage: "failed" | "timeout"; errorCode: string; errorMessage: string },
   ): void {
     if (record.timer) clearTimeout(record.timer);
@@ -520,6 +539,7 @@ export class RelayHub {
     record.expiresAt = this.now() + (this.opts.idempotencyTtlMs ?? 600_000);
     if (update.stage === "executed") {
       if (update.task) record.task = update.task;
+      if (update.archive) record.archive = update.archive;
       if (update.workspace) record.workspace = update.workspace;
       if (update.deleted) record.deleted = update.deleted;
     } else {
@@ -749,6 +769,7 @@ export class RelayHub {
     };
     if (duplicate) base.duplicate = true;
     if (record.task) base.task = record.task;
+    if (record.archive) base.archive = record.archive;
     if (record.workspace) base.workspace = record.workspace;
     if (record.deleted) base.deleted = record.deleted;
     if (record.errorCode) base.code = record.errorCode;

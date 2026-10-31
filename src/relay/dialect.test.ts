@@ -11,6 +11,19 @@ describe("relay dialect", () => {
     cursor.buildSnapshot("b", [], []);
     const archived = eventsFromBoardEvent(cursor, { type: "task_upsert", task: { ...running, status: "archived" } }, "b");
     assert.deepEqual(archived, { frames: [], needsSnapshot: false });
+    const known = new RelayCursor(2);
+    const live = makeTask({ id: "live", status: "running" });
+    known.buildSnapshot("b", [], []);
+    known.observeTask("b", {
+      id: "live",
+      title: live.title,
+      status: "running",
+      updatedAt: 1,
+    });
+    const removed = eventsFromBoardEvent(known, { type: "task_upsert", task: { ...live, status: "archived" } }, "b");
+    assert.equal(removed.needsSnapshot, true);
+    assert.equal(removed.frames.length, 0);
+    assert.equal(removed.frames.some((frame) => frame.type === "evt.task.done"), false);
     const deleted = eventsFromBoardEvent(cursor, { type: "task_delete", taskIds: [running.id] }, "b");
     assert.equal(deleted.needsSnapshot, true);
     assert.equal(deleted.frames.length, 0);

@@ -655,6 +655,51 @@ describe("connector session", () => {
     session.close();
     assert.equal(facade.listeners.size, 0);
   });
+
+  it("drops an archived task from the active snapshot and lists it on cmd.archive.list", async () => {
+    const running = makeTask({ id: "live", status: "running", title: "Live" });
+    const facade = memoryFacade({ tasks: [running] });
+    const { frames, send } = sentFrames();
+    const session = new ConnectorSession({
+      generation: 3,
+      boardId: "thinkbook",
+      facade,
+      idempotency: new CreateIdempotency(),
+      send,
+      onOverflow: () => {},
+      onFatal: () => {},
+    });
+    await session.bootstrap();
+    facade.publish({
+      type: "task_upsert",
+      task: { ...running, status: "archived", updatedAt: "2026-10-31T02:00:00.000Z" },
+    });
+    await waitFor(() => frames.filter((frame) => frame.type === "evt.snapshot").length >= 2);
+    const last = frames.filter((frame) => frame.type === "evt.snapshot").at(-1);
+    const rows = last?.payload.tasks as Array<{ id: string }>;
+    assert.equal(rows.some((task) => task.id === "live"), false);
+    assert.equal(frames.some((frame) => frame.type === "evt.task.done"), false);
+    session.handleCommand(frame("cmd.archive.list", {
+      boardId: "thinkbook",
+      idempotencyKey: "archive-key-1",
+      limit: 20,
+    }, "arch-1"));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.ref === "arch-1"));
+    const ack = frames.find((item) => item.payload.ref === "arch-1");
+    const archive = ack?.payload.archive as { tasks: Array<{ id: string; status: string }> };
+    assert.equal(archive.tasks[0]?.id, "live");
+    assert.equal(archive.tasks[0]?.status, "archived");
+    session.handleCommand(frame("cmd.detail", {
+      boardId: "thinkbook",
+      idempotencyKey: "detail-arch-1",
+      taskId: "live",
+    }, "det-arch"));
+    await waitFor(() => frames.some((item) => item.payload.ref === "det-arch" && item.payload.stage === "executed"));
+    const detail = frames.find((item) => item.payload.ref === "det-arch");
+    assert.equal((detail?.payload.task as { status?: string }).status, "archived");
+    assert.equal((detail?.payload.task as { detail?: string }).detail, "full");
+    session.close();
+  });
 });
 
 function openSession(facade: MemoryFacade, send: RelaySender, idempotency: CreateIdempotency): ConnectorSession {

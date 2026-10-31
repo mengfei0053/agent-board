@@ -5,7 +5,7 @@ const AGENTS: readonly AgentKind[] = ["pi", "claude", "cursor", "devin", "codex"
 
 export const TERMINAL_STATUSES = new Set(["succeeded", "failed", "stopped"]);
 
-export type RelayStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "stopped";
+export type RelayStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "stopped" | "archived";
 
 /** Same alphabet as board workspace ids (`nanoid`) plus the board-id punctuation. */
 export const WORKSPACE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
@@ -32,7 +32,10 @@ export type RelaySideJob = {
   toolName?: string;
 };
 
-/** Phone-facing task. `updatedAt` is epoch milliseconds. Archived tasks are omitted. */
+/**
+ * Phone-facing task. `updatedAt` is epoch milliseconds.
+ * Archived tasks are omitted unless `allowArchived` is set for a read-only page or detail.
+ */
 export type MappedTask = {
   id: string;
   title: string;
@@ -90,7 +93,8 @@ type DetailTask = Pick<
   promptTruncated?: boolean;
 };
 
-export function mapStatus(status: string): RelayStatus | null {
+export function mapStatus(status: string, allowArchived = false): RelayStatus | null {
+  if (status === "archived") return allowArchived ? "archived" : null;
   if (status === "draft" || status === "queued") return "queued";
   if (status === "running") return "running";
   if (status === "blocked") return "paused";
@@ -102,8 +106,8 @@ export function isTerminalStatus(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-export function mapBoardTask(task: DetailTask): MappedTask | null {
-  const status = mapStatus(task.status);
+export function mapBoardTask(task: DetailTask, allowArchived = false): MappedTask | null {
+  const status = mapStatus(task.status, allowArchived);
   if (!status || !task.id || !task.title) return null;
   const updatedAt = Date.parse(task.updatedAt);
   const mapped: MappedTask = {

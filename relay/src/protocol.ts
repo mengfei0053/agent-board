@@ -5,6 +5,12 @@ export const PROTOCOL_VERSION = 1;
 export const TASK_STATUSES = ["queued", "running", "paused", "succeeded", "failed", "stopped"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+/** Read-only archive pages. Never a hot-snapshot or `evt.task` status. */
+export const ARCHIVE_STATUS = "archived" as const;
+export const ARCHIVE_CAPABILITY = "archive.list";
+export const ARCHIVE_PAGE_DEFAULT = 20;
+export const ARCHIVE_PAGE_MAX = 50;
+
 export const TERMINAL_TASK_STATUSES = ["succeeded", "failed", "stopped"] as const;
 export type TerminalStatus = (typeof TERMINAL_TASK_STATUSES)[number];
 
@@ -18,6 +24,7 @@ export const CMD_TYPES = [
   "cmd.workspace.create",
   "cmd.workspace.delete",
   "cmd.detail",
+  "cmd.archive.list",
 ] as const;
 export type CommandType = (typeof CMD_TYPES)[number];
 
@@ -39,6 +46,7 @@ const MESSAGE_KINDS = [
   "cmd.workspace.create",
   "cmd.workspace.delete",
   "cmd.detail",
+  "cmd.archive.list",
   "cmd.lookup",
   "evt.task",
   "evt.log",
@@ -66,7 +74,8 @@ export type Envelope = {
 export type Task = {
   id: string;
   title: string;
-  status: TaskStatus;
+  /** `archived` is accepted only on `cmd.detail` and `cmd.archive.list` acks. */
+  status: TaskStatus | "archived";
   updatedAt: number;
   agent?: string;
   /** Present when the board task is filed in a workspace. */
@@ -120,7 +129,7 @@ export type ParseFailure = {
 type Cursor = { boardId: string; generation: number; seq: number; eventId: string };
 
 export type Incoming =
-  | { ok: true; kind: "board.register"; envelope: Envelope; boardId: string; token: string; label?: string }
+  | { ok: true; kind: "board.register"; envelope: Envelope; boardId: string; token: string; label?: string; capabilities: string[] }
   | { ok: true; kind: "client.hello"; envelope: Envelope; token: string; name?: string }
   | { ok: true; kind: "board.list"; envelope: Envelope }
   | { ok: true; kind: "sub.tasks"; envelope: Envelope; boardId: string; afterSeq?: number }
@@ -131,6 +140,7 @@ export type Incoming =
   | { ok: true; kind: "cmd.workspace.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.workspace.delete"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.detail"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
+  | { ok: true; kind: "cmd.archive.list"; envelope: Envelope; boardId: string; idempotencyKey: string; limit: number; cursor?: string }
   | { ok: true; kind: "cmd.lookup"; envelope: Envelope; boardId: string; idempotencyKey: string; cmd: CommandType }
   | ({ ok: true; kind: "evt.task"; envelope: Envelope } & Cursor)
   | ({ ok: true; kind: "evt.log"; envelope: Envelope; taskId: string } & Cursor)
@@ -188,6 +198,8 @@ export function parseMessage(raw: unknown): Incoming {
       return parseCmdWorkspaceDelete(payload, id, ts);
     case "cmd.detail":
       return parseCmdDetail(payload, id, ts);
+    case "cmd.archive.list":
+      return parseCmdArchiveList(payload, id, ts);
     case "cmd.lookup":
       return parseLookup(payload, id, ts);
     case "evt.task":
@@ -244,14 +256,18 @@ function parseRegister(payload: unknown, id: string, ts: number): Incoming {
   if (!token.ok) return failure("bad_request", token.message, id);
   const label = optionalText(record.value, "label", 1, 80);
   if (!label.ok) return failure("bad_request", label.message, id);
+  const capabilities = readCapabilities(record.value.capabilities);
+  if (!capabilities.ok) return failure("bad_request", capabilities.message, id);
   const body: JsonObject = { boardId: boardId.value, token: token.value };
   if (label.value) body.label = label.value;
+  if (capabilities.value.length) body.capabilities = capabilities.value;
   return {
     ok: true,
     kind: "board.register",
     envelope: envelope("board.register", id, ts, body),
     boardId: boardId.value,
     token: token.value,
+    capabilities: capabilities.value,
     ...(label.value ? { label: label.value } : {}),
   };
 }
@@ -368,6 +384,39 @@ function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.conti
     boardId: common.boardId,
     idempotencyKey: common.idempotencyKey,
     taskId: common.taskId,
+  };
+}
+
+function parseCmdArchiveList(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const boardId = readBoardId(record.value.boardId, "boardId");
+  if (!boardId.ok) return failure("bad_request", boardId.message, id);
+  const key = readKey(record.value.idempotencyKey);
+  if (!key.ok) return failure("bad_request", key.message, id);
+  let limit = ARCHIVE_PAGE_DEFAULT;
+  if (record.value.limit !== undefined) {
+    const parsed = readInt(record.value.limit, "limit", 1);
+    if (!parsed.ok) return failure("bad_request", parsed.message, id);
+    if (parsed.value > ARCHIVE_PAGE_MAX) return failure("bad_request", `limit must be at most ${ARCHIVE_PAGE_MAX}`, id);
+    limit = parsed.value;
+  }
+  let cursor: string | undefined;
+  if (record.value.cursor !== undefined) {
+    const parsed = readArchiveCursor(record.value.cursor);
+    if (!parsed.ok) return failure("bad_request", parsed.message, id);
+    cursor = parsed.value;
+  }
+  const body: JsonObject = { boardId: boardId.value, idempotencyKey: key.value, limit };
+  if (cursor) body.cursor = cursor;
+  return {
+    ok: true,
+    kind: "cmd.archive.list",
+    envelope: envelope("cmd.archive.list", id, ts, body),
+    boardId: boardId.value,
+    idempotencyKey: key.value,
+    limit,
+    ...(cursor ? { cursor } : {}),
   };
 }
 
@@ -616,9 +665,14 @@ function parseAck(payload: unknown, id: string, ts: number): Incoming {
     body.stage = record.value.stage;
   }
   if (record.value.task !== undefined) {
-    const task = readTask(record.value.task, false);
+    const task = readTask(record.value.task, false, true);
     if (!task.ok) return failure("bad_request", task.message, id);
     body.task = taskToJson(task.task);
+  }
+  if (record.value.archive !== undefined) {
+    const archive = readArchive(record.value.archive);
+    if (!archive.ok) return failure("bad_request", archive.message, id);
+    body.archive = archive.value;
   }
   if (record.value.workspace !== undefined) {
     const workspace = readWorkspace(record.value.workspace, "workspace");
@@ -784,6 +838,11 @@ function readBoards(value: unknown): { ok: true; value: Json[] } | { ok: false; 
       if (!generation.ok) return generation;
       entry.generation = generation.value;
     }
+    if (item.capabilities !== undefined) {
+      const capabilities = readCapabilities(item.capabilities);
+      if (!capabilities.ok) return { ok: false, message: capabilities.message };
+      entry.capabilities = capabilities.value;
+    }
     boards.push(entry);
   }
   return { ok: true, value: boards };
@@ -827,20 +886,27 @@ function readWorkspace(
   return { ok: true, value: { id: id.value, name: name.value, path: path.value, isGit: value.isGit } };
 }
 
-function readTask(value: unknown, terminalOnly: boolean): { ok: true; task: Task } | { ok: false; message: string } {
+function readTask(
+  value: unknown,
+  terminalOnly: boolean,
+  allowArchived = false,
+): { ok: true; task: Task } | { ok: false; message: string } {
   if (!isRecord(value)) return { ok: false, message: "task must be an object" };
   const id = readBoardId(value.id, "task.id");
   if (!id.ok) return id;
   const title = readText(value.title, "task.title", 1, 200);
   if (!title.ok) return title;
-  if (typeof value.status !== "string" || !isTaskStatus(value.status)) return { ok: false, message: "task.status is invalid" };
-  if (terminalOnly && !isTerminalStatus(value.status)) {
+  const status = value.status;
+  if (typeof status !== "string" || !acceptTaskStatus(status, allowArchived)) {
+    return { ok: false, message: "task.status is invalid" };
+  }
+  if (terminalOnly && !isTerminalStatus(status)) {
     return { ok: false, message: "evt.task.done requires status succeeded, failed, or stopped" };
   }
   if (typeof value.updatedAt !== "number" || !Number.isFinite(value.updatedAt)) {
     return { ok: false, message: "task.updatedAt must be a finite number" };
   }
-  const task: Task = { id: id.value, title: title.value, status: value.status, updatedAt: value.updatedAt };
+  const task: Task = { id: id.value, title: title.value, status, updatedAt: value.updatedAt };
   if (value.agent !== undefined) {
     const agent = readText(value.agent, "task.agent", 1, 64);
     if (!agent.ok) return agent;
@@ -1180,6 +1246,62 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isTaskStatus(value: string): value is TaskStatus {
   return (TASK_STATUSES as readonly string[]).includes(value);
+}
+
+function acceptTaskStatus(value: string, allowArchived: boolean): value is Task["status"] {
+  if (value === ARCHIVE_STATUS) return allowArchived;
+  return isTaskStatus(value);
+}
+
+const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$/;
+const KNOWN_CAPABILITIES = new Set<string>([ARCHIVE_CAPABILITY]);
+
+function readCapabilities(value: unknown): { ok: true; value: string[] } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(value) || value.length > 8) {
+    return { ok: false, message: "capabilities must be an array of at most 8 names" };
+  }
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !KNOWN_CAPABILITIES.has(item) || names.includes(item)) {
+      return { ok: false, message: "capabilities contains an unknown name" };
+    }
+    names.push(item);
+  }
+  return { ok: true, value: names };
+}
+
+function readArchiveCursor(value: unknown): { ok: true; value: string } | { ok: false; message: string } {
+  if (typeof value !== "string" || !ARCHIVE_CURSOR.test(value)) {
+    return { ok: false, message: "cursor is invalid" };
+  }
+  return { ok: true, value };
+}
+
+function readArchive(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "archive must be an object" };
+  if (!Array.isArray(value.tasks)) return { ok: false, message: "archive.tasks must be an array" };
+  if (value.tasks.length > ARCHIVE_PAGE_MAX) return { ok: false, message: "archive.tasks exceeds 50 items" };
+  const tasks: Json[] = [];
+  for (const item of value.tasks) {
+    const task = readTask(item, false, true);
+    if (!task.ok) return task;
+    if (task.task.status !== ARCHIVE_STATUS) {
+      return { ok: false, message: "archive.tasks status must be archived" };
+    }
+    tasks.push(taskToJson(task.task));
+  }
+  const body: JsonObject = { tasks };
+  if (value.nextCursor !== undefined) {
+    const cursor = readArchiveCursor(value.nextCursor);
+    if (!cursor.ok) return cursor;
+    body.nextCursor = cursor.value;
+  }
+  if (value.restarted !== undefined) {
+    if (typeof value.restarted !== "boolean") return { ok: false, message: "archive.restarted must be a boolean" };
+    if (value.restarted) body.restarted = true;
+  }
+  return { ok: true, value: body };
 }
 
 function isLogStream(value: string): value is LogStream {

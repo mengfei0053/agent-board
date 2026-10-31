@@ -6,6 +6,7 @@ import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import type { BoardFacade } from "./facade.js";
 import { CreateIdempotency, WorkspaceIdempotency } from "./idempotency.js";
 import { RELAY_LIMITS } from "./limits.js";
+import { pageArchivedTasks, wireArchivePage } from "./archive.js";
 import { isAgentKind, mapBoardTask, wireMappedTask, WORKSPACE_ID, type MappedTask } from "./map.js";
 import { enrichWorkspaces } from "./workspaces.js";
 
@@ -247,6 +248,10 @@ export class ConnectorSession {
         await this.applyDetail(message);
         return;
       }
+      if (message.type === "cmd.archive.list") {
+        await this.applyArchiveList(message);
+        return;
+      }
       this.fail(message, new RelayCommandError("bad_request", "unsupported command"));
     } catch (err) {
       this.fail(message, relayErrorFrom(err));
@@ -313,7 +318,7 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError("task_not_found", "task not found"));
       return;
     }
-    const mapped = mapBoardTask(task);
+    const mapped = mapBoardTask(task, true);
     if (!mapped) {
       this.fail(message, new RelayCommandError("bad_request", "task is not available"));
       return;
@@ -325,6 +330,27 @@ export class ConnectorSession {
       boardId: this.opts.boardId,
       idempotencyKey: parsed.key,
       task: wireMappedTask(mapped, "full"),
+    }, message.id);
+  }
+
+  private async applyArchiveList(message: Envelope): Promise<void> {
+    const parsed = parseArchiveList(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const page = pageArchivedTasks(this.opts.facade.boardSnapshot(), parsed.cursor, parsed.limit);
+    if (!page.ok) {
+      this.fail(message, new RelayCommandError("bad_request", page.message));
+      return;
+    }
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      archive: wireArchivePage(page.page),
     }, message.id);
   }
 
@@ -395,6 +421,7 @@ function isLiveCommand(type: string): boolean {
     || type === "cmd.continue"
     || type === "cmd.stop"
     || type === "cmd.detail"
+    || type === "cmd.archive.list"
     || type === "cmd.workspace.create"
     || type === "cmd.workspace.delete";
 }
@@ -493,6 +520,31 @@ function parseWorkspaceDelete(
     return { ok: false, code: "bad_request", message: "workspaceId is invalid" };
   }
   return { ok: true, key: key.key, workspaceId };
+}
+
+function parseArchiveList(
+  payload: Record<string, unknown>,
+  boardId: string,
+): { ok: true; key: string; limit: number; cursor?: string } | { ok: false; code: string; message: string } {
+  const foreign = requireBoard(payload, boardId);
+  if (foreign) return foreign;
+  const key = requireKey(payload);
+  if (!key.ok) return key;
+  let limit = 20;
+  if ("limit" in payload && payload.limit != null) {
+    if (typeof payload.limit !== "number" || !Number.isInteger(payload.limit) || payload.limit < 1 || payload.limit > 50) {
+      return { ok: false, code: "bad_request", message: "limit is invalid" };
+    }
+    limit = payload.limit;
+  }
+  let cursor: string | undefined;
+  if ("cursor" in payload && payload.cursor != null && payload.cursor !== "") {
+    if (typeof payload.cursor !== "string" || !/^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/.test(payload.cursor)) {
+      return { ok: false, code: "bad_request", message: "cursor is invalid" };
+    }
+    cursor = payload.cursor;
+  }
+  return { ok: true, key: key.key, limit, ...(cursor ? { cursor } : {}) };
 }
 
 function parseTaskCommand(

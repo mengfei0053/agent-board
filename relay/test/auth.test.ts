@@ -26,7 +26,10 @@ test("pair codes are high entropy, one-time, and short lived", () => {
   assert.deepEqual(paired.boardIds, ["thinkbook-main"]);
   const again = auth.pair(created.pairCode, "pixel", "ip-b");
   assert.equal(again.ok, false);
-  if (!again.ok) assert.equal(again.code, "unauthorized");
+  if (!again.ok) {
+    assert.equal(again.code, "unauthorized");
+    assert.equal(again.message, "pair code rejected");
+  }
 
   const second = auth.createPairCode(["thinkbook-main"], 1_000);
   assert.equal(second.ok, true);
@@ -34,7 +37,13 @@ test("pair codes are high entropy, one-time, and short lived", () => {
   clock.t += 1_000;
   const expired = auth.pair(second.pairCode, "pixel", "ip-c");
   assert.equal(expired.ok, false);
-  if (!expired.ok) assert.equal(expired.code, "unauthorized");
+  if (!expired.ok) {
+    assert.equal(expired.code, "unauthorized");
+    assert.equal(expired.message, "pair code rejected");
+  }
+  const unknown = auth.pair(`pc_${"a".repeat(43)}`, "pixel", "ip-d");
+  assert.equal(unknown.ok, false);
+  if (!unknown.ok) assert.equal(unknown.message, "pair code rejected");
 });
 
 test("pair attempts are rate limited", () => {

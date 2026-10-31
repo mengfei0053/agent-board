@@ -1,7 +1,8 @@
+import { mapArchiveRow, pageArchiveRows, wireArchiveRow } from "./archive.js";
 import { BoardHttpError, type BoardClient } from "./board.js";
 import { EventCursor, type Outbound } from "./cursor.js";
 import { eventsFromBoardSse } from "./dialect.js";
-import { buildCreateBody, taskPayload, type MappedTask } from "./map.js";
+import { buildCreateBody, mapBoardTask, taskPayload, type MappedTask } from "./map.js";
 import { consumeSse } from "./sse.js";
 import { deletedWorkspaceIds, demoteWorkspaces, sseKind, stubsFromSseData, type ThinWorkspace, type WorkspaceStub } from "./workspaces.js";
 
@@ -67,7 +68,13 @@ export class ConnectorSession {
   }
 
   private async handle(message: Envelope): Promise<void> {
-    if (message.type !== "cmd.create" && message.type !== "cmd.continue" && message.type !== "cmd.stop") return;
+    if (
+      message.type !== "cmd.create"
+      && message.type !== "cmd.continue"
+      && message.type !== "cmd.stop"
+      && message.type !== "cmd.archive.list"
+      && message.type !== "cmd.detail"
+    ) return;
     const payload = message.payload ?? {};
     if (payload.boardId !== undefined && payload.boardId !== this.boardId) {
       this.fail(message.id, "forbidden", "command boardId does not match this connector");
@@ -76,7 +83,9 @@ export class ConnectorSession {
     try {
       if (message.type === "cmd.create") await this.create(message.id, payload);
       else if (message.type === "cmd.continue") await this.continueTask(message.id, payload);
-      else await this.stopTask(message.id, payload);
+      else if (message.type === "cmd.stop") await this.stopTask(message.id, payload);
+      else if (message.type === "cmd.archive.list") await this.archiveList(message.id, payload);
+      else await this.detail(message.id, payload);
     } catch (error) {
       if (error instanceof BoardHttpError) {
         const code = error.status === 404 ? "task_not_found" : "board_http";
@@ -127,6 +136,109 @@ export class ConnectorSession {
     this.known.set(task.id, task);
     this.emitAll(this.cursor.observe(task));
     this.ack(ref, task);
+  }
+
+  private async archiveList(ref: string, payload: Record<string, unknown>): Promise<void> {
+    const key = payload.idempotencyKey;
+    if (typeof key !== "string" || key.length < 8) {
+      this.fail(ref, "bad_request", "idempotencyKey is required");
+      return;
+    }
+    let limit = 20;
+    if (payload.limit !== undefined) {
+      if (typeof payload.limit !== "number" || !Number.isInteger(payload.limit) || payload.limit < 1 || payload.limit > 50) {
+        this.fail(ref, "bad_request", "limit is invalid");
+        return;
+      }
+      limit = payload.limit;
+    }
+    let cursor: string | undefined;
+    if (payload.cursor !== undefined && payload.cursor !== null && payload.cursor !== "") {
+      if (typeof payload.cursor !== "string") {
+        this.fail(ref, "bad_request", "cursor is invalid");
+        return;
+      }
+      cursor = payload.cursor;
+    }
+    const records = await this.api.listTaskRecords();
+    const rows = records.flatMap((item) => {
+      const row = mapArchiveRow(item, false);
+      return row ? [row] : [];
+    });
+    const page = pageArchiveRows(rows, cursor, limit);
+    if (!page.ok) {
+      this.fail(ref, "bad_request", page.message);
+      return;
+    }
+    this.send({
+      v: 1,
+      id: cryptoRandom(),
+      type: "ack",
+      ts: Date.now(),
+      payload: {
+        ref,
+        stage: "executed",
+        boardId: this.boardId,
+        idempotencyKey: key,
+        archive: {
+          tasks: page.tasks.map((row) => wireArchiveRow(row, false)),
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+          ...(page.restarted ? { restarted: true } : {}),
+        },
+      },
+    });
+  }
+
+  private async detail(ref: string, payload: Record<string, unknown>): Promise<void> {
+    const taskId = payload.taskId;
+    const key = payload.idempotencyKey;
+    if (typeof taskId !== "string" || !taskId) {
+      this.fail(ref, "bad_request", "taskId is required");
+      return;
+    }
+    if (typeof key !== "string" || key.length < 8) {
+      this.fail(ref, "bad_request", "idempotencyKey is required");
+      return;
+    }
+    let raw: unknown;
+    try {
+      raw = await this.api.getTaskRecord(taskId);
+    } catch (error) {
+      if (error instanceof BoardHttpError && error.status === 404) {
+        this.fail(ref, "task_not_found", "task not found");
+        return;
+      }
+      throw error;
+    }
+    const archived = mapArchiveRow(raw, true);
+    if (archived) {
+      this.send({
+        v: 1,
+        id: cryptoRandom(),
+        type: "ack",
+        ts: Date.now(),
+        payload: {
+          ref,
+          stage: "executed",
+          boardId: this.boardId,
+          idempotencyKey: key,
+          task: wireArchiveRow(archived, true),
+        },
+      });
+      return;
+    }
+    const live = mapBoardTask(raw);
+    if (!live) {
+      this.fail(ref, "bad_request", "task is not available");
+      return;
+    }
+    this.send({
+      v: 1,
+      id: cryptoRandom(),
+      type: "ack",
+      ts: Date.now(),
+      payload: { ref, stage: "executed", boardId: this.boardId, idempotencyKey: key, task: taskPayload(live) },
+    });
   }
 
   private async applySse(name: string, data: string): Promise<void> {

@@ -3,9 +3,12 @@ package tech.mengfei.agentboard.protocol
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 val TASK_STATUSES = setOf("queued", "running", "paused", "succeeded", "failed", "stopped")
 val TERMINAL_STATUSES = setOf("succeeded", "failed", "stopped")
+const val ARCHIVED_STATUS = "archived"
+const val ARCHIVE_CAPABILITY = "archive.list"
 
 data class RelayTurn(
     val iteration: Int,
@@ -72,6 +75,27 @@ data class BoardInfo(
     val label: String?,
     val online: Boolean,
     val generation: Long?,
+    val capabilities: List<String> = emptyList(),
+)
+
+data class ArchivePage(
+    val tasks: List<RelayTask>,
+    val nextCursor: String?,
+    val restarted: Boolean = false,
+)
+
+data class DetailRequest(
+    val requestId: String,
+    val boardId: String,
+    val taskId: String,
+    val epoch: Int,
+)
+
+data class ArchiveRequest(
+    val requestId: String,
+    val boardId: String,
+    val epoch: Int,
+    val reset: Boolean,
 )
 
 data class ThinWorkspace(
@@ -141,9 +165,11 @@ class BoardReducer(
         val generation = payload.longValue("generation")
         val generationChanged = generation != null && view.generation != null && generation != view.generation
         if (generationChanged) logDedupe.clear()
-        val tasks = readTaskList(payload["tasks"]).map { incoming ->
-            mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
-        }
+        val tasks = readTaskList(payload["tasks"])
+            .filter { it.status != ARCHIVED_STATUS }
+            .map { incoming ->
+                mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
+            }
         val seq = payload.longValue("seq") ?: payload.longValue("version")
         val stale = snapshotStillStale(generation, seq)
         return ApplyOutcome.Applied(view.copy(
@@ -162,6 +188,14 @@ class BoardReducer(
         val task = payload.obj("task")?.let(::readTask) ?: return ApplyOutcome.Ignored(view)
         val generation = payload.longValue("generation")
         val seq = payload.longValue("seq")
+        if (task.status == ARCHIVED_STATUS) {
+            return ApplyOutcome.Applied(view.copy(
+                tasks = view.tasks.filterNot { it.id == task.id },
+                generation = generation ?: view.generation,
+                seq = seq ?: view.seq,
+                needsResync = gapOpen(),
+            ))
+        }
         return ApplyOutcome.Applied(view.copy(
             tasks = upsert(view.tasks, task),
             generation = generation ?: view.generation,
@@ -302,7 +336,7 @@ fun readTask(obj: JsonObject): RelayTask? {
     val id = obj.text("id") ?: return null
     val title = obj.text("title") ?: return null
     val status = obj.text("status") ?: return null
-    if (status !in TASK_STATUSES) return null
+    if (status !in TASK_STATUSES && status != ARCHIVED_STATUS) return null
     val updatedAt = obj.longValue("updatedAt") ?: return null
     return RelayTask(
         id = id,
@@ -357,36 +391,64 @@ fun mergeRelayTask(previous: RelayTask?, incoming: RelayTask): RelayTask {
     )
 }
 
-fun statusLabel(status: String): String = when (status) {
+fun statusLabel(status: String, english: Boolean = false): String = if (english) when (status) {
     "queued" -> "Todo"
+    "running" -> "Running"
+    "paused" -> "Waiting"
+    "succeeded" -> "Succeeded"
+    "failed" -> "Failed"
+    "stopped" -> "Stopped"
+    ARCHIVED_STATUS -> "Archived"
+    else -> status
+} else when (status) {
+    "queued" -> "待办"
     "running" -> "进行中"
     "paused" -> "等待确认"
     "succeeded" -> "成功"
     "failed" -> "失败"
     "stopped" -> "已停止"
+    ARCHIVED_STATUS -> "已归档"
     else -> status
 }
 
 fun canStopStatus(status: String): Boolean = status == "queued" || status == "running" || status == "paused"
 
 /** Web continue is hidden for draft and disabled while queued or running. Paused (blocked) can continue. */
-fun canContinueStatus(status: String): Boolean = status != "queued" && status != "running"
+fun canContinueStatus(status: String): Boolean =
+    status != "queued" && status != "running" && status != ARCHIVED_STATUS
 
-fun continueHint(task: RelayTask): String {
-    if (!canContinueStatus(task.status)) return "任务运行中，请先停止再继续"
+fun continueHint(task: RelayTask, english: Boolean = false): String {
+    if (task.status == ARCHIVED_STATUS) {
+        return if (english) "Archived tasks are read-only." else "归档任务只读"
+    }
+    if (!canContinueStatus(task.status)) {
+        return if (english) "The task is running. Stop it before continuing." else "任务运行中，请先停止再继续"
+    }
     val session = task.sessionId
-    return if (!session.isNullOrBlank()) "将续会话 $session" else "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+    return if (!session.isNullOrBlank()) {
+        if (english) "Will resume session $session" else "将续会话 $session"
+    } else if (english) {
+        "Without a sessionId the board tries the CLI continue for the latest session in this directory."
+    } else {
+        "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+    }
 }
 
-fun resumeCommandLabel(task: RelayTask): String {
+fun resumeCommandLabel(task: RelayTask, english: Boolean = false): String {
     val command = task.resumeCommand
     if (!command.isNullOrBlank()) return command
-    return if (task.sessionId.isNullOrBlank()) "尚无会话" else "—"
+    return if (task.sessionId.isNullOrBlank()) {
+        if (english) "No session yet" else "尚无会话"
+    } else {
+        "—"
+    }
 }
 
 fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
 
-fun detailRounds(task: RelayTask): List<DetailRound> {
+fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
+    val initial = if (english) "Initial" else "初始"
+    val follow = if (english) "Continue" else "继续"
     val turns = task.turns
     if (!turns.isNullOrEmpty()) {
         val live = task.status == "queued" || task.status == "running" || task.status == "paused"
@@ -394,7 +456,7 @@ fun detailRounds(task: RelayTask): List<DetailRound> {
         return turns.map { turn ->
             DetailRound(
                 iteration = turn.iteration,
-                kindLabel = if (turn.iteration <= 1) "初始" else "继续",
+                kindLabel = if (turn.iteration <= 1) initial else follow,
                 prompt = turn.prompt,
                 output = turn.output,
                 pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
@@ -406,17 +468,29 @@ fun detailRounds(task: RelayTask): List<DetailRound> {
     if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
     val iteration = task.iteration ?: 1
     val live = task.status == "queued" || task.status == "running" || task.status == "paused"
-    return listOf(DetailRound(iteration, if (iteration <= 1) "初始" else "继续", prompt, output, live && output.isNullOrBlank()))
+    return listOf(DetailRound(iteration, if (iteration <= 1) initial else follow, prompt, output, live && output.isNullOrBlank()))
 }
 
-fun detailError(task: RelayTask): String? {
+fun detailError(task: RelayTask, english: Boolean = false): String? {
     val hasOutput = !task.output.isNullOrBlank() || !task.outputPreview.isNullOrBlank() ||
         task.turns?.any { !it.output.isNullOrBlank() } == true
     if (task.status != "failed" && !(task.status == "stopped" && !hasOutput)) return null
     val bits = mutableListOf<String>()
     if (!task.error.isNullOrBlank()) bits.add(task.error)
-    if (task.exitCode != null && task.exitCode != 0) bits.add("退出码 ${task.exitCode}")
-    if (bits.isEmpty()) bits.add(if (task.status == "stopped") "已由用户停止" else "任务失败")
+    if (task.exitCode != null && task.exitCode != 0) {
+        bits.add(if (english) "Exit code ${task.exitCode}" else "退出码 ${task.exitCode}")
+    }
+    if (bits.isEmpty()) {
+        bits.add(
+            if (task.status == "stopped") {
+                if (english) "Stopped by the user" else "已由用户停止"
+            } else if (english) {
+                "Task failed"
+            } else {
+                "任务失败"
+            },
+        )
+    }
     return bits.joinToString("\n")
 }
 
@@ -477,10 +551,16 @@ fun visibleTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>, select
     return tasks.filter { it.workspaceId == selectedId }
 }
 
-fun workspaceSwitchItems(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<WorkspaceSwitchItem> {
+fun unassignedLabel(english: Boolean = false): String = if (english) "Unassigned" else UNASSIGNED_LABEL
+
+fun workspaceSwitchItems(
+    tasks: List<RelayTask>,
+    workspaces: List<ThinWorkspace>,
+    english: Boolean = false,
+): List<WorkspaceSwitchItem> {
     val items = workspaces.map { WorkspaceSwitchItem(it.id, it.name, it.path) }
     if (unassignedTasks(tasks, workspaces).isEmpty()) return items
-    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, UNASSIGNED_LABEL, null)
+    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, unassignedLabel(english), null)
 }
 
 data class WorkspaceSelectionUpdate(val selectedId: String?, val persist: Boolean)
@@ -522,17 +602,20 @@ fun resolveWorkspaceSelection(
     return null
 }
 
-fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>): WorkspaceBanner {
-    if (selectedId == null) return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
-    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(UNASSIGNED_LABEL, "这些任务没有对应的工作区")
-    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>, english: Boolean = false): WorkspaceBanner {
+    val missing = if (english) "No workspace selected" else "未选择工作区"
+    val pick = if (english) "Create or choose a workspace" else "请新建或选择工作区"
+    val unassignedDetail = if (english) "These tasks have no workspace" else "这些任务没有对应的工作区"
+    if (selectedId == null) return WorkspaceBanner(missing, pick)
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(unassignedLabel(english), unassignedDetail)
+    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner(missing, pick)
     return WorkspaceBanner(workspace.name, workspace.path)
 }
 
-/** Web detail uses the workspace name. A missing id is 「未分配」. */
-fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>): String {
-    if (workspaceId.isNullOrBlank()) return UNASSIGNED_LABEL
-    return workspaces.find { it.id == workspaceId }?.name ?: UNASSIGNED_LABEL
+/** Web detail uses the workspace name. A missing id is 「未分配」 / Unassigned. */
+fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>, english: Boolean = false): String {
+    if (workspaceId.isNullOrBlank()) return unassignedLabel(english)
+    return workspaces.find { it.id == workspaceId }?.name ?: unassignedLabel(english)
 }
 
 /** Opening New task copies the selected workspace path unless the user already typed another cwd. */
@@ -642,6 +725,86 @@ fun readTaskList(element: JsonElement?): List<RelayTask> {
     return array.mapNotNull { (it as? JsonObject)?.let(::readTask) }
 }
 
+fun readCapabilities(obj: JsonObject): List<String> {
+    val array = obj.array("capabilities") ?: return emptyList()
+    return array.mapNotNull { item ->
+        val primitive = item as? JsonPrimitive ?: return@mapNotNull null
+        if (!primitive.isString) return@mapNotNull null
+        primitive.content
+    }
+}
+
+fun readArchivePage(payload: JsonObject): ArchivePage? {
+    val archive = payload.obj("archive") ?: return null
+    if ("tasks" !in archive) return null
+    val array = archive.array("tasks") ?: return null
+    if (array.size > 50) return null
+    val tasks = ArrayList<RelayTask>(array.size)
+    for (item in array) {
+        val row = item as? JsonObject ?: return null
+        val task = readTask(row) ?: return null
+        if (task.status != ARCHIVED_STATUS) return null
+        tasks.add(task)
+    }
+    return ArchivePage(
+        tasks,
+        archive.text("nextCursor")?.takeIf { it.isNotBlank() },
+        restarted = archive.bool("restarted") == true,
+    )
+}
+
+fun mergeArchivePages(existing: List<RelayTask>, more: List<RelayTask>): List<RelayTask> {
+    val seen = existing.mapTo(HashSet()) { it.id }
+    return existing + more.filter { seen.add(it.id) }
+}
+
+/** A restarted page replaces the list. Appending would keep rows the new order skipped or repeated. */
+fun applyArchivePage(existing: List<RelayTask>, page: ArchivePage, reset: Boolean): List<RelayTask> {
+    if (reset || page.restarted) return page.tasks
+    return mergeArchivePages(existing, page.tasks)
+}
+
+/** A newly selected board shows its own rows only. A mismatch is loading, not the previous board. */
+fun tasksAfterBoardSwitch(viewBoardId: String, selectedBoardId: String?, viewTasks: List<RelayTask>): List<RelayTask> {
+    if (selectedBoardId.isNullOrEmpty() || viewBoardId != selectedBoardId) return emptyList()
+    return viewTasks.filter { it.status != ARCHIVED_STATUS }
+}
+
+fun activeDetailTask(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): RelayTask? {
+    if (!detailMatches(request, epoch, viewBoardId, ref, task)) return null
+    if (task == null || task.status == ARCHIVED_STATUS) return null
+    return task
+}
+
+fun archivedDetailTask(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): RelayTask? {
+    if (!detailMatches(request, epoch, viewBoardId, ref, task)) return null
+    if (task == null || task.status != ARCHIVED_STATUS) return null
+    return task
+}
+
+private fun detailMatches(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): Boolean {
+    if (ref == null || ref != request.requestId || epoch != request.epoch || viewBoardId != request.boardId) return false
+    return task != null && task.id == request.taskId
+}
+
 fun parseBoardList(payload: JsonObject): List<BoardInfo>? {
     if ("boards" !in payload) return null
     val array = payload.array("boards") ?: return emptyList()
@@ -649,7 +812,13 @@ fun parseBoardList(payload: JsonObject): List<BoardInfo>? {
         val obj = item as? JsonObject ?: return@mapNotNull null
         val boardId = obj.text("boardId") ?: return@mapNotNull null
         val online = obj.bool("online") ?: return@mapNotNull null
-        BoardInfo(boardId, obj.text("label"), online, obj.longValue("generation"))
+        BoardInfo(
+            boardId,
+            obj.text("label"),
+            online,
+            obj.longValue("generation"),
+            readCapabilities(obj),
+        )
     }
 }
 

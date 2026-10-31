@@ -70,7 +70,7 @@ That starts the real relay, a loopback mock of agent-board, and this connector. 
 | `GET /api/tasks` | `{ tasks: [...] }` or an array, used for the snapshot. |
 | `GET /api/events` | SSE. Names are `hello`, `task_upsert`, `task_delete`, `task_log`, `workspace_upsert`, `workspace_delete`, and `ping`. |
 
-Board statuses `draft` and `blocked` become relay `queued` and `paused`. `succeeded`, `failed`, and `stopped` are terminal. `archived` is dropped.
+Board statuses `draft` and `blocked` become relay `queued` and `paused`. `succeeded`, `failed`, and `stopped` are terminal. `archived` is left out of the hot snapshot. If that task was already on the active list, the connector sends a fresh snapshot without it and does not emit `evt.task.done`. `cmd.archive.list` returns one read-only page. `board.register` advertises `archive.list`.
 
 SSE mapping:
 

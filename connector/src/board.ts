@@ -57,9 +57,22 @@ export class BoardClient {
   }
 
   async listTasks(): Promise<MappedTask[]> {
-    const payload = await this.request("/api/tasks", { method: "GET" });
-    const list = Array.isArray(payload) ? payload : isRecord(payload) && Array.isArray(payload.tasks) ? payload.tasks : [];
+    const list = await this.listTaskRecords();
     return list.map(mapBoardTask).filter((task): task is MappedTask => task !== null);
+  }
+
+  /** Includes archived rows. Callers decide which statuses to keep. */
+  async listTaskRecords(): Promise<unknown[]> {
+    const payload = await this.request("/api/tasks", { method: "GET" });
+    if (Array.isArray(payload)) return payload;
+    if (isRecord(payload) && Array.isArray(payload.tasks)) return payload.tasks;
+    return [];
+  }
+
+  async getTaskRecord(id: string): Promise<unknown> {
+    const payload = await this.request(`/api/tasks/${encodeURIComponent(id)}`, { method: "GET" });
+    if (isRecord(payload) && payload.task !== undefined) return payload.task;
+    return payload;
   }
 
   private async send(path: string, init: { method: string; body?: unknown }): Promise<MappedTask> {
