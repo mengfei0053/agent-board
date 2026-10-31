@@ -8,22 +8,24 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
-    "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts test/unit/*.test.mjs",
-    "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts",
+    "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts test/unit/*.test.mjs",
+    "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts",
     "coverage": "pnpm test:coverage",
     "test:e2e": "node test/e2e/workspace-settings.mjs && node test/e2e/board-flows.mjs && node test/e2e/medium-flows.mjs && node test/e2e/low-flows.mjs",
     "test:integration": "tsx --test --test-force-exit test/integration/*.integration.test.ts",
-    "test:coverage:full": "c8 --config .c8rc.full.json tsx --test src/*.test.ts src/runners/*.test.ts"
+    "test:coverage:full": "c8 --config .c8rc.full.json tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
     "hono": "^4.9.0",
     "nanoid": "^5.1.5",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.5.13",
     "c8": "^12.0.0",
     "embedded-postgres": "18.4.0-beta.17",
     "puppeteer-core": "^24.43.1",

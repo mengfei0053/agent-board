@@ -30,8 +30,13 @@
                         │    ├─ cursor: agent -p --output-format stream-json
                         │    ├─ devin:  devin -p --permission-mode accept-edits (plain stdout)
                         │    └─ codex:  codex exec --json --approve-for-me
-                        └─ 每任务：子进程 + data/logs/<id>.jsonl
+                        ├─ 每任务：子进程 + data/logs/<id>.jsonl
+                        └─ 可选：嵌入中继拨号（src/relay/，默认关）
+                              进程内 BoardFacade → 公网 WSS
+                              不另起 connector，也不回环打自己的 HTTP
 ```
+
+手机遥控见 README「手机遥控 / Relay」。`RELAY_WS_URL`、`BOARD_ID`、`BOARD_TOKEN` 齐备才在监听之后拨号；关闭时先断拨号，再停 runner。
 
 ## 状态机
 
