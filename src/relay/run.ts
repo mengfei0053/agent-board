@@ -316,6 +316,8 @@ export function startEmbeddedRelay(opts: {
   facade: BoardFacade;
   log?: RelayLog;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Observes each generation, including the `null` passed when that generation closes. */
+  onSession?: (session: ConnectorSession | null) => void;
 }): EmbeddedRelay {
   const log = opts.log ?? (() => {});
   const sleep = opts.sleep ?? abortableSleep;
@@ -375,6 +377,7 @@ export function startEmbeddedRelay(opts: {
           },
           onSession: (session) => {
             currentSession = session;
+            opts.onSession?.(session);
           },
           onBootstrapped: markReady,
         });

@@ -3,6 +3,7 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { abortableSleep, maybeStartEmbeddedRelay, startEmbeddedRelay } from "./run.js";
+import type { ConnectorSession } from "./session.js";
 import { RELAY_LIMITS } from "./limits.js";
 import {
   defer,
@@ -283,6 +284,87 @@ describe("embedded relay run", { concurrency: 1 }, () => {
     }
     assert.equal(facade.listeners.size, 0);
     assert.equal(facade.creates, 1);
+  });
+
+  it("does not keep closed-session command queues across reconnect floods", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const gate = defer<ReturnType<typeof makeTask>>();
+    facade.createImpl = (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "shared",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const seen: ConnectorSession[] = [];
+    const dialer = startEmbeddedRelay({
+      config: enabledConfig(relay.url, { reconnectMinMs: 15, reconnectMaxMs: 30 }),
+      facade,
+      log: () => {},
+      onSession: (session) => {
+        if (session) seen.push(session);
+      },
+    });
+    try {
+      await dialer.ready;
+      const first = relay.clients[0];
+      assert.ok(first);
+      relay.send(first, "cmd.create", {
+        boardId: "thinkbook",
+        idempotencyKey: "create-key-1",
+        title: "Hold",
+        prompt: "wait",
+        agent: "pi",
+        cwd: "/tmp/repo",
+      }, "cmd-hold");
+      await waitFor(() => facade.creates === 1);
+      const generations = 8;
+      for (let generation = 0; generation < generations; generation += 1) {
+        const ws = relay.clients[0];
+        assert.ok(ws);
+        const generationBefore = relay.generation;
+        relay.send(ws, "cmd.create", {
+          boardId: "thinkbook",
+          idempotencyKey: "create-key-1",
+          title: "Hold",
+          prompt: "wait",
+          agent: "pi",
+          cwd: "/tmp/repo",
+        }, `join-${generation}`);
+        for (let i = 0; i < RELAY_LIMITS.maxLiveCommands + 4; i += 1) {
+          relay.send(ws, "cmd.create", {
+            boardId: "thinkbook",
+            idempotencyKey: `flood-${generation}-${i}-key`,
+            title: "Flood",
+            prompt: "queued",
+            agent: "pi",
+            cwd: "/tmp/repo",
+          }, `flood-${generation}-${i}`);
+        }
+        await waitFor(() => relay.generation > generationBefore);
+      }
+      await waitFor(() => seen.length >= generations);
+      await waitFor(() => relay.received.filter((frame) => frame.type === "evt.snapshot").length >= generations);
+      assert.equal(facade.creates, 1);
+      assert.ok(seen.length >= generations);
+      for (const session of seen) {
+        assert.equal(session.queuedCommandCount(), 0);
+      }
+    } finally {
+      gate.resolve(facade.tasks[0] ?? makeTask());
+      await dialer.close();
+      await relay.close();
+    }
+    assert.equal(facade.creates, 1);
+    for (const session of seen) assert.equal(session.queuedCommandCount(), 0);
   });
 
   it("returns null when relay env is incomplete", () => {

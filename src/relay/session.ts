@@ -11,6 +11,13 @@ import { enrichWorkspaces } from "./workspaces.js";
 
 const VISIBLE_KEY = /^[\x21-\x7E]{8,80}$/;
 
+type SessionJob = {
+  command: boolean;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+};
+
 export type RelaySender = (type: string, payload: Record<string, unknown>, id?: string) => void;
 
 type LogFn = (level: "info" | "warn" | "error", message: string) => void;
@@ -31,7 +38,8 @@ export class ConnectorSession {
   private acceptLive = false;
   private pumpQueued = false;
   private pendingCommands = 0;
-  private tail: Promise<void> = Promise.resolve();
+  private drainingJobs = false;
+  private readonly jobs: SessionJob[] = [];
 
   constructor(
     private readonly opts: {
@@ -85,11 +93,18 @@ export class ConnectorSession {
       } finally {
         this.pendingCommands -= 1;
       }
-    });
+    }, true).catch(() => {});
+  }
+
+  /** Commands accepted but not started. Zero after `close` drops them. */
+  queuedCommandCount(): number {
+    return this.jobs.reduce((count, job) => count + (job.command ? 1 : 0), 0);
   }
 
   close(): void {
     this.closed = true;
+    this.buffer.length = 0;
+    this.dropQueuedJobs();
     try {
       this.unsub();
     } catch {
@@ -121,16 +136,61 @@ export class ConnectorSession {
       } catch (err) {
         this.opts.onFatal(err);
       }
-    });
+    }).catch(() => {});
   }
 
-  private enqueue(job: () => Promise<void>): Promise<void> {
-    const run = this.tail.then(job, job);
-    this.tail = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+  /**
+   * Serial jobs for this generation. `close` drops every job that has not
+   * started. The one already running — including a dialer-lifetime
+   * `facade.create` — is left alone.
+   */
+  private enqueue(job: () => Promise<void>, command = false): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    let resolve!: () => void;
+    let reject!: (err: unknown) => void;
+    const done = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    this.jobs.push({ command, run: job, resolve, reject });
+    this.pumpJobs();
+    return done;
+  }
+
+  private pumpJobs(): void {
+    if (this.drainingJobs) return;
+    this.drainingJobs = true;
+    void this.pumpLoop();
+  }
+
+  private async pumpLoop(): Promise<void> {
+    try {
+      while (this.jobs.length) {
+        if (this.closed) {
+          this.dropQueuedJobs();
+          break;
+        }
+        const job = this.jobs.shift();
+        if (!job) break;
+        try {
+          await job.run();
+          job.resolve();
+        } catch (err) {
+          job.reject(err);
+        }
+      }
+    } finally {
+      this.drainingJobs = false;
+      if (!this.closed && this.jobs.length) this.pumpJobs();
+    }
+  }
+
+  private dropQueuedJobs(): void {
+    const dropped = this.jobs.splice(0);
+    for (const job of dropped) {
+      if (job.command) this.pendingCommands -= 1;
+      job.resolve();
+    }
   }
 
   private async drain(): Promise<void> {

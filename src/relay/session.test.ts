@@ -212,6 +212,75 @@ describe("connector session", () => {
     assert.equal(facade.listeners.size, 0);
   });
 
+  it("drops queued commands on close across generations without a second create", async () => {
+    const facade = memoryFacade();
+    const gate = defer<Awaited<ReturnType<MemoryFacade["create"]>>>();
+    facade.createImpl = async (input) => {
+      facade.creates += 1;
+      const task = makeTask({
+        id: "shared",
+        title: input.title,
+        kind: input.kind,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        status: "queued",
+      });
+      facade.tasks.push(task);
+      return gate.promise.then(() => task);
+    };
+    const idem = new CreateIdempotency();
+    const sessions: ConnectorSession[] = [];
+    const generations = 24;
+    for (let generation = 0; generation < generations; generation += 1) {
+      const { send } = sentFrames();
+      const session = new ConnectorSession({
+        generation: generation + 1,
+        boardId: "thinkbook",
+        facade,
+        idempotency: idem,
+        send,
+        onOverflow: () => {},
+        onFatal: () => {},
+      });
+      await session.bootstrap();
+      session.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
+      if (generation === 0) await waitFor(() => facade.creates === 1);
+      for (let i = 0; i < RELAY_LIMITS.maxLiveCommands; i += 1) {
+        session.handleCommand(createCmd({ idempotencyKey: `queued-${generation}-${i}-key` }));
+      }
+      assert.ok(session.queuedCommandCount() > 0);
+      session.close();
+      assert.equal(session.queuedCommandCount(), 0);
+      sessions.push(session);
+    }
+    assert.equal(sessions.length, generations);
+    assert.equal(sessions.reduce((total, session) => total + session.queuedCommandCount(), 0), 0);
+    assert.equal(facade.creates, 1);
+    gate.resolve(facade.tasks[0]!);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(facade.creates, 1);
+    assert.equal(sessions.reduce((total, session) => total + session.queuedCommandCount(), 0), 0);
+
+    const { frames, send } = sentFrames();
+    const again = new ConnectorSession({
+      generation: generations + 1,
+      boardId: "thinkbook",
+      facade,
+      idempotency: idem,
+      send,
+      onOverflow: () => {},
+      onFatal: () => {},
+    });
+    await again.bootstrap();
+    again.handleCommand(createCmd({ idempotencyKey: "create-key-1" }));
+    await waitFor(() => frames.some((frame) => frame.type === "ack"));
+    assert.equal(facade.creates, 1);
+    assert.equal((frames.find((frame) => frame.type === "ack")?.payload.task as { id: string }).id, "shared");
+    again.close();
+    assert.equal(again.queuedCommandCount(), 0);
+    assert.equal(sessions.reduce((total, session) => total + session.queuedCommandCount(), 0), 0);
+  });
+
   it("demotes isGit when enrichment fails", async () => {
     const facade = memoryFacade({ workspaces: [makeWorkspace({ path: "/tmp/repo" })] });
     facade.gitEligibility = async () => {
