@@ -72,6 +72,9 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `cmd.create` | phone | board | Create a task. The P2 create-task command. |
 | `cmd.continue` | phone | board | Resume a task. |
 | `cmd.stop` | phone | board | Stop a task. The connector emits `evt.task.done` once. |
+| `cmd.workspace.create` | phone | board | Create a workspace (`name` + `path`). |
+| `cmd.workspace.delete` | phone | board | Delete a workspace. Refuses the default workspace and any workspace that still has tasks. |
+| `cmd.detail` | phone | board | Read one task's detail card. Does not change the task. |
 | `cmd.lookup` | phone | relay | Read the stored result of an idempotency key. |
 | `evt.task` | board | task subscribers | Task state changed. |
 | `evt.log` | board | log subscribers | One log line. |
@@ -109,7 +112,7 @@ WebSocket frames are limited to `WS_MESSAGES_PER_SEC` (default 40) per socket. E
 }
 ```
 
-`idempotencyKey` is required, 8–80 visible ASCII characters, and is scoped to the board and the command type. `agent` and `cwd` are optional. Optional `useGitWorktree` is a strict boolean. Omit it or send `false` for the usual create. `true` asks the board to make a git worktree from `cwd` when that path is a git work tree root. The relay forwards only `true` and rejects any other type. The relay does not create worktrees.
+`idempotencyKey` is required, 8–80 visible ASCII characters, and is scoped to the board and the command type. `agent` and `cwd` are optional. Optional `workspaceId` files the task in that workspace and uses the workspace path as cwd, the same as web `POST /api/tasks`. Omit it to keep path matching. Optional `useGitWorktree` is a strict boolean. Omit it or send `false` for the usual create. `true` asks the board to make a git worktree from `cwd` when that path is a git work tree root. The relay forwards only `true` and rejects any other type. The relay does not create worktrees.
 
 The relay answers `accepted` immediately, then `executed` when the board acks:
 
@@ -186,7 +189,9 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 }
 ```
 
-`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`.
+`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters.
+
+`cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task.
 
 ```json
 {
@@ -213,6 +218,79 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
     "taskId": "task_01",
     "idempotencyKey": "idem-stop-01",
     "reason": "user tapped stop"
+  }
+}
+```
+
+## Workspaces
+
+Selecting a workspace is not a frame. The phone keeps the selection locally, the same way the web board keeps `selectedWorkspaceId`. That selection filters the task list and is the default path for `cmd.create`. The board does not learn about the switch.
+
+`cmd.workspace.create` and `cmd.workspace.delete` use the same ack layers and idempotency key as `cmd.create`. `cmd.lookup` accepts `cmd` `cmd.workspace.create` or `cmd.workspace.delete`.
+
+Create matches `POST /api/workspaces`: `name` (1–200 characters) and an absolute local `path`. The board resolves the path and assigns the id. The executed ack includes `workspace`: `{ id, name, path, isGit }`. `isGit` is the same eligibility bit as on a snapshot. A repeated key returns that workspace and does not create another.
+
+```json
+{
+  "v": 1,
+  "id": "phone-ws-create-1",
+  "type": "cmd.workspace.create",
+  "ts": 1761890003000,
+  "payload": {
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "android-ws-7f3a",
+    "name": "App",
+    "path": "/home/me/src/app"
+  }
+}
+```
+
+```json
+{
+  "v": 1,
+  "id": "relay-ack-ws",
+  "type": "ack",
+  "ts": 1761890003100,
+  "payload": {
+    "ref": "phone-ws-create-1",
+    "stage": "executed",
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "android-ws-7f3a",
+    "commandId": "cmd-ws-1",
+    "workspace": { "id": "ws_app", "name": "App", "path": "/home/me/src/app", "isGit": true }
+  }
+}
+```
+
+Delete matches `DELETE /api/workspaces/:id`. The board refuses with `bad_request` when the id is the default workspace (`cannot delete the default workspace`) or the workspace still has tasks (`workspace still has tasks; move or delete them first`). Tasks are not detached or moved. A successful ack sets `deleted` to that workspace id.
+
+```json
+{
+  "v": 1,
+  "id": "phone-ws-delete-1",
+  "type": "cmd.workspace.delete",
+  "ts": 1761890003200,
+  "payload": {
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "android-ws-del-1",
+    "workspaceId": "ws_app"
+  }
+}
+```
+
+```json
+{
+  "v": 1,
+  "id": "relay-ack-ws-del",
+  "type": "ack",
+  "ts": 1761890003300,
+  "payload": {
+    "ref": "phone-ws-delete-1",
+    "stage": "executed",
+    "boardId": "thinkbook-main",
+    "idempotencyKey": "android-ws-del-1",
+    "commandId": "cmd-ws-del-1",
+    "deleted": "ws_app"
   }
 }
 ```
@@ -305,7 +383,21 @@ Offline:
 }
 ```
 
-`workspaces` is optional. When present it is a list of at most 50 `{ id, name, path, isGit }` entries. `isGit` is the board's eligibility bit for that workspace path. A frame without `workspaces` is still valid. If any entry is malformed, the snapshot is `bad_request` and is not applied.
+`workspaces` is optional. When present it is a list of at most 50 `{ id, name, path, isGit }` entries. `name` is 1–200 characters. `isGit` is the board's eligibility bit for that workspace path. A frame without `workspaces` is still valid. If any entry is malformed, the snapshot is `bad_request` and is not applied.
+
+Each task may include optional `workspaceId` (1–64 characters: letters, digits, `_`, `.`, `-`). It is the board workspace this task belongs to. `evt.task`, `evt.snapshot` tasks, and the task object on an executed `cmd.create` ack all use it. Frames that omit `workspaceId` stay valid; the phone treats a missing id as unassigned. A present but invalid `workspaceId` is `bad_request` and that frame is not applied.
+
+The same task object may carry the web detail card. All of these fields are optional, and a frame that omits them is still valid:
+
+| Field | Meaning |
+| --- | --- |
+| `iteration`, `cwd`, `model`, `sessionId`, `startedAt`, `endedAt`, `exitCode`, `pid`, `error`, `worktreeBranch` | The 任务信息 rows. Times are epoch milliseconds. |
+| `resumeCommand` | The copyable 继续会话 command. Absent when the task has no session id. |
+| `promptPreview`, `outputPreview` | Short text on a snapshot so the list frame stays small. |
+| `detail` | `"full"` on `evt.task` and `cmd.detail`. The phone keeps a previously loaded full card when a later snapshot omits it. |
+| `prompt`, `output`, `turns`, `sideJobs` | Full card only. `turns` is at most 12 `{ iteration, prompt?, output?, at? }` rows. `sideJobs` is at most 20 `{ id, kind, title, status, summary?, toolName? }`. Text is clipped; `promptTruncated` / `outputTruncated` say so. Newlines are allowed. |
+
+Delete, archive, and draft start stay on the web board. The phone detail uses stop, continue, the resume command, the progress rounds, and the live log tail.
 
 ```json
 {
@@ -320,7 +412,16 @@ Offline:
     "eventId": "board-snap-ws",
     "version": 4,
     "capturedAt": 1761890001700,
-    "tasks": [],
+    "tasks": [
+      {
+        "id": "task_01",
+        "title": "Fix login flake",
+        "status": "running",
+        "updatedAt": 1761890001700,
+        "agent": "cursor",
+        "workspaceId": "ws_app"
+      }
+    ],
     "workspaces": [{ "id": "ws_app", "name": "App", "path": "/home/me/src/app", "isGit": true }]
   }
 }

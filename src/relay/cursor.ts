@@ -3,6 +3,7 @@ import { RELAY_LIMITS } from "./limits.js";
 import {
   isTerminalStatus,
   taskSignature,
+  wireMappedTask,
   type MappedTask,
 } from "./map.js";
 import type { ThinWorkspace } from "./workspaces.js";
@@ -61,13 +62,13 @@ export class RelayCursor {
     return this.event("evt.snapshot", {
       boardId,
       capturedAt: Date.now(),
-      tasks: tasks.map(wireTask),
+      tasks: tasks.map((task) => wireMappedTask(task, "snapshot")),
       workspaces,
     });
   }
 
   /**
-   * Emit `evt.task` when title, status, or agent changes.
+   * Emit `evt.task` when title, status, agent, or workspace changes.
    * Emit `evt.task.done` once per task per terminal entry in this generation.
    */
   observeTask(boardId: string, task: MappedTask): RelayFrame[] {
@@ -76,7 +77,7 @@ export class RelayCursor {
     const frames: RelayFrame[] = [];
     if (prev !== sig) {
       this.known.set(task.id, sig);
-      frames.push(this.event("evt.task", { boardId, task: wireTask(task) }));
+      frames.push(this.event("evt.task", { boardId, task: wireMappedTask(task, "full") }));
     }
     if (!isTerminalStatus(task.status)) {
       this.done.delete(task.id);
@@ -125,17 +126,6 @@ export class RelayCursor {
       },
     };
   }
-}
-
-function wireTask(task: MappedTask): Record<string, unknown> {
-  return {
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    updatedAt: task.updatedAt,
-    ...(task.agent ? { agent: task.agent } : {}),
-    ...(task.summary ? { summary: task.summary } : {}),
-  };
 }
 
 function capTasks(tasks: MappedTask[]): MappedTask[] {

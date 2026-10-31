@@ -355,6 +355,22 @@ class CreatePayloadTest {
             useGitWorktree = true,
         ) as Validated.Ok
         assertEquals(true, opted.value.payload.bool("useGitWorktree"))
+        assertNull(message.payload.text("workspaceId"))
+        val filed = validateCreate(
+            id = "phone-create-1",
+            ts = 1761890000000,
+            boardId = "thinkbook-main",
+            title = "Fix login flake",
+            prompt = "Investigate the flaky login test.",
+            agent = "cursor",
+            cwd = "/home/me/src/app",
+            idempotencyKey = "android-req-7f3a",
+            workspaceId = "ws_app",
+        ) as Validated.Ok
+        assertEquals("ws_app", filed.value.payload.text("workspaceId"))
+        assertTrue(validateCreate(
+            "id", 1, "thinkbook-main", "T", "prompt", "cursor", "/home/me", "android-req-7f3a", workspaceId = "bad id",
+        ) is Validated.Invalid)
     }
 
     @Test
@@ -374,6 +390,14 @@ class CreatePayloadTest {
         val cont = validateContinue("phone-continue-1", 21, "thinkbook-main", "task_01", "idem-continue") as Validated.Ok
         assertEquals("cmd.continue", cont.value.type)
         assertNull(cont.value.payload.text("reason"))
+        assertNull(cont.value.payload.text("prompt"))
+        val withPrompt = validateContinue(
+            "phone-continue-1", 21, "thinkbook-main", "task_01", "idem-continue", "keep going",
+        ) as Validated.Ok
+        assertEquals("keep going", withPrompt.value.payload.text("prompt"))
+        val detail = validateDetail("phone-detail-1", 22, "thinkbook-main", "task_01", "android-detail-01") as Validated.Ok
+        assertEquals("cmd.detail", detail.value.type)
+        assertEquals("task_01", detail.value.payload.text("taskId"))
     }
 }
 
@@ -415,6 +439,14 @@ class CommandPolicyTest {
         ))!!
         assertEquals("task_01", executed.task?.id)
         assertEquals("queued", executed.task?.status)
+        assertNull(executed.task?.workspaceId)
+        val filed = interpretCommand(parseEnvelope(
+            """{"v":1,"id":"r","type":"ack","ts":3,"payload":{"ref":"c","stage":"executed","workspace":{"id":"ws_app","name":"App","path":"/home/me/src/app","isGit":true},"deleted":"ws_old"}}""",
+        ))!!
+        assertEquals("ws_app", filed.workspace?.id)
+        assertEquals("App", filed.workspace?.name)
+        assertEquals("ws_old", filed.deletedWorkspaceId)
+        assertFalse(explicitResendAllowed("cmd.workspace.delete", interpretCommand(ack("failed", "bad_request"))))
         val plan = planSubmit("cmd.create", false, executed, "android-req-7f3a") { "ph-next" }
         assertEquals("ph-next", (plan as SubmitPlan.Send).idempotencyKey)
         assertEquals(SubmitPlan.Busy, planSubmit("cmd.stop", inflight = true, null, null) { "x" })
@@ -577,5 +609,210 @@ class PairPersistTest {
 
     private fun samplePair() = parsePairResponse(
         """{"deviceId":"dev_0123abcd","deviceToken":"dt_example","role":"phone","boardIds":["thinkbook-main"],"expiresAt":1761890300000}""",
+    )
+}
+
+class WorkspaceListTest {
+    private val app = ThinWorkspace("ws_app", "App", "/home/me/src/app", true)
+    private val other = ThinWorkspace("ws_other", "Other", "/tmp/other", false)
+
+    @Test
+    fun snapshotKeepsWorkspaceIdAndOldFramesStayUnassigned() {
+        val reducer = BoardReducer()
+        val task = """{"id":"task_01","title":"Fix login flake","status":"queued","updatedAt":10,"agent":"cursor","workspaceId":"ws_app"}"""
+        var view = applied(reducer, BoardView("thinkbook-main"), snapshot(task))
+        assertEquals("ws_app", view.tasks.single().workspaceId)
+        view = applied(reducer, view, taskEvent(
+            """{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":20,"agent":"cursor","workspaceId":"ws_other"}""",
+            seq = 2,
+        ))
+        assertEquals("running", view.tasks.single().status)
+        assertEquals("ws_other", view.tasks.single().workspaceId)
+        view = applied(reducer, view, taskEvent(
+            """{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":21,"agent":"cursor"}""",
+            seq = 3,
+        ))
+        assertNull(view.tasks.single().workspaceId)
+        val legacy = applied(reducer, BoardView("thinkbook-main"), snapshot(
+            """{"id":"task_01","title":"Fix login flake","status":"queued","updatedAt":10,"agent":"cursor"}""",
+        ))
+        assertNull(legacy.tasks.single().workspaceId)
+        val junk = applied(reducer, BoardView("thinkbook-main"), snapshot(
+            """{"id":"task_01","title":"Fix login flake","status":"queued","updatedAt":10,"workspaceId":"bad id"}""",
+        ))
+        assertEquals("task_01", junk.tasks.single().id)
+        assertNull(junk.tasks.single().workspaceId)
+    }
+
+    @Test
+    fun filtersBySelectedWorkspaceAndKeepsAnUnassignedBucket() {
+        val rooms = listOf(app, other)
+        val tasks = listOf(
+            RelayTask("a", "Owned", "succeeded", 30, "codex", "ws_app"),
+            RelayTask("b", "Missing", "failed", 20, "devin", null),
+            RelayTask("c", "Unknown", "stopped", 10, "pi", "gone"),
+        )
+        assertEquals(listOf("a"), visibleTasks(tasks, rooms, "ws_app").map { it.id })
+        assertEquals(listOf("b", "c"), visibleTasks(tasks, rooms, UNASSIGNED_WORKSPACE_ID).map { it.id })
+        assertEquals(listOf("ws_app", "ws_other", ""), workspaceSwitchItems(tasks, rooms).map { it.id })
+        assertEquals(UNASSIGNED_LABEL, workspaceSwitchItems(tasks, rooms).last().label)
+        assertEquals("App", workspaceDisplayName("ws_app", rooms))
+        assertEquals(UNASSIGNED_LABEL, workspaceDisplayName(null, rooms))
+        assertEquals(UNASSIGNED_LABEL, workspaceDisplayName("gone", rooms))
+        assertEquals("ws_app", resolveWorkspaceSelection(null, rooms, tasks))
+        assertEquals(UNASSIGNED_WORKSPACE_ID, resolveWorkspaceSelection(null, rooms, listOf(tasks[1])))
+        assertEquals("ws_app", resolveWorkspaceSelection(null, rooms, emptyList()))
+        assertEquals("ws_other", resolveWorkspaceSelection("ws_other", rooms, tasks))
+        assertEquals(UNASSIGNED_WORKSPACE_ID, resolveWorkspaceSelection("", rooms, tasks))
+        assertEquals("ws_app", resolveWorkspaceSelection("deleted", rooms, tasks))
+        assertEquals("App", workspaceBanner("ws_app", rooms).title)
+        assertEquals("/home/me/src/app", workspaceBanner("ws_app", rooms).detail)
+        assertEquals("未选择工作区", workspaceBanner(null, rooms).title)
+        assertEquals(UNASSIGNED_LABEL, workspaceBanner("", rooms).title)
+        assertEquals(listOf("ws_app", "ws_other"), workspaceSwitchItems(listOf(tasks[0]), rooms).map { it.id })
+    }
+
+    @Test
+    fun newTaskDefaultsToTheSelectedWorkspacePath() {
+        assertEquals("/tmp/other", cwdForNewTask("", "/tmp/other", listOf("/home/me/src/app", "/tmp/other")))
+        assertEquals("/tmp/other", cwdForNewTask("/home/me/src/app", "/tmp/other", listOf("/home/me/src/app", "/tmp/other")))
+        assertEquals("/custom", cwdForNewTask("/custom", "/tmp/other", listOf("/home/me/src/app", "/tmp/other")))
+        assertEquals("ws_other", workspaceIdForCreate("/tmp/other", "ws_other", "/tmp/other"))
+        assertNull(workspaceIdForCreate("/custom", "ws_other", "/tmp/other"))
+        assertNull(workspaceIdForCreate("/tmp/other", null, null))
+    }
+
+    @Test
+    fun workspaceCommandsMatchTheBoardFields() {
+        val created = validateWorkspaceCreate(
+            "phone-ws-create-1",
+            30,
+            "thinkbook-main",
+            " App ",
+            " /home/me/src/app ",
+            "android-ws-7f3a",
+        ) as Validated.Ok
+        assertEquals("cmd.workspace.create", created.value.type)
+        assertEquals("App", created.value.payload.text("name"))
+        assertEquals("/home/me/src/app", created.value.payload.text("path"))
+        assertTrue(validateWorkspaceCreate("id", 1, "thinkbook-main", " ", "/tmp", "android-ws-7f3a") is Validated.Invalid)
+        assertTrue(validateWorkspaceCreate("id", 1, "thinkbook-main", "App", "relative", "android-ws-7f3a") is Validated.Invalid)
+        val deleted = validateWorkspaceDelete("phone-ws-delete-1", 32, "thinkbook-main", "_nanoid01", "android-ws-del-1") as Validated.Ok
+        assertEquals("cmd.workspace.delete", deleted.value.type)
+        assertEquals("_nanoid01", deleted.value.payload.text("workspaceId"))
+        assertTrue(validateWorkspaceDelete("id", 1, "thinkbook-main", "bad id", "android-ws-del-1") is Validated.Invalid)
+    }
+
+    @Test
+    fun fullDetailReplacesTurnsAndASnapshotPreviewDoesNot() {
+        val preview = RelayTask(
+            id = "task_01",
+            title = "Fix",
+            status = "running",
+            updatedAt = 2,
+            agent = "cursor",
+            iteration = 1,
+            promptPreview = "short",
+            outputPreview = "partial",
+        )
+        val full = preview.copy(
+            detailFull = true,
+            prompt = "full prompt",
+            output = "full reply",
+            turns = listOf(RelayTurn(1, "full prompt", "full reply")),
+            sideJobs = listOf(RelaySideJob("j1", "monitor", "watch", "running")),
+            resumeCommand = "cd /tmp && agent --resume sess",
+            sessionId = "sess",
+        )
+        val merged = mergeRelayTask(preview, full)
+        assertEquals("full reply", merged.output)
+        assertEquals(1, detailRounds(merged).size)
+        assertEquals("full prompt", detailRounds(merged).single().prompt)
+        val again = mergeRelayTask(merged, preview.copy(status = "succeeded", updatedAt = 3, outputPreview = "partial"))
+        assertEquals("succeeded", again.status)
+        assertEquals("full reply", again.output)
+        assertEquals("partial", again.outputPreview)
+        assertFalse(canContinueStatus("running"))
+        assertTrue(canContinueStatus("paused"))
+        assertTrue(canStopStatus("paused"))
+        assertEquals("将续会话 sess", continueHint(merged.copy(status = "failed")))
+        assertEquals("任务运行中，请先停止再继续", continueHint(again.copy(status = "running")))
+        assertEquals("尚无会话", resumeCommandLabel(preview))
+        assertEquals("cd /tmp && agent --resume sess", resumeCommandLabel(merged))
+        assertEquals("任务失败", detailError(RelayTask("task_01", "Fix", "failed", 1)))
+    }
+
+    @Test
+    fun acceptedDetailAckDoesNotSettleAndSnapshotKeepsTheFullCard() {
+        val accepted = parseEnvelope(
+            """{"v":1,"id":"r","type":"ack","ts":1,"payload":{"ref":"d","stage":"accepted","boardId":"thinkbook-main"}}""",
+        )
+        assertFalse(detailReplySettled(accepted))
+        val executed = parseEnvelope(
+            """{"v":1,"id":"r2","type":"ack","ts":2,"payload":{"ref":"d","stage":"executed","task":{"id":"task_01","title":"Fix","status":"running","updatedAt":4,"detail":"full","prompt":"full prompt","turns":[{"iteration":1,"prompt":"full prompt","output":"full reply"}]}}}""",
+        )
+        assertTrue(detailReplySettled(executed))
+        assertTrue(detailReplySettled(parseEnvelope(
+            """{"v":1,"id":"e","type":"err","ts":3,"payload":{"ref":"d","code":"board_offline","message":"offline"}}""",
+        )))
+
+        val reducer = BoardReducer()
+        var view = applied(reducer, BoardView("thinkbook-main"), executedTask())
+        assertEquals("full reply", view.tasks.single().turns?.single()?.output)
+        assertFalse(view.sawSnapshot)
+        view = applied(reducer, view, parseEnvelope(
+            """{"v":1,"id":"m","type":"evt.snapshot","ts":5,"payload":{"boardId":"thinkbook-main","generation":1,"seq":2,"eventId":"snap","version":2,"tasks":[{"id":"task_01","title":"Fix","status":"running","updatedAt":5,"promptPreview":"short","outputPreview":"partial"}]}}""",
+        ))
+        assertTrue(view.sawSnapshot)
+        assertEquals("full reply", view.tasks.single().output)
+        assertEquals("full reply", view.tasks.single().turns?.single()?.output)
+        assertEquals("partial", view.tasks.single().outputPreview)
+        assertEquals("running", view.tasks.single().status)
+    }
+
+    @Test
+    fun openingABoardDoesNotEraseASavedWorkspaceBeforeTheSnapshot() {
+        val rooms = listOf(app, other)
+        val waiting = nextWorkspaceSelection("ws_other", emptyList(), emptyList(), sawSnapshot = false)
+        assertEquals("ws_other", waiting.selectedId)
+        assertFalse(waiting.persist)
+        val restored = nextWorkspaceSelection("ws_other", rooms, emptyList(), sawSnapshot = true)
+        assertEquals("ws_other", restored.selectedId)
+        assertFalse(restored.persist)
+        val missing = nextWorkspaceSelection("gone", rooms, emptyList(), sawSnapshot = true)
+        assertEquals("ws_app", missing.selectedId)
+        assertTrue(missing.persist)
+    }
+
+    @Test
+    fun localWorkspaceInsertAndRemovalDoNotDropTasks() {
+        val view = BoardView(
+            boardId = "thinkbook-main",
+            tasks = listOf(RelayTask("a", "Owned", "queued", 1, "cursor", "ws_app")),
+            workspaces = listOf(app),
+        )
+        val added = view.withWorkspace(other)
+        assertEquals(listOf("ws_app", "ws_other"), added.workspaces.map { it.id })
+        val replaced = added.withWorkspace(other.copy(name = "Renamed"))
+        assertEquals("Renamed", replaced.workspaces[1].name)
+        val removed = replaced.withoutWorkspace("ws_other")
+        assertEquals(listOf("ws_app"), removed.workspaces.map { it.id })
+        assertEquals("a", removed.tasks.single().id)
+    }
+
+    private fun executedTask() = parseEnvelope(
+        """{"v":1,"id":"m","type":"evt.task","ts":4,"payload":{"boardId":"thinkbook-main","generation":1,"seq":1,"eventId":"t","task":{"id":"task_01","title":"Fix","status":"running","updatedAt":4,"detail":"full","prompt":"full prompt","output":"full reply","turns":[{"iteration":1,"prompt":"full prompt","output":"full reply"}]}}}""",
+    )
+
+    private fun applied(reducer: BoardReducer, view: BoardView, message: Envelope): BoardView {
+        return (reducer.apply(view, message) as ApplyOutcome.Applied).view
+    }
+
+    private fun snapshot(task: String) = parseEnvelope(
+        """{"v":1,"id":"m1","type":"evt.snapshot","ts":1,"payload":{"boardId":"thinkbook-main","generation":1,"seq":1,"eventId":"snap-1","version":1,"tasks":[$task]}}""",
+    )
+
+    private fun taskEvent(task: String, seq: Long) = parseEnvelope(
+        """{"v":1,"id":"m1","type":"evt.task","ts":$seq,"payload":{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"task-$seq","task":$task}}""",
     )
 }

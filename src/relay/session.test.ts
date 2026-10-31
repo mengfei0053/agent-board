@@ -524,6 +524,101 @@ describe("connector session", () => {
     session.close();
   });
 
+  it("files a task by workspaceId and round-trips workspace create and delete", async () => {
+    const facade = memoryFacade({
+      tasks: [makeTask({ id: "t1", workspaceId: "w1" })],
+      workspaces: [makeWorkspace({ id: "w1", name: "repo", path: "/tmp/repo" })],
+    });
+    let seenWorkspace: string | undefined;
+    facade.createImpl = async (input) => {
+      facade.creates += 1;
+      seenWorkspace = input.workspaceId;
+      const task = makeTask({
+        id: "created",
+        title: input.title,
+        workspaceId: input.workspaceId ?? "w1",
+        cwd: input.cwd,
+        status: "queued",
+        summary: undefined,
+      });
+      facade.tasks.push(task);
+      return task;
+    };
+    const { frames, send } = sentFrames();
+    const idem = new CreateIdempotency();
+    const session = openSession(facade, send, idem);
+    await session.bootstrap();
+    const firstTasks = frames[0]?.payload.tasks as Array<{ id: string; workspaceId?: string }>;
+    assert.equal(firstTasks[0]?.workspaceId, "w1");
+
+    session.handleCommand(createCmd({ workspaceId: "w1", idempotencyKey: "create-ws-task" }));
+    await waitFor(() => frames.some((frame) => frame.type === "ack" && frame.payload.idempotencyKey === "create-ws-task"));
+    assert.equal(seenWorkspace, "w1");
+    const created = frames.find((frame) => frame.payload.idempotencyKey === "create-ws-task")?.payload.task as { workspaceId?: string };
+    assert.equal(created.workspaceId, "w1");
+
+    session.handleCommand(frame("cmd.workspace.create", {
+      boardId: "thinkbook",
+      idempotencyKey: "ws-create-key",
+      name: " Other ",
+      path: "/tmp/other",
+    }, "ws-create-1"));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "ws-create-key"));
+    const wsAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "ws-create-key");
+    const workspace = wsAck?.payload.workspace as { id: string; name: string; path: string; isGit: boolean };
+    assert.equal(workspace.name, "Other");
+    assert.equal(workspace.path, "/tmp/other");
+    assert.equal(workspace.isGit, true);
+    assert.equal(facade.workspaces.length, 2);
+    await waitFor(() => frames.filter((item) => item.type === "evt.snapshot").length >= 2);
+    const names = (frames.filter((item) => item.type === "evt.snapshot").at(-1)?.payload.workspaces as Array<{ name: string }>).map((item) => item.name);
+    assert.deepEqual(names, ["repo", "Other"]);
+
+    session.handleCommand(frame("cmd.workspace.create", {
+      boardId: "thinkbook",
+      idempotencyKey: "ws-create-key",
+      name: "Other",
+      path: "/tmp/other",
+    }, "ws-create-2"));
+    await waitFor(() => frames.filter((item) => item.type === "ack" && item.payload.idempotencyKey === "ws-create-key").length === 2);
+    assert.equal(facade.workspaces.length, 2);
+
+    session.handleCommand(frame("cmd.workspace.delete", {
+      boardId: "thinkbook",
+      idempotencyKey: "ws-del-default",
+      workspaceId: "w1",
+    }, "ws-del-default"));
+    await waitFor(() => frames.some((item) => item.type === "err" && item.id === "ws-del-default"));
+    const blocked = frames.find((item) => item.id === "ws-del-default");
+    assert.equal(blocked?.payload.code, "bad_request");
+    assert.equal(blocked?.payload.message, "cannot delete the default workspace");
+
+    const extraId = workspace.id;
+    facade.tasks.push(makeTask({ id: "owned", workspaceId: extraId }));
+    session.handleCommand(frame("cmd.workspace.delete", {
+      boardId: "thinkbook",
+      idempotencyKey: "ws-del-busy",
+      workspaceId: extraId,
+    }, "ws-del-busy"));
+    await waitFor(() => frames.some((item) => item.type === "err" && item.id === "ws-del-busy"));
+    assert.equal(
+      frames.find((item) => item.id === "ws-del-busy")?.payload.message,
+      "workspace still has tasks; move or delete them first",
+    );
+    facade.tasks.splice(facade.tasks.findIndex((task) => task.id === "owned"), 1);
+
+    session.handleCommand(frame("cmd.workspace.delete", {
+      boardId: "thinkbook",
+      idempotencyKey: "ws-del-ok",
+      workspaceId: extraId,
+    }, "ws-del-ok"));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "ws-del-ok"));
+    assert.equal(frames.find((item) => item.payload.idempotencyKey === "ws-del-ok")?.payload.deleted, extraId);
+    await waitFor(() => facade.workspaces.length === 1);
+    assert.equal(facade.workspaces.some((item) => item.id === extraId), false);
+    session.close();
+  });
+
   it("signals overflow when the bus buffer fills during enrich", async () => {
     const facade = memoryFacade({
       tasks: [makeTask()],

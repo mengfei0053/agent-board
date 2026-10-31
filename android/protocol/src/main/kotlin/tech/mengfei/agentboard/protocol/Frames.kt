@@ -57,6 +57,7 @@ fun validateCreate(
     cwd: String,
     idempotencyKey: String,
     useGitWorktree: Boolean = false,
+    workspaceId: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) {
         return Validated.Invalid("boardId must be 1-64 letters, digits, '.', '_' or '-'")
@@ -78,6 +79,9 @@ fun validateCreate(
     if (!visibleKey.matches(idempotencyKey)) {
         return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
     }
+    if (!workspaceId.isNullOrBlank() && !isWorkspaceId(workspaceId)) {
+        return Validated.Invalid("workspaceId is invalid")
+    }
     return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
@@ -86,7 +90,62 @@ fun validateCreate(
         put("agent", agent)
         put("cwd", cwd)
         if (useGitWorktree) put("useGitWorktree", true)
+        if (!workspaceId.isNullOrBlank()) put("workspaceId", workspaceId)
     }))
+}
+
+fun validateWorkspaceCreate(
+    id: String,
+    ts: Long,
+    boardId: String,
+    name: String,
+    path: String,
+    idempotencyKey: String,
+): Validated<Envelope> {
+    if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
+    val cleanName = name.trim()
+    if (cleanName.isEmpty() || cleanName.length > 200 || name.length > 200 || !isReadableText(cleanName)) {
+        return Validated.Invalid("name is required, up to 200 characters")
+    }
+    val cleanPath = path.trim()
+    if (!isLocalPath(cleanPath) || !cleanPath.startsWith("/")) {
+        return Validated.Invalid("path is required and must be an absolute local path")
+    }
+    if (!visibleKey.matches(idempotencyKey)) {
+        return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
+    }
+    return Validated.Ok(frame(id, ts, "cmd.workspace.create", buildJsonObject {
+        put("boardId", boardId)
+        put("idempotencyKey", idempotencyKey)
+        put("name", cleanName)
+        put("path", cleanPath)
+    }))
+}
+
+fun validateWorkspaceDelete(
+    id: String,
+    ts: Long,
+    boardId: String,
+    workspaceId: String,
+    idempotencyKey: String,
+): Validated<Envelope> {
+    if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
+    if (!isWorkspaceId(workspaceId)) return Validated.Invalid("workspaceId is invalid")
+    if (!visibleKey.matches(idempotencyKey)) {
+        return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
+    }
+    return Validated.Ok(frame(id, ts, "cmd.workspace.delete", buildJsonObject {
+        put("boardId", boardId)
+        put("idempotencyKey", idempotencyKey)
+        put("workspaceId", workspaceId)
+    }))
+}
+
+private fun isReadableText(value: String): Boolean = value.none { it.code in 0..31 || it.code == 127 }
+
+private fun isPromptText(value: String): Boolean = value.none {
+    val code = it.code
+    code == 0 || code == 127 || (code < 32 && code != 9 && code != 10 && code != 13)
 }
 
 fun validateContinue(
@@ -95,7 +154,22 @@ fun validateContinue(
     boardId: String,
     taskId: String,
     idempotencyKey: String,
-): Validated<Envelope> = validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null)
+    prompt: String = "",
+): Validated<Envelope> {
+    val clean = prompt.trim()
+    if (clean.length > 20_000 || (clean.isNotEmpty() && !isPromptText(clean))) {
+        return Validated.Invalid("prompt is required, up to 20000 characters")
+    }
+    return validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null, clean)
+}
+
+fun validateDetail(
+    id: String,
+    ts: Long,
+    boardId: String,
+    taskId: String,
+    idempotencyKey: String,
+): Validated<Envelope> = validateTaskCommand("cmd.detail", id, ts, boardId, taskId, idempotencyKey, null, "")
 
 fun validateStop(
     id: String,
@@ -114,6 +188,7 @@ private fun validateTaskCommand(
     taskId: String,
     idempotencyKey: String,
     reason: String?,
+    prompt: String = "",
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!boardIdPattern.matches(taskId)) return Validated.Invalid("taskId is invalid")
@@ -125,6 +200,7 @@ private fun validateTaskCommand(
         put("taskId", taskId)
         put("idempotencyKey", idempotencyKey)
         if (!reason.isNullOrBlank()) put("reason", reason.take(500))
+        if (prompt.isNotBlank()) put("prompt", prompt)
     }))
 }
 

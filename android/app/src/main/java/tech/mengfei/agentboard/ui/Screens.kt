@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
@@ -26,6 +27,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import tech.mengfei.agentboard.BoardViewModel
@@ -34,7 +37,19 @@ import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
+import tech.mengfei.agentboard.protocol.canContinueStatus
+import tech.mengfei.agentboard.protocol.canStopStatus
+import tech.mengfei.agentboard.protocol.continueHint
 import tech.mengfei.agentboard.protocol.deriveWsUrl
+import tech.mengfei.agentboard.protocol.detailError
+import tech.mengfei.agentboard.protocol.detailPrompt
+import tech.mengfei.agentboard.protocol.detailRounds
+import tech.mengfei.agentboard.protocol.resumeCommandLabel
+import tech.mengfei.agentboard.protocol.statusLabel
+import tech.mengfei.agentboard.protocol.visibleTasks
+import tech.mengfei.agentboard.protocol.workspaceBanner
+import tech.mengfei.agentboard.protocol.workspaceDisplayName
+import tech.mengfei.agentboard.protocol.workspaceSwitchItems
 import java.text.DateFormat
 import java.util.Date
 
@@ -47,6 +62,7 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
         is Screen.Tasks -> state.boards.find { it.boardId == screen.boardId }?.label ?: screen.boardId
         is Screen.Detail -> state.tasks.find { it.id == screen.taskId }?.title ?: screen.taskId
         is Screen.Create -> "New task"
+        is Screen.WorkspaceCreate -> "新建工作区"
     }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -64,6 +80,7 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
             is Screen.Tasks -> TaskScreen(state, model, padding)
             is Screen.Detail -> DetailScreen(state, model, padding)
             is Screen.Create -> CreateScreen(state, model, padding)
+            is Screen.WorkspaceCreate -> WorkspaceCreateScreen(state, model, padding)
         }
     }
 }
@@ -153,28 +170,86 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
                 color = MaterialTheme.colorScheme.error,
             )
         }
+        Banner(state.commandNote)
+        Banner(state.formError)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = model::pop) { Text("Boards") }
             TextButton(onClick = model::openCreate) { Text("New task") }
         }
-        if (state.tasks.isEmpty()) {
-            Text("No tasks in the latest snapshot.", modifier = Modifier.padding(20.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = model::openWorkspaceCreate) { Text("新建工作区") }
+            TextButton(
+                onClick = model::requestDeleteWorkspace,
+                enabled = state.workspaces.any { it.id == state.selectedWorkspaceId },
+            ) { Text("删除") }
+        }
+        if (state.workspaceDeleteMode == "lookup") {
+            TextButton(onClick = model::startDifferentWorkspaceDelete, modifier = Modifier.padding(horizontal = 12.dp)) {
+                Text("Start a different delete (new idempotency key)")
+            }
+        }
+        val chips = workspaceSwitchItems(state.tasks, state.workspaces)
+        if (chips.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                chips.forEach { chip ->
+                    FilterChip(
+                        selected = chip.id == state.selectedWorkspaceId,
+                        onClick = { model.selectWorkspace(chip.id) },
+                        label = { Text(chip.label) },
+                    )
+                }
+            }
+        }
+        val banner = workspaceBanner(state.selectedWorkspaceId, state.workspaces)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text(banner.title, style = MaterialTheme.typography.titleMedium)
+            banner.detail?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        val visible = visibleTasks(state.tasks, state.workspaces, state.selectedWorkspaceId)
+        if (visible.isEmpty()) {
+            Text(
+                if (state.selectedWorkspaceId == null) "当前没有工作区。" else "当前工作区暂无任务",
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
         } else {
-            LazyColumn(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                items(state.tasks, key = { it.id }) { task ->
-                    TaskRow(task) { model.openTask(task.id) }
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
+                items(visible, key = { it.id }) { task ->
+                    TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces)) { model.openTask(task.id) }
                     HorizontalDivider()
                 }
             }
+        }
+        if (state.confirmDeleteWorkspace) {
+            val name = state.workspaces.find { it.id == state.selectedWorkspaceId }?.name ?: ""
+            AlertDialog(
+                onDismissRequest = model::cancelDeleteWorkspace,
+                title = { Text("删除工作区") },
+                text = { Text("删除工作区「$name」？\n若仍有任务将无法删除。") },
+                confirmButton = {
+                    TextButton(
+                        onClick = model::confirmDeleteWorkspace,
+                        enabled = state.createMode != "busy",
+                    ) { Text("删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = model::cancelDeleteWorkspace) { Text("取消") }
+                },
+            )
         }
     }
 }
 
 @Composable
-private fun TaskRow(task: RelayTask, onClick: () -> Unit) {
+private fun TaskRow(task: RelayTask, workspaceLabel: String, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Text(task.title, style = MaterialTheme.typography.titleMedium)
+            Text(workspaceLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 "${task.status}${task.agent?.let { " · $it" } ?: ""}",
                 color = statusColor(task.status),
@@ -186,22 +261,116 @@ private fun TaskRow(task: RelayTask, onClick: () -> Unit) {
 @Composable
 private fun DetailScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     val task = state.tasks.find { it.id == state.selectedTaskId }
+    val clipboard = LocalClipboardManager.current
     ScrollColumn(padding) {
         TextButton(onClick = model::pop) { Text("Tasks") }
         if (task == null) {
             Text("This task is not in the current snapshot.")
         } else {
-            Text(task.status, color = statusColor(task.status), style = MaterialTheme.typography.titleMedium)
-            Text(task.agent ?: "No agent", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "${task.id} · ${task.agent ?: "—"} · ${statusLabel(task.status)} · 迭代 ${task.iteration ?: 1}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text("任务信息", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
+            MetaLine("任务 ID", task.id)
+            MetaLine("状态", statusLabel(task.status))
+            MetaLine("迭代", (task.iteration ?: 1).toString())
+            MetaLine("开始时间", epochLabel(task.startedAt))
+            MetaLine("结束时间", epochLabel(task.endedAt))
+            MetaLine("Agent", task.agent ?: "—")
+            MetaLine("模型", task.model ?: "—")
+            MetaLine("PID", task.pid?.toString() ?: "—")
+            MetaLine("退出码", task.exitCode?.toString() ?: "—")
+            MetaLine("会话", task.sessionId ?: "—")
+            val resume = resumeCommandLabel(task)
+            val resumeCommand = task.resumeCommand
+            MetaLine("继续会话", resume)
+            if (resumeCommand != null) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(resumeCommand)) }) { Text("复制继续会话") }
+            }
+            MetaLine("工作区", workspaceDisplayName(task.workspaceId, state.workspaces))
+            MetaLine("工作目录", task.cwd ?: "—")
+            val branch = task.worktreeBranch
+            if (!branch.isNullOrBlank()) MetaLine("Git 分支", branch)
+            Text("初始提示词", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+            SelectionContainer {
+                Text(detailPrompt(task) ?: "—", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (task.promptTruncated) {
+                Text("提示词已截断", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            val jobs = task.sideJobs.orEmpty()
+            if (jobs.isNotEmpty()) {
+                Text("后台 / Monitor", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                jobs.forEach { job ->
+                    Text("${sideJobKind(job.kind)} · ${sideJobStatus(job.status)}", style = MaterialTheme.typography.labelLarge)
+                    Text(job.title)
+                    val summary = job.summary
+                    if (!summary.isNullOrBlank()) {
+                        Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    val toolName = job.toolName
+                    if (!toolName.isNullOrBlank()) {
+                        Text(toolName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Text("任务进度", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+            detailError(task)?.let {
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+            val rounds = detailRounds(task)
+            if (rounds.isEmpty()) {
+                Text(
+                    if (task.status == "queued" || task.status == "running" || task.status == "paused") "任务进行中，等待本轮回复…" else "暂无本轮回复。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                rounds.forEach { round ->
+                    Text(
+                        "第 ${round.iteration} 轮 · ${round.kindLabel}${if (round.pending) " · 实时" else ""}",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text("提示词", style = MaterialTheme.typography.labelMedium)
+                    SelectionContainer { Text(round.prompt ?: "（无记录）") }
+                    Text("回复", style = MaterialTheme.typography.labelMedium)
+                    val reply = round.output
+                    SelectionContainer {
+                        Text(
+                            when {
+                                !reply.isNullOrBlank() -> reply
+                                round.pending -> "回复生成中…"
+                                else -> "本轮暂无回复"
+                            },
+                        )
+                    }
+                }
+                if (task.outputTruncated) {
+                    Text("回复已截断", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
         Banner(state.commandNote)
         Banner(state.formError)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (task != null && (canStopStatus(task.status) || state.stopMode != "send")) {
             Button(onClick = model::submitStop, enabled = state.stopMode != "busy") {
-                Text(actionLabel(state.stopMode, "Stop"))
+                Text(actionLabel(state.stopMode, "停止"))
             }
-            OutlinedButton(onClick = model::submitContinue, enabled = state.continueMode != "busy") {
-                Text(actionLabel(state.continueMode, "Continue"))
+        }
+        if (task != null) {
+            OutlinedTextField(
+                value = state.continuePrompt,
+                onValueChange = model::updateContinuePrompt,
+                label = { Text("补充续跑说明") },
+                placeholder = { Text("留空则「请基于当前上下文继续完成任务」") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+            )
+            Text(continueHint(task), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val continueEnabled = state.continueMode != "busy" && (state.continueMode != "send" || canContinueStatus(task.status))
+            OutlinedButton(onClick = model::submitContinue, enabled = continueEnabled) {
+                Text(actionLabel(state.continueMode, "继续任务"))
             }
         }
         if (state.stopResend) {
@@ -210,9 +379,9 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
         if (state.continueResend) {
             TextButton(onClick = model::resendContinue) { Text("Send a new continue") }
         }
-        Text("Log", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+        Text("原始日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
         if (state.logs.isEmpty()) {
-            Text("No log lines yet. Lines show up here while this phone is subscribed.")
+            Text("暂无日志。订阅期间的新行会显示在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             SelectionContainer {
                 Column {
@@ -230,9 +399,42 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
 }
 
 @Composable
+private fun MetaLine(label: String, value: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SelectionContainer { Text(value) }
+    }
+}
+
+private fun epochLabel(epoch: Long?): String {
+    if (epoch == null || epoch <= 0L) return "—"
+    return DateFormat.getDateTimeInstance().format(Date(epoch))
+}
+
+private fun sideJobKind(kind: String): String = when (kind) {
+    "agent" -> "子代理"
+    "task" -> "Task"
+    "monitor" -> "Monitor"
+    "background" -> "后台"
+    else -> kind.ifBlank { "其他" }
+}
+
+private fun sideJobStatus(status: String): String = when (status) {
+    "running" -> "进行中"
+    "succeeded" -> "成功"
+    "failed" -> "失败"
+    "stopped" -> "已停止"
+    else -> status.ifBlank { "未知" }
+}
+
+@Composable
 private fun CreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
         TextButton(onClick = model::pop) { Text("Tasks") }
+        val selected = state.workspaces.find { it.id == state.selectedWorkspaceId }
+        if (selected != null && state.draftCwd.trim() == selected.path) {
+            Text("工作区：${selected.name} · ${selected.path}")
+        }
         Text("The connector needs an agent and a local working directory. A path that is not a workspace root still runs, and the board may file it under the default workspace.")
         Banner(state.banner)
         Banner(state.commandNote)
@@ -296,6 +498,41 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
         ) { Text(actionLabel(state.createMode, "Create")) }
         if (state.createMode == "lookup") {
             TextButton(onClick = model::startDifferentCreate) {
+                Text("Start a different command (new idempotency key)")
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
+    ScrollColumn(padding) {
+        TextButton(onClick = model::pop) { Text("Tasks") }
+        Text("名称和路径与网页看板的新建工作区相同。路径必须是 ThinkBook 上的绝对目录。")
+        Banner(state.commandNote)
+        Banner(state.formError)
+        OutlinedTextField(
+            value = state.draftWorkspaceName,
+            onValueChange = model::updateDraftWorkspaceName,
+            label = { Text("名称") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = state.draftWorkspacePath,
+            onValueChange = model::updateDraftWorkspacePath,
+            label = { Text("路径") },
+            placeholder = { Text("/home/me/src/app") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Button(
+            onClick = model::submitWorkspaceCreate,
+            enabled = state.workspaceCreateMode != "busy",
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(actionLabel(state.workspaceCreateMode, "新建")) }
+        if (state.workspaceCreateMode == "lookup") {
+            TextButton(onClick = model::startDifferentWorkspaceCreate) {
                 Text("Start a different command (new idempotency key)")
             }
         }

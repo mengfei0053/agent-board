@@ -7,12 +7,57 @@ import kotlinx.serialization.json.JsonObject
 val TASK_STATUSES = setOf("queued", "running", "paused", "succeeded", "failed", "stopped")
 val TERMINAL_STATUSES = setOf("succeeded", "failed", "stopped")
 
+data class RelayTurn(
+    val iteration: Int,
+    val prompt: String? = null,
+    val output: String? = null,
+    val at: Long? = null,
+)
+
+data class RelaySideJob(
+    val id: String,
+    val kind: String,
+    val title: String,
+    val status: String,
+    val summary: String? = null,
+    val toolName: String? = null,
+)
+
 data class RelayTask(
     val id: String,
     val title: String,
     val status: String,
     val updatedAt: Long,
     val agent: String? = null,
+    val workspaceId: String? = null,
+    val iteration: Int? = null,
+    val cwd: String? = null,
+    val model: String? = null,
+    val sessionId: String? = null,
+    val startedAt: Long? = null,
+    val endedAt: Long? = null,
+    val exitCode: Int? = null,
+    val pid: Int? = null,
+    val error: String? = null,
+    val prompt: String? = null,
+    val output: String? = null,
+    val promptPreview: String? = null,
+    val outputPreview: String? = null,
+    val resumeCommand: String? = null,
+    val worktreeBranch: String? = null,
+    val promptTruncated: Boolean = false,
+    val outputTruncated: Boolean = false,
+    val detailFull: Boolean = false,
+    val turns: List<RelayTurn>? = null,
+    val sideJobs: List<RelaySideJob>? = null,
+)
+
+data class DetailRound(
+    val iteration: Int,
+    val kindLabel: String,
+    val prompt: String?,
+    val output: String?,
+    val pending: Boolean,
 )
 
 data class LogLine(
@@ -44,6 +89,8 @@ data class BoardView(
     val generation: Long? = null,
     val seq: Long? = null,
     val needsResync: Boolean = false,
+    /** False until evt.snapshot. Workspace selection must not be saved before this. */
+    val sawSnapshot: Boolean = false,
 )
 
 data class DoneNotice(
@@ -94,7 +141,9 @@ class BoardReducer(
         val generation = payload.longValue("generation")
         val generationChanged = generation != null && view.generation != null && generation != view.generation
         if (generationChanged) logDedupe.clear()
-        val tasks = readTaskList(payload["tasks"])
+        val tasks = readTaskList(payload["tasks"]).map { incoming ->
+            mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
+        }
         val seq = payload.longValue("seq") ?: payload.longValue("version")
         val stale = snapshotStillStale(generation, seq)
         return ApplyOutcome.Applied(view.copy(
@@ -104,6 +153,7 @@ class BoardReducer(
             generation = generation ?: view.generation,
             seq = seq ?: view.seq,
             needsResync = stale,
+            sawSnapshot = true,
         ))
     }
 
@@ -229,13 +279,275 @@ class EventIdDeduper(private val capacity: Int = 500) {
     fun size(): Int = seen.size
 }
 
+/** Empty id is the phone-local「未分配」bucket. It is not a board workspace id. */
+const val UNASSIGNED_WORKSPACE_ID = ""
+const val UNASSIGNED_LABEL = "未分配"
+
+private val workspaceIdPattern = Regex("^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$")
+
+fun isWorkspaceId(value: String): Boolean = workspaceIdPattern.matches(value)
+
+data class WorkspaceSwitchItem(
+    val id: String,
+    val label: String,
+    val path: String?,
+)
+
+data class WorkspaceBanner(
+    val title: String,
+    val detail: String?,
+)
+
 fun readTask(obj: JsonObject): RelayTask? {
     val id = obj.text("id") ?: return null
     val title = obj.text("title") ?: return null
     val status = obj.text("status") ?: return null
     if (status !in TASK_STATUSES) return null
     val updatedAt = obj.longValue("updatedAt") ?: return null
-    return RelayTask(id, title, status, updatedAt, obj.text("agent"))
+    return RelayTask(
+        id = id,
+        title = title,
+        status = status,
+        updatedAt = updatedAt,
+        agent = obj.text("agent"),
+        workspaceId = readWorkspaceId(obj),
+        iteration = obj.intValue("iteration"),
+        cwd = obj.text("cwd"),
+        model = obj.text("model"),
+        sessionId = obj.text("sessionId"),
+        startedAt = obj.longValue("startedAt"),
+        endedAt = obj.longValue("endedAt"),
+        exitCode = obj.intValue("exitCode"),
+        pid = obj.intValue("pid"),
+        error = obj.text("error"),
+        prompt = obj.text("prompt"),
+        output = obj.text("output"),
+        promptPreview = obj.text("promptPreview"),
+        outputPreview = obj.text("outputPreview"),
+        resumeCommand = obj.text("resumeCommand"),
+        worktreeBranch = obj.text("worktreeBranch"),
+        promptTruncated = obj.bool("promptTruncated") == true,
+        outputTruncated = obj.bool("outputTruncated") == true,
+        detailFull = obj.text("detail") == "full",
+        turns = readTurns(obj),
+        sideJobs = readSideJobs(obj),
+    )
+}
+
+/**
+ * A snapshot row omits `detail: "full"`. Keep the richer card already loaded
+ * for this task. A full frame replaces prompts, replies, and side jobs.
+ */
+fun mergeRelayTask(previous: RelayTask?, incoming: RelayTask): RelayTask {
+    if (previous == null || previous.id != incoming.id) return incoming
+    if (incoming.detailFull) {
+        return incoming.copy(
+            promptPreview = incoming.promptPreview ?: previous.promptPreview,
+            outputPreview = incoming.outputPreview ?: previous.outputPreview,
+        )
+    }
+    return incoming.copy(
+        prompt = previous.prompt,
+        output = previous.output,
+        turns = previous.turns,
+        sideJobs = previous.sideJobs,
+        detailFull = previous.detailFull,
+        promptTruncated = previous.promptTruncated || incoming.promptTruncated,
+        outputTruncated = previous.outputTruncated || incoming.outputTruncated,
+    )
+}
+
+fun statusLabel(status: String): String = when (status) {
+    "queued" -> "Todo"
+    "running" -> "进行中"
+    "paused" -> "等待确认"
+    "succeeded" -> "成功"
+    "failed" -> "失败"
+    "stopped" -> "已停止"
+    else -> status
+}
+
+fun canStopStatus(status: String): Boolean = status == "queued" || status == "running" || status == "paused"
+
+/** Web continue is hidden for draft and disabled while queued or running. Paused (blocked) can continue. */
+fun canContinueStatus(status: String): Boolean = status != "queued" && status != "running"
+
+fun continueHint(task: RelayTask): String {
+    if (!canContinueStatus(task.status)) return "任务运行中，请先停止再继续"
+    val session = task.sessionId
+    return if (!session.isNullOrBlank()) "将续会话 $session" else "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+}
+
+fun resumeCommandLabel(task: RelayTask): String {
+    val command = task.resumeCommand
+    if (!command.isNullOrBlank()) return command
+    return if (task.sessionId.isNullOrBlank()) "尚无会话" else "—"
+}
+
+fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
+
+fun detailRounds(task: RelayTask): List<DetailRound> {
+    val turns = task.turns
+    if (!turns.isNullOrEmpty()) {
+        val live = task.status == "queued" || task.status == "running" || task.status == "paused"
+        val current = task.iteration
+        return turns.map { turn ->
+            DetailRound(
+                iteration = turn.iteration,
+                kindLabel = if (turn.iteration <= 1) "初始" else "继续",
+                prompt = turn.prompt,
+                output = turn.output,
+                pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
+            )
+        }
+    }
+    val prompt = detailPrompt(task)
+    val output = task.output ?: task.outputPreview
+    if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
+    val iteration = task.iteration ?: 1
+    val live = task.status == "queued" || task.status == "running" || task.status == "paused"
+    return listOf(DetailRound(iteration, if (iteration <= 1) "初始" else "继续", prompt, output, live && output.isNullOrBlank()))
+}
+
+fun detailError(task: RelayTask): String? {
+    val hasOutput = !task.output.isNullOrBlank() || !task.outputPreview.isNullOrBlank() ||
+        task.turns?.any { !it.output.isNullOrBlank() } == true
+    if (task.status != "failed" && !(task.status == "stopped" && !hasOutput)) return null
+    val bits = mutableListOf<String>()
+    if (!task.error.isNullOrBlank()) bits.add(task.error)
+    if (task.exitCode != null && task.exitCode != 0) bits.add("退出码 ${task.exitCode}")
+    if (bits.isEmpty()) bits.add(if (task.status == "stopped") "已由用户停止" else "任务失败")
+    return bits.joinToString("\n")
+}
+
+private fun readTurns(obj: JsonObject): List<RelayTurn>? {
+    if ("turns" !in obj) return null
+    val array = obj.array("turns") ?: return null
+    return array.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val iteration = row.intValue("iteration") ?: return@mapNotNull null
+        RelayTurn(iteration, row.text("prompt"), row.text("output"), row.longValue("at"))
+    }
+}
+
+private fun readSideJobs(obj: JsonObject): List<RelaySideJob>? {
+    if ("sideJobs" !in obj) return null
+    val array = obj.array("sideJobs") ?: return null
+    return array.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val id = row.text("id") ?: return@mapNotNull null
+        val title = row.text("title") ?: return@mapNotNull null
+        val status = row.text("status") ?: return@mapNotNull null
+        RelaySideJob(id, row.text("kind") ?: "other", title, status, row.text("summary"), row.text("toolName"))
+    }
+}
+
+/**
+ * A missing or unusable `workspaceId` is unassigned.
+ * An omitted field and a malformed field both parse; the task is not dropped.
+ */
+fun readWorkspaceId(obj: JsonObject): String? {
+    if ("workspaceId" !in obj) return null
+    val id = obj.text("workspaceId") ?: return null
+    if (!isWorkspaceId(id)) return null
+    return id
+}
+
+fun readThinWorkspace(obj: JsonObject): ThinWorkspace? {
+    val id = obj.text("id") ?: return null
+    val name = obj.text("name") ?: return null
+    val path = obj.text("path") ?: return null
+    val isGit = obj.bool("isGit") ?: return null
+    if (!isWorkspaceId(id) || name.isBlank() || path.isBlank() || "://" in path) return null
+    return ThinWorkspace(id, name, path, isGit)
+}
+
+fun unassignedTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<RelayTask> {
+    val known = workspaces.mapTo(HashSet()) { it.id }
+    return tasks.filter { task ->
+        val id = task.workspaceId
+        id.isNullOrBlank() || id !in known
+    }
+}
+
+/** Tasks for the web-style selected workspace. `null` shows nothing. `""` is 「未分配」. */
+fun visibleTasks(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>, selectedId: String?): List<RelayTask> {
+    if (selectedId == null) return emptyList()
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return unassignedTasks(tasks, workspaces)
+    return tasks.filter { it.workspaceId == selectedId }
+}
+
+fun workspaceSwitchItems(tasks: List<RelayTask>, workspaces: List<ThinWorkspace>): List<WorkspaceSwitchItem> {
+    val items = workspaces.map { WorkspaceSwitchItem(it.id, it.name, it.path) }
+    if (unassignedTasks(tasks, workspaces).isEmpty()) return items
+    return items + WorkspaceSwitchItem(UNASSIGNED_WORKSPACE_ID, UNASSIGNED_LABEL, null)
+}
+
+data class WorkspaceSelectionUpdate(val selectedId: String?, val persist: Boolean)
+
+/**
+ * Before the first snapshot, keep the saved workspace and do not write it back.
+ * After a snapshot, keep it when it still exists; otherwise pick the fallback and persist that.
+ */
+fun nextWorkspaceSelection(
+    remembered: String?,
+    workspaces: List<ThinWorkspace>,
+    tasks: List<RelayTask>,
+    sawSnapshot: Boolean,
+): WorkspaceSelectionUpdate {
+    if (!sawSnapshot) return WorkspaceSelectionUpdate(remembered, persist = false)
+    val resolved = resolveWorkspaceSelection(remembered, workspaces, tasks)
+    return WorkspaceSelectionUpdate(resolved, persist = resolved != remembered)
+}
+
+/**
+ * Keep an explicit selection when it still exists.
+ * A missing selection prefers the first workspace that has tasks, then 「未分配」,
+ * then the first workspace. That matches the web board's single-workspace view
+ * without hiding every task in an empty workspace.
+ */
+fun resolveWorkspaceSelection(
+    current: String?,
+    workspaces: List<ThinWorkspace>,
+    tasks: List<RelayTask>,
+): String? {
+    if (current == UNASSIGNED_WORKSPACE_ID && unassignedTasks(tasks, workspaces).isNotEmpty()) {
+        return UNASSIGNED_WORKSPACE_ID
+    }
+    if (current != null && workspaces.any { it.id == current }) return current
+    val withTasks = workspaces.firstOrNull { workspace -> tasks.any { it.workspaceId == workspace.id } }
+    if (withTasks != null) return withTasks.id
+    if (unassignedTasks(tasks, workspaces).isNotEmpty()) return UNASSIGNED_WORKSPACE_ID
+    if (workspaces.isNotEmpty()) return workspaces.first().id
+    return null
+}
+
+fun workspaceBanner(selectedId: String?, workspaces: List<ThinWorkspace>): WorkspaceBanner {
+    if (selectedId == null) return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+    if (selectedId == UNASSIGNED_WORKSPACE_ID) return WorkspaceBanner(UNASSIGNED_LABEL, "这些任务没有对应的工作区")
+    val workspace = workspaces.find { it.id == selectedId } ?: return WorkspaceBanner("未选择工作区", "请新建或选择工作区")
+    return WorkspaceBanner(workspace.name, workspace.path)
+}
+
+/** Web detail uses the workspace name. A missing id is 「未分配」. */
+fun workspaceDisplayName(workspaceId: String?, workspaces: List<ThinWorkspace>): String {
+    if (workspaceId.isNullOrBlank()) return UNASSIGNED_LABEL
+    return workspaces.find { it.id == workspaceId }?.name ?: UNASSIGNED_LABEL
+}
+
+/** Opening New task copies the selected workspace path unless the user already typed another cwd. */
+fun cwdForNewTask(currentCwd: String, selectedPath: String?, workspacePaths: Collection<String>): String {
+    if (selectedPath == null) return currentCwd
+    val trimmed = currentCwd.trim()
+    if (trimmed.isEmpty() || trimmed in workspacePaths) return selectedPath
+    return currentCwd
+}
+
+/** Send `workspaceId` only while cwd is still that workspace path, matching web create. */
+fun workspaceIdForCreate(cwd: String, selectedId: String?, selectedPath: String?): String? {
+    if (selectedId.isNullOrEmpty() || selectedPath == null) return null
+    if (cwd.trim() != selectedPath) return null
+    return selectedId
 }
 
 fun worktreeAllowed(cwd: String, workspaces: List<ThinWorkspace>): Boolean {
@@ -345,8 +657,21 @@ fun BoardView.withLocalTask(task: RelayTask): BoardView {
     return copy(tasks = upsert(tasks, task))
 }
 
+fun BoardView.withWorkspace(workspace: ThinWorkspace): BoardView {
+    val index = workspaces.indexOfFirst { it.id == workspace.id }
+    if (index < 0) return copy(workspaces = workspaces + workspace)
+    val next = workspaces.toMutableList()
+    next[index] = workspace
+    return copy(workspaces = next)
+}
+
+fun BoardView.withoutWorkspace(id: String): BoardView {
+    return copy(workspaces = workspaces.filterNot { it.id == id })
+}
+
 private fun upsert(tasks: List<RelayTask>, task: RelayTask): List<RelayTask> {
-    return (tasks.filterNot { it.id == task.id } + task).sortedByDescending { it.updatedAt }
+    val merged = mergeRelayTask(tasks.find { it.id == task.id }, task)
+    return (tasks.filterNot { it.id == task.id } + merged).sortedByDescending { it.updatedAt }
 }
 
 fun sessionRejected(message: Envelope): Boolean {
