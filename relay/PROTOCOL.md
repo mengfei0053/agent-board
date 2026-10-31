@@ -74,6 +74,7 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `cmd.stop` | phone | board | Stop a task. The connector emits `evt.task.done` once. |
 | `cmd.workspace.create` | phone | board | Create a workspace (`name` + `path`). |
 | `cmd.workspace.delete` | phone | board | Delete a workspace. Refuses the default workspace and any workspace that still has tasks. |
+| `cmd.detail` | phone | board | Read one task's detail card. Does not change the task. |
 | `cmd.lookup` | phone | relay | Read the stored result of an idempotency key. |
 | `evt.task` | board | task subscribers | Task state changed. |
 | `evt.log` | board | log subscribers | One log line. |
@@ -188,7 +189,9 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 }
 ```
 
-`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`.
+`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters.
+
+`cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task.
 
 ```json
 {
@@ -383,6 +386,18 @@ Offline:
 `workspaces` is optional. When present it is a list of at most 50 `{ id, name, path, isGit }` entries. `name` is 1–200 characters. `isGit` is the board's eligibility bit for that workspace path. A frame without `workspaces` is still valid. If any entry is malformed, the snapshot is `bad_request` and is not applied.
 
 Each task may include optional `workspaceId` (1–64 characters: letters, digits, `_`, `.`, `-`). It is the board workspace this task belongs to. `evt.task`, `evt.snapshot` tasks, and the task object on an executed `cmd.create` ack all use it. Frames that omit `workspaceId` stay valid; the phone treats a missing id as unassigned. A present but invalid `workspaceId` is `bad_request` and that frame is not applied.
+
+The same task object may carry the web detail card. All of these fields are optional, and a frame that omits them is still valid:
+
+| Field | Meaning |
+| --- | --- |
+| `iteration`, `cwd`, `model`, `sessionId`, `startedAt`, `endedAt`, `exitCode`, `pid`, `error`, `worktreeBranch` | The 任务信息 rows. Times are epoch milliseconds. |
+| `resumeCommand` | The copyable 继续会话 command. Absent when the task has no session id. |
+| `promptPreview`, `outputPreview` | Short text on a snapshot so the list frame stays small. |
+| `detail` | `"full"` on `evt.task` and `cmd.detail`. The phone keeps a previously loaded full card when a later snapshot omits it. |
+| `prompt`, `output`, `turns`, `sideJobs` | Full card only. `turns` is at most 12 `{ iteration, prompt?, output?, at? }` rows. `sideJobs` is at most 20 `{ id, kind, title, status, summary?, toolName? }`. Text is clipped; `promptTruncated` / `outputTruncated` say so. Newlines are allowed. |
+
+Delete, archive, and draft start stay on the web board. The phone detail uses stop, continue, the resume command, the progress rounds, and the live log tail.
 
 ```json
 {

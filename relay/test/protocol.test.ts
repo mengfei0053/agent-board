@@ -152,6 +152,59 @@ test("workspace commands keep their fields and drop unknown ones", () => {
   assert.equal(ack.envelope.payload?.extra, undefined);
 });
 
+test("task detail fields and cmd.detail round-trip", () => {
+  const parsed = parseMessage(frame("evt.task", "task-detail", {
+    boardId: "thinkbook-main",
+    generation: 1,
+    seq: 2,
+    eventId: "task-detail",
+    task: {
+      id: "task_01",
+      title: "Fix login flake",
+      status: "running",
+      updatedAt: 10,
+      agent: "cursor",
+      workspaceId: "ws_app",
+      iteration: 2,
+      cwd: "/home/me/src/app",
+      sessionId: "sess-123",
+      promptPreview: "short",
+      resumeCommand: "cd /home/me/src/app && agent --resume sess-123",
+      detail: "full",
+      prompt: "line one\nline two",
+      turns: [{ iteration: 1, prompt: "line one\nline two", output: "reply" }],
+      sideJobs: [{ id: "j1", kind: "monitor", title: "watch", status: "running" }],
+    },
+  }));
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok || parsed.kind !== "evt.task") return;
+  const task = parsed.envelope.payload?.task as { detail?: string; resumeCommand?: string; turns?: unknown[] };
+  assert.equal(task.detail, "full");
+  assert.equal(task.resumeCommand?.includes("agent --resume"), true);
+  assert.equal(task.turns?.length, 1);
+
+  const detail = parseMessage(frame("cmd.detail", "detail-1", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "android-detail-01",
+    taskId: "task_01",
+    note: "drop",
+  }));
+  assert.equal(detail.ok, true);
+  if (!detail.ok || detail.kind !== "cmd.detail") return;
+  assert.equal(detail.taskId, "task_01");
+  assert.equal(detail.envelope.payload?.note, undefined);
+
+  const continued = parseMessage(frame("cmd.continue", "cont-prompt", {
+    boardId: "thinkbook-main",
+    idempotencyKey: "idem-continue",
+    taskId: "task_01",
+    prompt: "keep going\nplease",
+  }));
+  assert.equal(continued.ok, true);
+  if (!continued.ok || continued.kind !== "cmd.continue") return;
+  assert.equal(continued.envelope.payload?.prompt, "keep going\nplease");
+});
+
 function frame(type: string, id: string, payload: Record<string, unknown>) {
   return { v: 1, id, type, ts: 1761890000000, payload };
 }

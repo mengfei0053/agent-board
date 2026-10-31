@@ -116,10 +116,12 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       task.status = "stopped";
       return { ...task };
     },
-    continue: async (id: string) => {
+    task: (id: string) => tasks.find((item) => item.id === id),
+    continue: async (id: string, prompt?: string) => {
       const task = tasks.find((item) => item.id === id);
       if (!task) throw new Error("not found");
       task.status = "running";
+      if (prompt) task.prompt = prompt;
       return { ...task };
     },
     createWorkspace: async (input: FacadeWorkspaceInput) => {

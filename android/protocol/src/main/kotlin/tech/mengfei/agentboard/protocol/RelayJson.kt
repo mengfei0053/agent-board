@@ -22,6 +22,12 @@ internal fun JsonObject.text(key: String): String? {
     return primitive.content
 }
 
+internal fun JsonObject.intValue(key: String): Int? {
+    val value = longValue(key) ?: return null
+    if (value < Int.MIN_VALUE || value > Int.MAX_VALUE) return null
+    return value.toInt()
+}
+
 internal fun JsonObject.longValue(key: String): Long? {
     val primitive = this[key] as? JsonPrimitive ?: return null
     if (primitive.isString) return null

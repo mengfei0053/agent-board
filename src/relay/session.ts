@@ -6,7 +6,7 @@ import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import type { BoardFacade } from "./facade.js";
 import { CreateIdempotency, WorkspaceIdempotency } from "./idempotency.js";
 import { RELAY_LIMITS } from "./limits.js";
-import { isAgentKind, mapBoardTask, WORKSPACE_ID, type MappedTask } from "./map.js";
+import { isAgentKind, mapBoardTask, wireMappedTask, WORKSPACE_ID, type MappedTask } from "./map.js";
 import { enrichWorkspaces } from "./workspaces.js";
 
 const VISIBLE_KEY = /^[\x21-\x7E]{8,80}$/;
@@ -243,6 +243,10 @@ export class ConnectorSession {
         await this.applyTaskCommand(message);
         return;
       }
+      if (message.type === "cmd.detail") {
+        await this.applyDetail(message);
+        return;
+      }
       this.fail(message, new RelayCommandError("bad_request", "unsupported command"));
     } catch (err) {
       this.fail(message, relayErrorFrom(err));
@@ -268,7 +272,7 @@ export class ConnectorSession {
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: key,
-      task: wireMapped(task),
+      task: wireMappedTask(task, "full"),
     }, message.id);
   }
 
@@ -278,9 +282,14 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError(parsed.code, parsed.message));
       return;
     }
+    const prompt = message.type === "cmd.continue" ? readContinuePrompt(message.payload) : { ok: true as const, prompt: undefined };
+    if (!prompt.ok) {
+      this.fail(message, new RelayCommandError(prompt.code, prompt.message));
+      return;
+    }
     const task = message.type === "cmd.stop"
       ? await this.opts.facade.stop(parsed.taskId)
-      : await this.opts.facade.continue(parsed.taskId);
+      : await this.opts.facade.continue(parsed.taskId, prompt.prompt);
     const mapped = mapBoardTask(task);
     if (!mapped) throw new RelayCommandError("board_http", "board request failed");
     if (this.closed) return;
@@ -289,7 +298,33 @@ export class ConnectorSession {
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: parsed.key,
-      task: wireMapped(mapped),
+      task: wireMappedTask(mapped, "full"),
+    }, message.id);
+  }
+
+  private async applyDetail(message: Envelope): Promise<void> {
+    const parsed = parseTaskCommand(message.payload, this.opts.boardId);
+    if (!parsed.ok) {
+      this.fail(message, new RelayCommandError(parsed.code, parsed.message));
+      return;
+    }
+    const task = this.opts.facade.task(parsed.taskId);
+    if (!task) {
+      this.fail(message, new RelayCommandError("task_not_found", "task not found"));
+      return;
+    }
+    const mapped = mapBoardTask(task);
+    if (!mapped) {
+      this.fail(message, new RelayCommandError("bad_request", "task is not available"));
+      return;
+    }
+    if (this.closed) return;
+    this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      task: wireMappedTask(mapped, "full"),
     }, message.id);
   }
 
@@ -359,20 +394,21 @@ function isLiveCommand(type: string): boolean {
   return type === "cmd.create"
     || type === "cmd.continue"
     || type === "cmd.stop"
+    || type === "cmd.detail"
     || type === "cmd.workspace.create"
     || type === "cmd.workspace.delete";
 }
 
-function wireMapped(task: MappedTask): Record<string, unknown> {
-  return {
-    id: task.id,
-    title: task.title,
-    status: task.status,
-    updatedAt: task.updatedAt,
-    ...(task.agent ? { agent: task.agent } : {}),
-    ...(task.summary ? { summary: task.summary } : {}),
-    ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
-  };
+function readContinuePrompt(
+  payload: Record<string, unknown>,
+): { ok: true; prompt?: string } | { ok: false; code: string; message: string } {
+  if (!("prompt" in payload) || payload.prompt == null || payload.prompt === "") return { ok: true };
+  if (typeof payload.prompt !== "string") return { ok: false, code: "bad_request", message: "prompt must be a string" };
+  const prompt = payload.prompt.trim();
+  if (!prompt) return { ok: true };
+  if (prompt.length > 20_000) return { ok: false, code: "bad_request", message: "prompt is too long" };
+  if ([...prompt].some((ch) => ch === "\u0000")) return { ok: false, code: "bad_request", message: "prompt is invalid" };
+  return { ok: true, prompt };
 }
 
 type ParsedCreate =

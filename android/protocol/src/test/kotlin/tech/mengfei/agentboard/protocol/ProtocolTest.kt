@@ -390,6 +390,14 @@ class CreatePayloadTest {
         val cont = validateContinue("phone-continue-1", 21, "thinkbook-main", "task_01", "idem-continue") as Validated.Ok
         assertEquals("cmd.continue", cont.value.type)
         assertNull(cont.value.payload.text("reason"))
+        assertNull(cont.value.payload.text("prompt"))
+        val withPrompt = validateContinue(
+            "phone-continue-1", 21, "thinkbook-main", "task_01", "idem-continue", "keep going",
+        ) as Validated.Ok
+        assertEquals("keep going", withPrompt.value.payload.text("prompt"))
+        val detail = validateDetail("phone-detail-1", 22, "thinkbook-main", "task_01", "android-detail-01") as Validated.Ok
+        assertEquals("cmd.detail", detail.value.type)
+        assertEquals("task_01", detail.value.payload.text("taskId"))
     }
 }
 
@@ -693,6 +701,45 @@ class WorkspaceListTest {
         assertEquals("cmd.workspace.delete", deleted.value.type)
         assertEquals("_nanoid01", deleted.value.payload.text("workspaceId"))
         assertTrue(validateWorkspaceDelete("id", 1, "thinkbook-main", "bad id", "android-ws-del-1") is Validated.Invalid)
+    }
+
+    @Test
+    fun fullDetailReplacesTurnsAndASnapshotPreviewDoesNot() {
+        val preview = RelayTask(
+            id = "task_01",
+            title = "Fix",
+            status = "running",
+            updatedAt = 2,
+            agent = "cursor",
+            iteration = 1,
+            promptPreview = "short",
+            outputPreview = "partial",
+        )
+        val full = preview.copy(
+            detailFull = true,
+            prompt = "full prompt",
+            output = "full reply",
+            turns = listOf(RelayTurn(1, "full prompt", "full reply")),
+            sideJobs = listOf(RelaySideJob("j1", "monitor", "watch", "running")),
+            resumeCommand = "cd /tmp && agent --resume sess",
+            sessionId = "sess",
+        )
+        val merged = mergeRelayTask(preview, full)
+        assertEquals("full reply", merged.output)
+        assertEquals(1, detailRounds(merged).size)
+        assertEquals("full prompt", detailRounds(merged).single().prompt)
+        val again = mergeRelayTask(merged, preview.copy(status = "succeeded", updatedAt = 3, outputPreview = "partial"))
+        assertEquals("succeeded", again.status)
+        assertEquals("full reply", again.output)
+        assertEquals("partial", again.outputPreview)
+        assertFalse(canContinueStatus("running"))
+        assertTrue(canContinueStatus("paused"))
+        assertTrue(canStopStatus("paused"))
+        assertEquals("将续会话 sess", continueHint(merged.copy(status = "failed")))
+        assertEquals("任务运行中，请先停止再继续", continueHint(again.copy(status = "running")))
+        assertEquals("尚无会话", resumeCommandLabel(preview))
+        assertEquals("cd /tmp && agent --resume sess", resumeCommandLabel(merged))
+        assertEquals("任务失败", detailError(RelayTask("task_01", "Fix", "failed", 1)))
     }
 
     @Test

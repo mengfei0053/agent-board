@@ -6,7 +6,7 @@ export const RELAY_LIMITS = {
   /** Pre-session inbound relay frames buffered before the session can take commands. */
   maxPendingFrames: 32,
   /**
-   * Live `cmd.create` / `cmd.continue` / `cmd.stop` / `cmd.workspace.*` jobs on the session serial
+   * Live `cmd.create` / `cmd.continue` / `cmd.stop` / `cmd.detail` / `cmd.workspace.*` jobs on the session serial
    * tail, including the one currently running. The next command is rejected
    * and the socket is closed. Other inbound frames are ignored.
    */

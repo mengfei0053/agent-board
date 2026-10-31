@@ -58,6 +58,7 @@ import tech.mengfei.agentboard.protocol.sessionRejected
 import tech.mengfei.agentboard.protocol.subLogsEnvelope
 import tech.mengfei.agentboard.protocol.subTasksEnvelope
 import tech.mengfei.agentboard.protocol.validateContinue
+import tech.mengfei.agentboard.protocol.validateDetail
 import tech.mengfei.agentboard.protocol.ThinWorkspace
 import tech.mengfei.agentboard.protocol.cwdForNewTask
 import tech.mengfei.agentboard.protocol.resolveWorkspaceSelection
@@ -123,6 +124,7 @@ data class UiState(
     val workspaceCreateMode: String = "send",
     val workspaceDeleteMode: String = "send",
     val confirmDeleteWorkspace: Boolean = false,
+    val continuePrompt: String = "",
     val canPop: Boolean = false,
 )
 
@@ -147,6 +149,7 @@ class BoardViewModel(
     private var resyncJob: Job? = null
     private var pendingHello: String? = null
     private var pendingList: String? = null
+    private var pendingDetailId: String? = null
     private val doneDedupe = EventIdDeduper()
     private var reducer = BoardReducer(doneDedupe = doneDedupe)
     private var view = BoardView("")
@@ -195,6 +198,7 @@ class BoardViewModel(
     fun updateDraftCwd(value: String) = _state.updateCopy { copy(draftCwd = value, draftUseGitWorktree = false) }
     fun updateDraftWorkspaceName(value: String) = _state.updateCopy { copy(draftWorkspaceName = value) }
     fun updateDraftWorkspacePath(value: String) = _state.updateCopy { copy(draftWorkspacePath = value) }
+    fun updateContinuePrompt(value: String) = _state.updateCopy { copy(continuePrompt = value) }
 
     fun setUseGitWorktree(value: Boolean) {
         val current = _state.value
@@ -491,8 +495,9 @@ class BoardViewModel(
 
     fun openTask(taskId: String) {
         val boardId = _state.value.selectedBoardId ?: return
-        _state.updateCopy { copy(selectedTaskId = taskId) }
+        _state.updateCopy { copy(selectedTaskId = taskId, formError = null) }
         push(Screen.Detail(boardId, taskId))
+        requestDetail(boardId, taskId)
         render()
     }
 
@@ -594,7 +599,7 @@ class BoardViewModel(
             )
             "cmd.workspace.delete" -> validateWorkspaceDelete(requestId, ts, boardId, taskId ?: return, key)
             "cmd.stop" -> validateStop(requestId, ts, boardId, taskId ?: return, key)
-            else -> validateContinue(requestId, ts, boardId, taskId ?: return, key)
+            else -> validateContinue(requestId, ts, boardId, taskId ?: return, key, draft.continuePrompt)
         }
         when (built) {
             is Validated.Invalid -> {
@@ -676,6 +681,18 @@ class BoardViewModel(
         val listed = if (message.type == "ack") parseBoardList(message.payload) else null
         if (ref != null && ref == pendingList && listed != null) {
             boards = listed
+            render()
+            return
+        }
+        if (ref != null && ref == pendingDetailId) {
+            pendingDetailId = null
+            val interpreted = interpretCommand(message)
+            val task = interpreted?.task
+            if (task != null && view.boardId == _state.value.selectedBoardId) {
+                view = view.withLocalTask(task)
+            } else if (message.type == "err" && interpreted != null) {
+                formError = interpreted.summary
+            }
             render()
             return
         }
@@ -855,6 +872,13 @@ class BoardViewModel(
             if (_state.value.screen is Screen.WorkspaceCreate) pop()
         }
         render()
+    }
+
+    private fun requestDetail(boardId: String, taskId: String) {
+        if (connection != "online") return
+        val requestId = ids()
+        val built = validateDetail(requestId, clock(), boardId, taskId, keys())
+        if (built is Validated.Ok && send(built.value)) pendingDetailId = requestId
     }
 
     private fun resubscribe(boardId: String) {

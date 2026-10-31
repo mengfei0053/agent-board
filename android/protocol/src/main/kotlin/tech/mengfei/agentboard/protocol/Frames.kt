@@ -143,13 +143,33 @@ fun validateWorkspaceDelete(
 
 private fun isReadableText(value: String): Boolean = value.none { it.code in 0..31 || it.code == 127 }
 
+private fun isPromptText(value: String): Boolean = value.none {
+    val code = it.code
+    code == 0 || code == 127 || (code < 32 && code != 9 && code != 10 && code != 13)
+}
+
 fun validateContinue(
     id: String,
     ts: Long,
     boardId: String,
     taskId: String,
     idempotencyKey: String,
-): Validated<Envelope> = validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null)
+    prompt: String = "",
+): Validated<Envelope> {
+    val clean = prompt.trim()
+    if (clean.length > 20_000 || (clean.isNotEmpty() && !isPromptText(clean))) {
+        return Validated.Invalid("prompt is required, up to 20000 characters")
+    }
+    return validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null, clean)
+}
+
+fun validateDetail(
+    id: String,
+    ts: Long,
+    boardId: String,
+    taskId: String,
+    idempotencyKey: String,
+): Validated<Envelope> = validateTaskCommand("cmd.detail", id, ts, boardId, taskId, idempotencyKey, null, "")
 
 fun validateStop(
     id: String,
@@ -168,6 +188,7 @@ private fun validateTaskCommand(
     taskId: String,
     idempotencyKey: String,
     reason: String?,
+    prompt: String = "",
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!boardIdPattern.matches(taskId)) return Validated.Invalid("taskId is invalid")
@@ -179,6 +200,7 @@ private fun validateTaskCommand(
         put("taskId", taskId)
         put("idempotencyKey", idempotencyKey)
         if (!reason.isNullOrBlank()) put("reason", reason.take(500))
+        if (prompt.isNotBlank()) put("prompt", prompt)
     }))
 }
 

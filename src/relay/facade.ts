@@ -11,7 +11,7 @@ import {
   workspaceSnapshot,
 } from "../manager.js";
 import { resolveAllowedDirectory } from "../paths.js";
-import { deleteWorkspace as removeWorkspace, upsertWorkspace as saveWorkspace } from "../store.js";
+import { deleteWorkspace as removeWorkspace, getTask as readStoredTask, upsertWorkspace as saveWorkspace } from "../store.js";
 import type { AgentKind, BoardEvent, CreateTaskInput, Task, Workspace } from "../types.js";
 import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import { isAgentKind, WORKSPACE_ID } from "./map.js";
@@ -43,7 +43,9 @@ export type BoardFacade = {
   gitEligibility(path: string): Promise<{ ok: boolean }>;
   create(input: FacadeCreateInput): Promise<Task>;
   stop(id: string): Promise<Task>;
-  continue(id: string): Promise<Task>;
+  /** Raw task for `cmd.detail`. Not the clipped list snapshot. */
+  task(id: string): Task | undefined;
+  continue(id: string, prompt?: string): Promise<Task>;
   /** Same store path as `POST /api/workspaces` (`name` + `path` only). */
   createWorkspace(input: FacadeWorkspaceInput): Promise<Workspace>;
   /**
@@ -60,7 +62,8 @@ export type BoardFacadeDeps = {
   gitEligibility?: (path: string) => Promise<{ ok: boolean }>;
   createAndStart?: (input: CreateTaskInput) => Promise<Task>;
   stopTask?: (id: string) => Promise<Task>;
-  continueTask?: (id: string) => Promise<Task>;
+  task?: (id: string) => Task | undefined;
+  continueTask?: (id: string, prompt?: string) => Promise<Task>;
   subscribe?: (fn: (ev: BoardEvent) => void) => () => void;
   resolveAllowedDirectory?: (input: string, label?: string) => string;
   upsertWorkspace?: (ws: Workspace) => Promise<Workspace>;
@@ -107,10 +110,17 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
         throw relayErrorFrom(err);
       }
     },
-    continue: async (id) => {
+    task: (id) => (deps.task ? deps.task(id) : readStoredTask(id)),
+    continue: async (id, prompt) => {
       try {
-        return await cont(id);
+        return await cont(id, prompt);
       } catch (err) {
+        if (err instanceof Error && err.message === "task is still running; stop it before continue") {
+          throw new RelayCommandError("bad_request", err.message);
+        }
+        if (err instanceof Error && err.message.startsWith("draft has no session")) {
+          throw new RelayCommandError("bad_request", "draft has no session yet; start it first");
+        }
         throw relayErrorFrom(err);
       }
     },

@@ -59,6 +59,7 @@ const PHONE_KINDS = new Set([
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.detail",
   "cmd.lookup",
 ]);
 
@@ -170,6 +171,7 @@ export class RelayHub {
       case "cmd.stop":
       case "cmd.workspace.create":
       case "cmd.workspace.delete":
+      case "cmd.detail":
         this.forwardCmd(conn, parsed);
         return;
       default:
@@ -411,7 +413,7 @@ export class RelayHub {
 
   private forwardCmd(
     conn: PhoneConn,
-    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" }>,
+    parsed: Extract<Incoming, { kind: "cmd.create" | "cmd.continue" | "cmd.stop" | "cmd.workspace.create" | "cmd.workspace.delete" | "cmd.detail" }>,
   ): void {
     if (!this.allow(conn, parsed.boardId, parsed.envelope.id)) return;
     const key = this.commandKey(parsed.kind, parsed.boardId, parsed.idempotencyKey);

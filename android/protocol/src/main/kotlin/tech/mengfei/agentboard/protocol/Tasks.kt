@@ -7,6 +7,22 @@ import kotlinx.serialization.json.JsonObject
 val TASK_STATUSES = setOf("queued", "running", "paused", "succeeded", "failed", "stopped")
 val TERMINAL_STATUSES = setOf("succeeded", "failed", "stopped")
 
+data class RelayTurn(
+    val iteration: Int,
+    val prompt: String? = null,
+    val output: String? = null,
+    val at: Long? = null,
+)
+
+data class RelaySideJob(
+    val id: String,
+    val kind: String,
+    val title: String,
+    val status: String,
+    val summary: String? = null,
+    val toolName: String? = null,
+)
+
 data class RelayTask(
     val id: String,
     val title: String,
@@ -14,6 +30,34 @@ data class RelayTask(
     val updatedAt: Long,
     val agent: String? = null,
     val workspaceId: String? = null,
+    val iteration: Int? = null,
+    val cwd: String? = null,
+    val model: String? = null,
+    val sessionId: String? = null,
+    val startedAt: Long? = null,
+    val endedAt: Long? = null,
+    val exitCode: Int? = null,
+    val pid: Int? = null,
+    val error: String? = null,
+    val prompt: String? = null,
+    val output: String? = null,
+    val promptPreview: String? = null,
+    val outputPreview: String? = null,
+    val resumeCommand: String? = null,
+    val worktreeBranch: String? = null,
+    val promptTruncated: Boolean = false,
+    val outputTruncated: Boolean = false,
+    val detailFull: Boolean = false,
+    val turns: List<RelayTurn>? = null,
+    val sideJobs: List<RelaySideJob>? = null,
+)
+
+data class DetailRound(
+    val iteration: Int,
+    val kindLabel: String,
+    val prompt: String?,
+    val output: String?,
+    val pending: Boolean,
 )
 
 data class LogLine(
@@ -255,7 +299,142 @@ fun readTask(obj: JsonObject): RelayTask? {
     val status = obj.text("status") ?: return null
     if (status !in TASK_STATUSES) return null
     val updatedAt = obj.longValue("updatedAt") ?: return null
-    return RelayTask(id, title, status, updatedAt, obj.text("agent"), readWorkspaceId(obj))
+    return RelayTask(
+        id = id,
+        title = title,
+        status = status,
+        updatedAt = updatedAt,
+        agent = obj.text("agent"),
+        workspaceId = readWorkspaceId(obj),
+        iteration = obj.intValue("iteration"),
+        cwd = obj.text("cwd"),
+        model = obj.text("model"),
+        sessionId = obj.text("sessionId"),
+        startedAt = obj.longValue("startedAt"),
+        endedAt = obj.longValue("endedAt"),
+        exitCode = obj.intValue("exitCode"),
+        pid = obj.intValue("pid"),
+        error = obj.text("error"),
+        prompt = obj.text("prompt"),
+        output = obj.text("output"),
+        promptPreview = obj.text("promptPreview"),
+        outputPreview = obj.text("outputPreview"),
+        resumeCommand = obj.text("resumeCommand"),
+        worktreeBranch = obj.text("worktreeBranch"),
+        promptTruncated = obj.bool("promptTruncated") == true,
+        outputTruncated = obj.bool("outputTruncated") == true,
+        detailFull = obj.text("detail") == "full",
+        turns = readTurns(obj),
+        sideJobs = readSideJobs(obj),
+    )
+}
+
+/**
+ * A snapshot row omits `detail: "full"`. Keep the richer card already loaded
+ * for this task. A full frame replaces prompts, replies, and side jobs.
+ */
+fun mergeRelayTask(previous: RelayTask?, incoming: RelayTask): RelayTask {
+    if (previous == null || previous.id != incoming.id) return incoming
+    if (incoming.detailFull) {
+        return incoming.copy(
+            promptPreview = incoming.promptPreview ?: previous.promptPreview,
+            outputPreview = incoming.outputPreview ?: previous.outputPreview,
+        )
+    }
+    return incoming.copy(
+        prompt = previous.prompt,
+        output = previous.output,
+        turns = previous.turns,
+        sideJobs = previous.sideJobs,
+        detailFull = previous.detailFull,
+        promptTruncated = previous.promptTruncated || incoming.promptTruncated,
+        outputTruncated = previous.outputTruncated || incoming.outputTruncated,
+    )
+}
+
+fun statusLabel(status: String): String = when (status) {
+    "queued" -> "Todo"
+    "running" -> "进行中"
+    "paused" -> "等待确认"
+    "succeeded" -> "成功"
+    "failed" -> "失败"
+    "stopped" -> "已停止"
+    else -> status
+}
+
+fun canStopStatus(status: String): Boolean = status == "queued" || status == "running" || status == "paused"
+
+/** Web continue is hidden for draft and disabled while queued or running. Paused (blocked) can continue. */
+fun canContinueStatus(status: String): Boolean = status != "queued" && status != "running"
+
+fun continueHint(task: RelayTask): String {
+    if (!canContinueStatus(task.status)) return "任务运行中，请先停止再继续"
+    val session = task.sessionId
+    return if (!session.isNullOrBlank()) "将续会话 $session" else "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+}
+
+fun resumeCommandLabel(task: RelayTask): String {
+    val command = task.resumeCommand
+    if (!command.isNullOrBlank()) return command
+    return if (task.sessionId.isNullOrBlank()) "尚无会话" else "—"
+}
+
+fun detailPrompt(task: RelayTask): String? = task.prompt ?: task.promptPreview
+
+fun detailRounds(task: RelayTask): List<DetailRound> {
+    val turns = task.turns
+    if (!turns.isNullOrEmpty()) {
+        val live = task.status == "queued" || task.status == "running" || task.status == "paused"
+        val current = task.iteration
+        return turns.map { turn ->
+            DetailRound(
+                iteration = turn.iteration,
+                kindLabel = if (turn.iteration <= 1) "初始" else "继续",
+                prompt = turn.prompt,
+                output = turn.output,
+                pending = live && turn.iteration == current && turn.output.isNullOrBlank(),
+            )
+        }
+    }
+    val prompt = detailPrompt(task)
+    val output = task.output ?: task.outputPreview
+    if (prompt.isNullOrBlank() && output.isNullOrBlank()) return emptyList()
+    val iteration = task.iteration ?: 1
+    val live = task.status == "queued" || task.status == "running" || task.status == "paused"
+    return listOf(DetailRound(iteration, if (iteration <= 1) "初始" else "继续", prompt, output, live && output.isNullOrBlank()))
+}
+
+fun detailError(task: RelayTask): String? {
+    val hasOutput = !task.output.isNullOrBlank() || !task.outputPreview.isNullOrBlank() ||
+        task.turns?.any { !it.output.isNullOrBlank() } == true
+    if (task.status != "failed" && !(task.status == "stopped" && !hasOutput)) return null
+    val bits = mutableListOf<String>()
+    if (!task.error.isNullOrBlank()) bits.add(task.error)
+    if (task.exitCode != null && task.exitCode != 0) bits.add("退出码 ${task.exitCode}")
+    if (bits.isEmpty()) bits.add(if (task.status == "stopped") "已由用户停止" else "任务失败")
+    return bits.joinToString("\n")
+}
+
+private fun readTurns(obj: JsonObject): List<RelayTurn>? {
+    if ("turns" !in obj) return null
+    val array = obj.array("turns") ?: return null
+    return array.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val iteration = row.intValue("iteration") ?: return@mapNotNull null
+        RelayTurn(iteration, row.text("prompt"), row.text("output"), row.longValue("at"))
+    }
+}
+
+private fun readSideJobs(obj: JsonObject): List<RelaySideJob>? {
+    if ("sideJobs" !in obj) return null
+    val array = obj.array("sideJobs") ?: return null
+    return array.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val id = row.text("id") ?: return@mapNotNull null
+        val title = row.text("title") ?: return@mapNotNull null
+        val status = row.text("status") ?: return@mapNotNull null
+        RelaySideJob(id, row.text("kind") ?: "other", title, status, row.text("summary"), row.text("toolName"))
+    }
 }
 
 /**
@@ -469,7 +648,8 @@ fun BoardView.withoutWorkspace(id: String): BoardView {
 }
 
 private fun upsert(tasks: List<RelayTask>, task: RelayTask): List<RelayTask> {
-    return (tasks.filterNot { it.id == task.id } + task).sortedByDescending { it.updatedAt }
+    val merged = mergeRelayTask(tasks.find { it.id == task.id }, task)
+    return (tasks.filterNot { it.id == task.id } + merged).sortedByDescending { it.updatedAt }
 }
 
 fun sessionRejected(message: Envelope): Boolean {

@@ -27,6 +27,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import tech.mengfei.agentboard.BoardViewModel
@@ -35,7 +37,15 @@ import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
+import tech.mengfei.agentboard.protocol.canContinueStatus
+import tech.mengfei.agentboard.protocol.canStopStatus
+import tech.mengfei.agentboard.protocol.continueHint
 import tech.mengfei.agentboard.protocol.deriveWsUrl
+import tech.mengfei.agentboard.protocol.detailError
+import tech.mengfei.agentboard.protocol.detailPrompt
+import tech.mengfei.agentboard.protocol.detailRounds
+import tech.mengfei.agentboard.protocol.resumeCommandLabel
+import tech.mengfei.agentboard.protocol.statusLabel
 import tech.mengfei.agentboard.protocol.visibleTasks
 import tech.mengfei.agentboard.protocol.workspaceBanner
 import tech.mengfei.agentboard.protocol.workspaceDisplayName
@@ -251,27 +261,116 @@ private fun TaskRow(task: RelayTask, workspaceLabel: String, onClick: () -> Unit
 @Composable
 private fun DetailScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     val task = state.tasks.find { it.id == state.selectedTaskId }
+    val clipboard = LocalClipboardManager.current
     ScrollColumn(padding) {
         TextButton(onClick = model::pop) { Text("Tasks") }
         if (task == null) {
             Text("This task is not in the current snapshot.")
         } else {
-            Text(task.status, color = statusColor(task.status), style = MaterialTheme.typography.titleMedium)
-            Text(task.agent ?: "No agent", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            val workspaceName = workspaceDisplayName(task.workspaceId, state.workspaces)
-            Text("工作区 · $workspaceName", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            state.workspaces.find { it.id == task.workspaceId }?.path?.let { path ->
-                Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "${task.id} · ${task.agent ?: "—"} · ${statusLabel(task.status)} · 迭代 ${task.iteration ?: 1}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text("任务信息", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
+            MetaLine("任务 ID", task.id)
+            MetaLine("状态", statusLabel(task.status))
+            MetaLine("迭代", (task.iteration ?: 1).toString())
+            MetaLine("开始时间", epochLabel(task.startedAt))
+            MetaLine("结束时间", epochLabel(task.endedAt))
+            MetaLine("Agent", task.agent ?: "—")
+            MetaLine("模型", task.model ?: "—")
+            MetaLine("PID", task.pid?.toString() ?: "—")
+            MetaLine("退出码", task.exitCode?.toString() ?: "—")
+            MetaLine("会话", task.sessionId ?: "—")
+            val resume = resumeCommandLabel(task)
+            val resumeCommand = task.resumeCommand
+            MetaLine("继续会话", resume)
+            if (resumeCommand != null) {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(resumeCommand)) }) { Text("复制继续会话") }
+            }
+            MetaLine("工作区", workspaceDisplayName(task.workspaceId, state.workspaces))
+            MetaLine("工作目录", task.cwd ?: "—")
+            val branch = task.worktreeBranch
+            if (!branch.isNullOrBlank()) MetaLine("Git 分支", branch)
+            Text("初始提示词", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+            SelectionContainer {
+                Text(detailPrompt(task) ?: "—", style = MaterialTheme.typography.bodyMedium)
+            }
+            if (task.promptTruncated) {
+                Text("提示词已截断", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            val jobs = task.sideJobs.orEmpty()
+            if (jobs.isNotEmpty()) {
+                Text("后台 / Monitor", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                jobs.forEach { job ->
+                    Text("${sideJobKind(job.kind)} · ${sideJobStatus(job.status)}", style = MaterialTheme.typography.labelLarge)
+                    Text(job.title)
+                    val summary = job.summary
+                    if (!summary.isNullOrBlank()) {
+                        Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    val toolName = job.toolName
+                    if (!toolName.isNullOrBlank()) {
+                        Text(toolName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Text("任务进度", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+            detailError(task)?.let {
+                Text(it, color = MaterialTheme.colorScheme.error)
+            }
+            val rounds = detailRounds(task)
+            if (rounds.isEmpty()) {
+                Text(
+                    if (task.status == "queued" || task.status == "running" || task.status == "paused") "任务进行中，等待本轮回复…" else "暂无本轮回复。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                rounds.forEach { round ->
+                    Text(
+                        "第 ${round.iteration} 轮 · ${round.kindLabel}${if (round.pending) " · 实时" else ""}",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text("提示词", style = MaterialTheme.typography.labelMedium)
+                    SelectionContainer { Text(round.prompt ?: "（无记录）") }
+                    Text("回复", style = MaterialTheme.typography.labelMedium)
+                    val reply = round.output
+                    SelectionContainer {
+                        Text(
+                            when {
+                                !reply.isNullOrBlank() -> reply
+                                round.pending -> "回复生成中…"
+                                else -> "本轮暂无回复"
+                            },
+                        )
+                    }
+                }
+                if (task.outputTruncated) {
+                    Text("回复已截断", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         Banner(state.commandNote)
         Banner(state.formError)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (task != null && (canStopStatus(task.status) || state.stopMode != "send")) {
             Button(onClick = model::submitStop, enabled = state.stopMode != "busy") {
-                Text(actionLabel(state.stopMode, "Stop"))
+                Text(actionLabel(state.stopMode, "停止"))
             }
-            OutlinedButton(onClick = model::submitContinue, enabled = state.continueMode != "busy") {
-                Text(actionLabel(state.continueMode, "Continue"))
+        }
+        if (task != null) {
+            OutlinedTextField(
+                value = state.continuePrompt,
+                onValueChange = model::updateContinuePrompt,
+                label = { Text("补充续跑说明") },
+                placeholder = { Text("留空则「请基于当前上下文继续完成任务」") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+            )
+            Text(continueHint(task), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val continueEnabled = state.continueMode != "busy" && (state.continueMode != "send" || canContinueStatus(task.status))
+            OutlinedButton(onClick = model::submitContinue, enabled = continueEnabled) {
+                Text(actionLabel(state.continueMode, "继续任务"))
             }
         }
         if (state.stopResend) {
@@ -280,9 +379,9 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
         if (state.continueResend) {
             TextButton(onClick = model::resendContinue) { Text("Send a new continue") }
         }
-        Text("Log", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+        Text("原始日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
         if (state.logs.isEmpty()) {
-            Text("No log lines yet. Lines show up here while this phone is subscribed.")
+            Text("暂无日志。订阅期间的新行会显示在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             SelectionContainer {
                 Column {
@@ -297,6 +396,35 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
             }
         }
     }
+}
+
+@Composable
+private fun MetaLine(label: String, value: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SelectionContainer { Text(value) }
+    }
+}
+
+private fun epochLabel(epoch: Long?): String {
+    if (epoch == null || epoch <= 0L) return "—"
+    return DateFormat.getDateTimeInstance().format(Date(epoch))
+}
+
+private fun sideJobKind(kind: String): String = when (kind) {
+    "agent" -> "子代理"
+    "task" -> "Task"
+    "monitor" -> "Monitor"
+    "background" -> "后台"
+    else -> kind.ifBlank { "其他" }
+}
+
+private fun sideJobStatus(status: String): String = when (status) {
+    "running" -> "进行中"
+    "succeeded" -> "成功"
+    "failed" -> "失败"
+    "stopped" -> "已停止"
+    else -> status.ifBlank { "未知" }
 }
 
 @Composable

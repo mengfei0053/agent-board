@@ -17,6 +17,7 @@ export const CMD_TYPES = [
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.detail",
 ] as const;
 export type CommandType = (typeof CMD_TYPES)[number];
 
@@ -37,6 +38,7 @@ const MESSAGE_KINDS = [
   "cmd.stop",
   "cmd.workspace.create",
   "cmd.workspace.delete",
+  "cmd.detail",
   "cmd.lookup",
   "evt.task",
   "evt.log",
@@ -69,6 +71,43 @@ export type Task = {
   agent?: string;
   /** Present when the board task is filed in a workspace. */
   workspaceId?: string;
+  iteration?: number;
+  cwd?: string;
+  model?: string;
+  sessionId?: string;
+  startedAt?: number;
+  endedAt?: number;
+  exitCode?: number;
+  pid?: number;
+  error?: string;
+  prompt?: string;
+  output?: string;
+  promptPreview?: string;
+  outputPreview?: string;
+  resumeCommand?: string;
+  worktreeBranch?: string;
+  promptTruncated?: boolean;
+  outputTruncated?: boolean;
+  /** Set on `evt.task` and `cmd.detail`. Snapshots omit it and send previews. */
+  detail?: "full";
+  turns?: TaskTurn[];
+  sideJobs?: TaskSideJob[];
+};
+
+export type TaskTurn = {
+  iteration: number;
+  prompt?: string;
+  output?: string;
+  at?: number;
+};
+
+export type TaskSideJob = {
+  id: string;
+  kind: string;
+  title: string;
+  status: string;
+  summary?: string;
+  toolName?: string;
 };
 
 export type ParseFailure = {
@@ -91,6 +130,7 @@ export type Incoming =
   | { ok: true; kind: "cmd.stop"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.workspace.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
   | { ok: true; kind: "cmd.workspace.delete"; envelope: Envelope; boardId: string; idempotencyKey: string }
+  | { ok: true; kind: "cmd.detail"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.lookup"; envelope: Envelope; boardId: string; idempotencyKey: string; cmd: CommandType }
   | ({ ok: true; kind: "evt.task"; envelope: Envelope } & Cursor)
   | ({ ok: true; kind: "evt.log"; envelope: Envelope; taskId: string } & Cursor)
@@ -146,6 +186,8 @@ export function parseMessage(raw: unknown): Incoming {
       return parseCmdWorkspaceCreate(payload, id, ts);
     case "cmd.workspace.delete":
       return parseCmdWorkspaceDelete(payload, id, ts);
+    case "cmd.detail":
+      return parseCmdDetail(payload, id, ts);
     case "cmd.lookup":
       return parseLookup(payload, id, ts);
     case "evt.task":
@@ -315,10 +357,29 @@ function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.conti
   if (!record.ok) return record.failure;
   const common = readCmdTarget(record.value, id);
   if (!common.ok) return common.failure;
+  const body: JsonObject = { ...common.body };
+  const prompt = optionalMultiline(record.value.prompt, "prompt", 20_000);
+  if (!prompt.ok) return failure("bad_request", prompt.message, id);
+  if (prompt.value) body.prompt = prompt.value;
   return {
     ok: true,
     kind,
-    envelope: envelope(kind, id, ts, common.body),
+    envelope: envelope(kind, id, ts, body),
+    boardId: common.boardId,
+    idempotencyKey: common.idempotencyKey,
+    taskId: common.taskId,
+  };
+}
+
+function parseCmdDetail(payload: unknown, id: string, ts: number): Incoming {
+  const record = requireRecord(payload, id);
+  if (!record.ok) return record.failure;
+  const common = readCmdTarget(record.value, id);
+  if (!common.ok) return common.failure;
+  return {
+    ok: true,
+    kind: "cmd.detail",
+    envelope: envelope("cmd.detail", id, ts, common.body),
     boardId: common.boardId,
     idempotencyKey: common.idempotencyKey,
     taskId: common.taskId,
@@ -401,7 +462,7 @@ function parseLookup(payload: unknown, id: string, ts: number): Incoming {
   const key = readKey(record.value.idempotencyKey);
   if (!key.ok) return failure("bad_request", key.message, id);
   if (typeof record.value.cmd !== "string" || !isCommandType(record.value.cmd)) {
-    return failure("bad_request", "cmd must be cmd.create, cmd.continue, cmd.stop, cmd.workspace.create, or cmd.workspace.delete", id);
+    return failure("bad_request", "cmd must be a known command type", id);
   }
   return {
     ok: true,
@@ -788,6 +849,9 @@ function readTask(value: unknown, terminalOnly: boolean): { ok: true; task: Task
   const workspaceId = optionalWorkspaceId(value.workspaceId, "task.workspaceId");
   if (!workspaceId.ok) return workspaceId;
   if (workspaceId.value) task.workspaceId = workspaceId.value;
+  const detail = readTaskDetail(value);
+  if (!detail.ok) return detail;
+  Object.assign(task, detail.fields);
   return { ok: true, task };
 }
 
@@ -795,7 +859,160 @@ function taskToJson(task: Task): JsonObject {
   const json: JsonObject = { id: task.id, title: task.title, status: task.status, updatedAt: task.updatedAt };
   if (task.agent) json.agent = task.agent;
   if (task.workspaceId) json.workspaceId = task.workspaceId;
+  if (task.iteration != null) json.iteration = task.iteration;
+  if (task.cwd) json.cwd = task.cwd;
+  if (task.model) json.model = task.model;
+  if (task.sessionId) json.sessionId = task.sessionId;
+  if (task.startedAt != null) json.startedAt = task.startedAt;
+  if (task.endedAt != null) json.endedAt = task.endedAt;
+  if (task.exitCode != null) json.exitCode = task.exitCode;
+  if (task.pid != null) json.pid = task.pid;
+  if (task.error) json.error = task.error;
+  if (task.prompt) json.prompt = task.prompt;
+  if (task.output) json.output = task.output;
+  if (task.promptPreview) json.promptPreview = task.promptPreview;
+  if (task.outputPreview) json.outputPreview = task.outputPreview;
+  if (task.resumeCommand) json.resumeCommand = task.resumeCommand;
+  if (task.worktreeBranch) json.worktreeBranch = task.worktreeBranch;
+  if (task.promptTruncated) json.promptTruncated = true;
+  if (task.outputTruncated) json.outputTruncated = true;
+  if (task.detail) json.detail = task.detail;
+  if (task.turns) json.turns = task.turns.map((turn) => {
+    const row: JsonObject = { iteration: turn.iteration };
+    if (turn.prompt) row.prompt = turn.prompt;
+    if (turn.output) row.output = turn.output;
+    if (turn.at != null) row.at = turn.at;
+    return row;
+  });
+  if (task.sideJobs) json.sideJobs = task.sideJobs.map((job) => {
+    const row: JsonObject = { id: job.id, kind: job.kind, title: job.title, status: job.status };
+    if (job.summary) row.summary = job.summary;
+    if (job.toolName) row.toolName = job.toolName;
+    return row;
+  });
   return json;
+}
+
+function readTaskDetail(
+  value: Record<string, unknown>,
+): { ok: true; fields: Partial<Task> } | { ok: false; message: string } {
+  const fields: Partial<Task> = {};
+  const iteration = optionalBoundedInt(value.iteration, "task.iteration", 1, 1_000_000);
+  if (!iteration.ok) return iteration;
+  if (iteration.value != null) fields.iteration = iteration.value;
+  const cwd = optionalMultiline(value.cwd, "task.cwd", 1024);
+  if (!cwd.ok) return cwd;
+  if (cwd.value) {
+    if (cwd.value.includes("://")) return { ok: false, message: "task.cwd must be a local path" };
+    fields.cwd = cwd.value;
+  }
+  const model = optionalMultiline(value.model, "task.model", 200);
+  if (!model.ok) return model;
+  if (model.value) fields.model = model.value;
+  const sessionId = optionalMultiline(value.sessionId, "task.sessionId", 200);
+  if (!sessionId.ok) return sessionId;
+  if (sessionId.value) fields.sessionId = sessionId.value;
+  const startedAt = optionalBoundedInt(value.startedAt, "task.startedAt", 0, Number.MAX_SAFE_INTEGER);
+  if (!startedAt.ok) return startedAt;
+  if (startedAt.value != null) fields.startedAt = startedAt.value;
+  const endedAt = optionalBoundedInt(value.endedAt, "task.endedAt", 0, Number.MAX_SAFE_INTEGER);
+  if (!endedAt.ok) return endedAt;
+  if (endedAt.value != null) fields.endedAt = endedAt.value;
+  const exitCode = optionalBoundedInt(value.exitCode, "task.exitCode", -1_000_000, 1_000_000);
+  if (!exitCode.ok) return exitCode;
+  if (exitCode.value != null) fields.exitCode = exitCode.value;
+  const pid = optionalBoundedInt(value.pid, "task.pid", 1, Number.MAX_SAFE_INTEGER);
+  if (!pid.ok) return pid;
+  if (pid.value != null) fields.pid = pid.value;
+  const error = optionalMultiline(value.error, "task.error", 2_000);
+  if (!error.ok) return error;
+  if (error.value) fields.error = error.value;
+  const prompt = optionalMultiline(value.prompt, "task.prompt", 4_000);
+  if (!prompt.ok) return prompt;
+  if (prompt.value) fields.prompt = prompt.value;
+  const output = optionalMultiline(value.output, "task.output", 4_000);
+  if (!output.ok) return output;
+  if (output.value) fields.output = output.value;
+  const promptPreview = optionalMultiline(value.promptPreview, "task.promptPreview", 400);
+  if (!promptPreview.ok) return promptPreview;
+  if (promptPreview.value) fields.promptPreview = promptPreview.value;
+  const outputPreview = optionalMultiline(value.outputPreview, "task.outputPreview", 400);
+  if (!outputPreview.ok) return outputPreview;
+  if (outputPreview.value) fields.outputPreview = outputPreview.value;
+  const resumeCommand = optionalMultiline(value.resumeCommand, "task.resumeCommand", 2_000);
+  if (!resumeCommand.ok) return resumeCommand;
+  if (resumeCommand.value) fields.resumeCommand = resumeCommand.value;
+  const branch = optionalMultiline(value.worktreeBranch, "task.worktreeBranch", 200);
+  if (!branch.ok) return branch;
+  if (branch.value) fields.worktreeBranch = branch.value;
+  const promptTruncated = optionalFlag(value.promptTruncated, "task.promptTruncated");
+  if (!promptTruncated.ok) return promptTruncated;
+  if (promptTruncated.value) fields.promptTruncated = true;
+  const outputTruncated = optionalFlag(value.outputTruncated, "task.outputTruncated");
+  if (!outputTruncated.ok) return outputTruncated;
+  if (outputTruncated.value) fields.outputTruncated = true;
+  if (value.detail !== undefined) {
+    if (value.detail !== "full") return { ok: false, message: "task.detail is invalid" };
+    fields.detail = "full";
+  }
+  const turns = readTurns(value.turns);
+  if (!turns.ok) return turns;
+  if (turns.value) fields.turns = turns.value;
+  const sideJobs = readSideJobs(value.sideJobs);
+  if (!sideJobs.ok) return sideJobs;
+  if (sideJobs.value) fields.sideJobs = sideJobs.value;
+  return { ok: true, fields };
+}
+
+function readTurns(value: unknown): { ok: true; value?: TaskTurn[] } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value)) return { ok: false, message: "task.turns must be an array" };
+  if (value.length > 12) return { ok: false, message: "task.turns exceeds 12 items" };
+  const turns: TaskTurn[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "task.turns entry must be an object" };
+    const iteration = optionalBoundedInt(item.iteration, "task.turns.iteration", 1, 1_000_000);
+    if (!iteration.ok || iteration.value == null) return { ok: false, message: "task.turns.iteration is invalid" };
+    const turn: TaskTurn = { iteration: iteration.value };
+    const prompt = optionalMultiline(item.prompt, "task.turns.prompt", 4_000);
+    if (!prompt.ok) return prompt;
+    if (prompt.value) turn.prompt = prompt.value;
+    const output = optionalMultiline(item.output, "task.turns.output", 4_000);
+    if (!output.ok) return output;
+    if (output.value) turn.output = output.value;
+    const at = optionalBoundedInt(item.at, "task.turns.at", 0, Number.MAX_SAFE_INTEGER);
+    if (!at.ok) return at;
+    if (at.value != null) turn.at = at.value;
+    turns.push(turn);
+  }
+  return { ok: true, value: turns };
+}
+
+function readSideJobs(value: unknown): { ok: true; value?: TaskSideJob[] } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value)) return { ok: false, message: "task.sideJobs must be an array" };
+  if (value.length > 20) return { ok: false, message: "task.sideJobs exceeds 20 items" };
+  const jobs: TaskSideJob[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "task.sideJobs entry must be an object" };
+    const id = optionalMultiline(item.id, "task.sideJobs.id", 80);
+    if (!id.ok || !id.value) return { ok: false, message: "task.sideJobs.id is invalid" };
+    const kind = optionalMultiline(item.kind, "task.sideJobs.kind", 32);
+    if (!kind.ok || !kind.value) return { ok: false, message: "task.sideJobs.kind is invalid" };
+    const title = optionalMultiline(item.title, "task.sideJobs.title", 200);
+    if (!title.ok || !title.value) return { ok: false, message: "task.sideJobs.title is invalid" };
+    const status = optionalMultiline(item.status, "task.sideJobs.status", 32);
+    if (!status.ok || !status.value) return { ok: false, message: "task.sideJobs.status is invalid" };
+    const job: TaskSideJob = { id: id.value, kind: kind.value, title: title.value, status: status.value };
+    const summary = optionalMultiline(item.summary, "task.sideJobs.summary", 400);
+    if (!summary.ok) return summary;
+    if (summary.value) job.summary = summary.value;
+    const toolName = optionalMultiline(item.toolName, "task.sideJobs.toolName", 80);
+    if (!toolName.ok) return toolName;
+    if (toolName.value) job.toolName = toolName.value;
+    jobs.push(job);
+  }
+  return { ok: true, value: jobs };
 }
 
 function envelope(type: string, id: string, ts: number, payload?: JsonObject): Envelope {
@@ -838,6 +1055,44 @@ function readKey(value: unknown): { ok: true; value: string } | { ok: false; mes
     return { ok: false, message: "idempotencyKey must be 8-80 visible ASCII characters" };
   }
   return { ok: true, value };
+}
+
+function optionalMultiline(
+  value: unknown,
+  field: string,
+  max: number,
+): { ok: true; value?: string } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (typeof value !== "string" || value.length < 1 || value.length > max || !isMultiline(value)) {
+    return { ok: false, message: `${field} must be 1-${max} characters` };
+  }
+  return { ok: true, value };
+}
+
+function optionalBoundedInt(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+): { ok: true; value?: number } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (!Number.isSafeInteger(value) || (value as number) < min || (value as number) > max) {
+    return { ok: false, message: `${field} must be an integer from ${min} to ${max}` };
+  }
+  return { ok: true, value: value as number };
+}
+
+function optionalFlag(
+  value: unknown,
+  field: string,
+): { ok: true; value?: boolean } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (typeof value !== "boolean") return { ok: false, message: `${field} must be a boolean` };
+  return { ok: true, value };
+}
+
+function isMultiline(value: string): boolean {
+  return !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
 }
 
 function readWorkspaceId(value: unknown, field: string): { ok: true; value: string } | { ok: false; message: string } {
