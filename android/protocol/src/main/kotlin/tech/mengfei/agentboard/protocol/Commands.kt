@@ -1,54 +1,88 @@
 package tech.mengfei.agentboard.protocol
 
-const val MAX_ACCEPTED_POLLS = 3
+/**
+ * What the phone does with one ack or err.
+ * The automatic path never builds another cmd.create. Timeout and stored failure ask for cmd.lookup.
+ */
+enum class Retry {
+    None,
+    ReuseSameKey,
+    LookupOnly,
+}
 
-private val preStoreCodes = setOf("board_offline", "forbidden", "unauthorized", "bad_request", "rate_limited")
+data class CommandInterpretation(
+    val summary: String,
+    val retry: Retry,
+    val task: RelayTask? = null,
+    val settled: Boolean,
+)
+
+sealed interface CommandAction {
+    data object Wait : CommandAction
+    data object SendLookup : CommandAction
+    data object Settle : CommandAction
+}
+
+sealed interface SubmitPlan {
+    data class Send(val idempotencyKey: String) : SubmitPlan
+    data class Lookup(val idempotencyKey: String, val cmd: String) : SubmitPlan
+    data object Busy : SubmitPlan
+}
+
+private val preStoreCodes = setOf(
+    "board_offline",
+    "forbidden",
+    "unauthorized",
+    "bad_request",
+    "rate_limited",
+)
 
 fun interpretCommand(message: Envelope): CommandInterpretation? {
     if (message.type != "ack" && message.type != "err") return null
     val stage = message.payload.text("stage")
     val code = message.payload.text("code")
     val text = message.payload.text("message")
-    val task = message.payload.obj("task")?.let { readTask(it) }
-    if (message.type != "ack") {
-        val joined = listOfNotNull(code, text).joinToString(": ")
-        val summary = joined.ifBlank { "The relay rejected the command." }
-        val retry = if (code in preStoreCodes) Retry.ReuseSameKey else Retry.LookupOnly
-        return CommandInterpretation(summary, retry, task = null, settled = true)
+    val task = message.payload.obj("task")?.let(::readTask)
+    if (message.type == "ack") {
+        return when (stage) {
+            "accepted" -> CommandInterpretation(
+                "Relay accepted the command. Waiting for the board.",
+                Retry.None,
+                task,
+                settled = false,
+            )
+            "executed" -> CommandInterpretation(
+                "Board accepted the command.",
+                Retry.None,
+                task,
+                settled = true,
+            )
+            "timeout" -> CommandInterpretation(
+                text ?: "The board did not answer in time.",
+                Retry.LookupOnly,
+                task,
+                settled = true,
+            )
+            "failed" -> CommandInterpretation(
+                text ?: code ?: "The command failed after the relay stored it.",
+                Retry.LookupOnly,
+                task,
+                settled = true,
+            )
+            "unknown" -> CommandInterpretation(
+                "The relay has no record of this command.",
+                Retry.LookupOnly,
+                null,
+                settled = true,
+            )
+            else -> CommandInterpretation(stage ?: "Unexpected acknowledgement.", Retry.None, null, settled = true)
+        }
     }
-    return when (stage) {
-        "accepted" -> CommandInterpretation(
-            "Relay accepted the command. Waiting for the board.",
-            Retry.None,
-            task,
-            settled = false,
-        )
-        "timeout" -> CommandInterpretation(
-            text ?: "The board did not answer in time.",
-            Retry.LookupOnly,
-            task,
-            settled = true,
-        )
-        "failed" -> CommandInterpretation(
-            text ?: code ?: "The command failed after the relay stored it.",
-            Retry.LookupOnly,
-            task,
-            settled = true,
-        )
-        "unknown" -> CommandInterpretation(
-            "The relay has no record of this command.",
-            Retry.LookupOnly,
-            task = null,
-            settled = true,
-        )
-        "executed" -> CommandInterpretation(
-            "Board accepted the command.",
-            Retry.None,
-            task,
-            settled = true,
-        )
-        null -> CommandInterpretation("Unexpected acknowledgement.", Retry.None, task = null, settled = true)
-        else -> CommandInterpretation(stage, Retry.None, task = null, settled = true)
+    val summary = listOfNotNull(code, text).joinToString(": ").ifBlank { "The relay rejected the command." }
+    return if (code in preStoreCodes) {
+        CommandInterpretation(summary, Retry.ReuseSameKey, null, settled = true)
+    } else {
+        CommandInterpretation(summary, Retry.LookupOnly, null, settled = true)
     }
 }
 
@@ -75,48 +109,76 @@ fun planSubmit(
     return SubmitPlan.Send(newKey())
 }
 
+/** A second stop or continue after lookup is an explicit new command. Create stays on lookup. */
 fun explicitResendAllowed(cmd: String, last: CommandInterpretation?): Boolean {
-    if (cmd != "cmd.create" && last?.retry == Retry.LookupOnly) return true
-    return false
+    return cmd != "cmd.create" && last?.retry == Retry.LookupOnly
 }
 
+/** Lookups of an accepted command are not registered as waiters, so poll a few times and then stop. */
+const val MAX_ACCEPTED_POLLS = 3
+
+data class OutstandingCommand(
+    val cmd: String,
+    val boardId: String,
+    val idempotencyKey: String,
+    val polls: Int = 0,
+)
+
+sealed interface Recovery {
+    data class Lookup(val command: OutstandingCommand) : Recovery
+    data class Poll(val command: OutstandingCommand) : Recovery
+    data class Clear(val summary: String, val interpretation: CommandInterpretation?) : Recovery
+}
+
+/**
+ * After client.hello on a new socket, an in-flight command is recovered with cmd.lookup.
+ * This never builds another cmd.create, cmd.stop, or cmd.continue.
+ */
 fun recoverAfterHello(command: OutstandingCommand?): Recovery? {
     if (command == null) return null
     if (command.idempotencyKey.isBlank() || command.boardId.isBlank() || command.cmd.isBlank()) {
-        return Recovery.Clear("Lost the in-flight command during reconnect. It was not sent again.", null)
+        return Recovery.Clear(
+            "Lost the in-flight command during reconnect. It was not sent again.",
+            null,
+        )
     }
-    return if (command.polls >= MAX_ACCEPTED_POLLS) stillInFlight() else Recovery.Lookup(command)
+    if (command.polls >= MAX_ACCEPTED_POLLS) return stillInFlight()
+    return Recovery.Lookup(command)
 }
 
 fun recoverFromLookup(command: OutstandingCommand, message: Envelope): Recovery {
     val interpreted = interpretCommand(message)
-        ?: return Recovery.Clear(
+    if (interpreted == null) {
+        return Recovery.Clear(
             "The relay reply could not be read. The command was not sent again.",
             lookupHold("The relay reply could not be read. The command was not sent again."),
         )
+    }
     val stage = message.payload.text("stage")
     if (message.type == "ack" && stage == "accepted") {
         val next = command.copy(polls = command.polls + 1)
-        return if (next.polls >= MAX_ACCEPTED_POLLS) stillInFlight() else Recovery.Poll(next)
+        if (next.polls >= MAX_ACCEPTED_POLLS) return stillInFlight()
+        return Recovery.Poll(next)
     }
     val safe = if (interpreted.retry == Retry.ReuseSameKey) {
-        val summary = interpreted.summary.ifBlank { "The command was not sent again." }
-        interpreted.copy(summary = summary, retry = Retry.LookupOnly)
+        interpreted.copy(
+            summary = interpreted.summary.ifBlank { "The command was not sent again." },
+            retry = Retry.LookupOnly,
+        )
     } else {
         interpreted
     }
     return Recovery.Clear(safe.summary, safe)
 }
 
-fun lookupSendFailed(): Recovery.Clear = Recovery.Clear(
-    "Could not reach the relay to check the stored result. The command was not sent again.",
-    lookupHold("Could not reach the relay to check the stored result. The command was not sent again."),
-)
+fun lookupSendFailed(): Recovery.Clear {
+    val summary = "Could not reach the relay to check the stored result. The command was not sent again."
+    return Recovery.Clear(summary, lookupHold(summary))
+}
 
-private fun stillInFlight(): Recovery.Clear = Recovery.Clear(
-    "The command is still in flight on the relay. It was not sent again.",
-    lookupHold("The command is still in flight on the relay. It was not sent again."),
-)
+private fun stillInFlight(): Recovery.Clear {
+    val summary = "The command is still in flight on the relay. It was not sent again."
+    return Recovery.Clear(summary, lookupHold(summary))
+}
 
-private fun lookupHold(summary: String): CommandInterpretation =
-    CommandInterpretation(summary, Retry.LookupOnly, task = null, settled = true)
+private fun lookupHold(summary: String) = CommandInterpretation(summary, Retry.LookupOnly, settled = true)

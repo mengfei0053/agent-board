@@ -2,5 +2,5 @@
 <resources>
     <string name="app_name">Agent Board</string>
     <string name="task_done_channel">Task finished</string>
-    <string name="task_done_channel_desc">Best-effort notice while this phone is online with the relay. Nothing is delivered after the socket closes.</string>
+    <string name="task_done_channel_desc">A board task reached succeeded, failed, or stopped while this phone was online.</string>
 </resources>

@@ -132,7 +132,7 @@ pnpm dev
 
 | 目录 | 作用 |
 | --- | --- |
-| `android/` | Kotlin Compose APK，`tech.mengfei.agentboard`。本地 `./gradlew :protocol:test` 与 `assembleRelease`（未签名） |
+| `android/` | Kotlin Compose APK，`tech.mengfei.agentboard`，来自 Origin `754e635`。本地 `./gradlew test assembleDebug`；发布用未签名 `assembleRelease` |
 | `relay/` | Node 中继（HTTP 配对 + WebSocket）。不调用看板、不 spawn CLI |
 | `connector/` | ThinkBook 上的独立进程，把中继命令译成本机 `127.0.0.1:8791` |
 | [PROTOCOL.md](./PROTOCOL.md) | 信封、配对、幂等与 `useGitWorktree` |

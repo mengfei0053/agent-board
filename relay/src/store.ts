@@ -11,7 +11,7 @@ export type Device = {
 
 export type PairCode = {
   code: string;
-  boardId: string;
+  boardIds: string[];
   expiresAt: number;
   attempts: number;
   used: boolean;
@@ -62,9 +62,9 @@ export class RelayStore {
     return this.boards.get(token);
   }
 
-  createPairCode(boardId: string): PairCode {
-    const code = randomBytes(9).toString("base64url");
-    const pair: PairCode = { code, boardId, expiresAt: this.now() + PAIR_TTL_MS, attempts: 0, used: false };
+  createPairCode(boardIds: string[]): PairCode {
+    const code = `pc_${randomBytes(9).toString("base64url")}`;
+    const pair: PairCode = { code, boardIds, expiresAt: this.now() + PAIR_TTL_MS, attempts: 0, used: false };
     this.pairCodes.set(code, pair);
     return pair;
   }
@@ -81,7 +81,7 @@ export class RelayStore {
       return { ok: false, error: "pair code is invalid or expired", status: 401 };
     }
     pair.used = true;
-    const device = this.issueDevice(deviceName.trim() || "Android phone", [pair.boardId]);
+    const device = this.issueDevice(deviceName.trim() || "Android phone", pair.boardIds);
     return { ok: true, device };
   }
 

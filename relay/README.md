@@ -12,7 +12,16 @@ npm test
 RELAY_SETUP_TOKEN=replace-me npm start
 ```
 
-`GET /health` on the listen port. Register a board with `POST /boards` and the setup token, then point the connector at the returned `boardToken`. The phone pairs with `POST /auth/pair` after the connector (or you) calls `POST /auth/pair/create`.
+`GET /health` on the listen port. Register a board with `POST /boards` and `RELAY_SETUP_TOKEN`, then point the connector at the returned `boardToken`. Create the phone's one-time code with that same setup token:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/auth/pair/create \
+  -H "authorization: Bearer $RELAY_SETUP_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"boardIds":["thinkbook-main"]}'
+```
+
+The phone then calls `POST /auth/pair`. A board token can still create a code for its own board when `boardIds` is omitted.
 
 Wire format: [../PROTOCOL.md](../PROTOCOL.md).
 

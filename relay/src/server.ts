@@ -239,10 +239,15 @@ async function handleHttp(req: IncomingMessage, res: ServerResponse, store: Rela
   }
   if (req.method === "POST" && url.pathname === "/auth/pair/create") {
     const token = bearer(req);
+    const fromBody = Array.isArray(body.boardIds) ? body.boardIds.filter((id): id is string => typeof id === "string") : [];
     const board = token ? store.boardByToken(token) : undefined;
-    if (!board) return sendJson(res, 401, { error: { code: "unauthorized", message: "board token required" } });
-    const pair = store.createPairCode(board.boardId);
-    sendJson(res, 201, { pairCode: pair.code, boardId: pair.boardId, expiresAt: pair.expiresAt });
+    const boardIds = fromBody.length ? fromBody : board ? [board.boardId] : [];
+    const allowed = authorized(req, setupToken) || board != null;
+    if (!allowed || boardIds.length === 0 || boardIds.some((id) => !validBoardId(id))) {
+      return sendJson(res, 401, { error: { code: "unauthorized", message: "setup token and boardIds are required" } });
+    }
+    const pair = store.createPairCode(boardIds);
+    sendJson(res, 201, { pairCode: pair.code, boardIds: pair.boardIds, expiresAt: pair.expiresAt });
     return;
   }
   if (req.method === "POST" && url.pathname === "/auth/pair") {

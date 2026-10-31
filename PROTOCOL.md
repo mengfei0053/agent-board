@@ -20,7 +20,7 @@ Messages are JSON envelopes:
 | --- | --- | --- | --- |
 | GET | `/health` | none | `{ "ok": true, "boardsOnline": 0 }` |
 | POST | `/boards` | `Authorization: Bearer $RELAY_SETUP_TOKEN` | `{ "boardId", "label" }` → `{ "boardToken" }` |
-| POST | `/auth/pair/create` | board token | `{ "pairCode", "expiresAt" }` one-time, 5 minutes, 5 attempts |
+| POST | `/auth/pair/create` | `Authorization: Bearer $RELAY_SETUP_TOKEN` (or a board token) | `{ "boardIds": ["thinkbook-main"] }` → `{ "pairCode": "pc_…", "expiresAt" }`, one-time, 5 minutes, 5 attempts |
 | POST | `/auth/pair` | none | `{ "pairCode", "deviceName" }` → `{ "deviceId", "deviceToken", "role": "phone", "boardIds", "expiresAt" }` |
 | POST | `/auth/refresh` | none | `{ "deviceToken" }` rotates the token |
 

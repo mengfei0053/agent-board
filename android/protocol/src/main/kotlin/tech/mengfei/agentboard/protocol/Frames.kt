@@ -1,59 +1,51 @@
 package tech.mengfei.agentboard.protocol
 
-import java.util.UUID
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.util.UUID
 
 private val visibleKey = Regex("^[\\x21-\\x7E]{8,80}$")
 private val boardIdPattern = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-val AGENT_KINDS: List<String> = listOf("pi", "claude", "cursor", "devin", "codex")
+val AGENT_KINDS = listOf("pi", "claude", "cursor", "devin", "codex")
 
 fun newMessageId(): String = "m" + UUID.randomUUID().toString().replace("-", "")
 
 fun newIdempotencyKey(): String = "ph" + UUID.randomUUID().toString().replace("-", "")
 
 fun helloEnvelope(id: String, ts: Long, token: String, name: String): Envelope = frame(
-    id,
-    ts,
-    "client.hello",
-    buildJsonObject {
+    id, ts, "client.hello", buildJsonObject {
         put("token", token)
         put("name", name)
     },
 )
 
-fun boardListEnvelope(id: String, ts: Long): Envelope =
-    frame(id, ts, "board.list", JsonObject(emptyMap()))
+fun boardListEnvelope(id: String, ts: Long): Envelope = frame(id, ts, "board.list", JsonObject(emptyMap()))
 
 fun subTasksEnvelope(id: String, ts: Long, boardId: String): Envelope = frame(
-    id,
-    ts,
-    "sub.tasks",
-    buildJsonObject { put("boardId", boardId) },
+    id, ts, "sub.tasks", buildJsonObject { put("boardId", boardId) },
 )
 
 fun subLogsEnvelope(id: String, ts: Long, boardId: String, taskId: String? = null): Envelope = frame(
-    id,
-    ts,
-    "sub.logs",
-    buildJsonObject {
+    id, ts, "sub.logs", buildJsonObject {
         put("boardId", boardId)
         if (!taskId.isNullOrBlank()) put("taskId", taskId)
     },
 )
 
 fun lookupEnvelope(id: String, ts: Long, boardId: String, idempotencyKey: String, cmd: String): Envelope = frame(
-    id,
-    ts,
-    "cmd.lookup",
-    buildJsonObject {
+    id, ts, "cmd.lookup", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
         put("cmd", cmd)
     },
 )
+
+sealed interface Validated<out T> {
+    data class Ok<T>(val value: T) : Validated<T>
+    data class Invalid(val message: String) : Validated<Nothing>
+}
 
 fun validateCreate(
     id: String,
@@ -86,7 +78,7 @@ fun validateCreate(
     if (!visibleKey.matches(idempotencyKey)) {
         return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
     }
-    val payload = buildJsonObject {
+    return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
         put("title", cleanTitle)
@@ -94,8 +86,7 @@ fun validateCreate(
         put("agent", agent)
         put("cwd", cwd)
         if (useGitWorktree) put("useGitWorktree", true)
-    }
-    return Validated.Ok(frame(id, ts, "cmd.create", payload))
+    }))
 }
 
 fun validateContinue(
@@ -129,20 +120,21 @@ private fun validateTaskCommand(
     if (!visibleKey.matches(idempotencyKey)) {
         return Validated.Invalid("idempotencyKey must be 8-80 visible ASCII characters")
     }
-    val payload = buildJsonObject {
+    return Validated.Ok(frame(id, ts, type, buildJsonObject {
         put("boardId", boardId)
         put("taskId", taskId)
         put("idempotencyKey", idempotencyKey)
         if (!reason.isNullOrBlank()) put("reason", reason.take(500))
-    }
-    return Validated.Ok(frame(id, ts, type, payload))
+    }))
 }
 
 fun isLocalPath(value: String): Boolean {
     if (value.isBlank() || value.length > 1024) return false
-    if (value.any { it < ' ' || it == '\u007F' }) return false
-    return !value.contains("://")
+    if (value.any { it.code in 0..31 || it.code == 127 }) return false
+    if ("://" in value) return false
+    return true
 }
 
-private fun frame(id: String, ts: Long, type: String, payload: JsonObject): Envelope =
-    Envelope(v = 1, id = id, type = type, ts = ts, payload = payload)
+private fun frame(id: String, ts: Long, type: String, payload: JsonObject): Envelope {
+    return Envelope(v = 1, id = id, type = type, ts = ts, payload = payload)
+}

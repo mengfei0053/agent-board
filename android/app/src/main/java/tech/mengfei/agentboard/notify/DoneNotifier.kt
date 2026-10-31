@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import tech.mengfei.agentboard.MainActivity
@@ -13,13 +14,15 @@ import tech.mengfei.agentboard.protocol.DoneNotice
 
 class DoneNotifier(private val context: Context) {
     fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL,
             context.getString(R.string.task_done_channel),
             NotificationManager.IMPORTANCE_HIGH,
-        )
-        channel.description = context.getString(R.string.task_done_channel_desc)
+        ).apply {
+            description = context.getString(R.string.task_done_channel_desc)
+        }
         manager.createNotificationChannel(channel)
     }
 
@@ -31,7 +34,7 @@ class DoneNotifier(private val context: Context) {
             context,
             0,
             Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             PendingIntent.FLAG_IMMUTABLE,
         )
@@ -46,8 +49,8 @@ class DoneNotifier(private val context: Context) {
             .build()
         try {
             NotificationManagerCompat.from(context).notify(notice.eventId.hashCode(), notification)
-        } catch (e: SecurityException) {
-            // Permission not granted. The in-app banner still shows the notice.
+        } catch (error: SecurityException) {
+            // Notification permission is not granted. The task row still updates.
         }
     }
 

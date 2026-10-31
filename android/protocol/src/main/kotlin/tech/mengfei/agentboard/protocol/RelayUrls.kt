@@ -1,13 +1,12 @@
 package tech.mengfei.agentboard.protocol
 
 import java.net.URI
-import java.util.Locale
 
 const val DEFAULT_RELAY_HTTP = "https://relay.mengfei.tech"
 
 fun normalizeHttpBase(input: String): String {
     val uri = parseRelayUri(input)
-    val scheme = uri.scheme.lowercase(Locale.ROOT)
+    val scheme = uri.scheme.lowercase()
     if (scheme != "http" && scheme != "https") {
         throw RelayFormatException("relay HTTP URL must be http or https")
     }
@@ -17,11 +16,10 @@ fun normalizeHttpBase(input: String): String {
 
 fun deriveWsUrl(httpBase: String): String {
     val uri = parseRelayUri(httpBase)
-    val raw = uri.scheme.lowercase(Locale.ROOT)
-    val scheme = when (raw) {
-        "http" -> "ws"
+    val scheme = when (val raw = uri.scheme.lowercase()) {
         "https" -> "wss"
-        "ws", "wss" -> raw
+        "http" -> "ws"
+        "wss", "ws" -> raw
         else -> throw RelayFormatException("relay URL must be http or https")
     }
     val path = uri.rawPath ?: ""
@@ -35,11 +33,10 @@ private fun parseRelayUri(input: String): URI {
     if (trimmed.isEmpty()) throw RelayFormatException("relay URL is required")
     val uri = try {
         URI(trimmed)
-    } catch (e: Exception) {
+    } catch (error: Exception) {
         throw RelayFormatException("relay URL is invalid")
     }
-    val scheme = uri.scheme
-    if (scheme.isNullOrBlank()) throw RelayFormatException("relay URL needs a scheme")
+    if (uri.scheme.isNullOrBlank()) throw RelayFormatException("relay URL needs a scheme")
     if (uri.host.isNullOrBlank()) throw RelayFormatException("relay URL needs a host")
     return uri
 }
