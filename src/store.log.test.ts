@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { extractTextFromEventLine } from "./extractOutput.js";
 import {
   boundStoredLogLine,
   DEFAULT_LOG_TAIL_CHARS,
@@ -97,20 +98,51 @@ describe("boundStoredLogLine", () => {
       pad: "x".repeat(9000),
     });
     const stored = boundStoredLogLine(raw, 200);
-    const parsed = JSON.parse(stored) as { type?: string; recoveredText?: string };
+    const parsed = JSON.parse(stored) as {
+      type?: string;
+      recoveredText?: string;
+      preview?: string;
+      originalChars?: number;
+    };
     assert.equal(parsed.type, "log_truncated");
-    assert.equal(parsed.recoveredText, "hello reply");
-    assert.equal(typeof stored, "string");
-    assert.ok(!stored.includes("…[truncated"));
+    assert.equal(parsed.recoveredText, undefined);
+    assert.equal(parsed.originalChars, raw.length);
+    assert.ok(parsed.preview && parsed.preview.length > 0);
+    assert.ok(stored.length <= 200);
+    assert.equal(extractTextFromEventLine(stored), undefined);
   });
 
-  it("keeps a long result string inside the truncated wrapper", () => {
+  it("keeps a long result out of the truncated log line", () => {
     const result = "R".repeat(12_000);
     const raw = JSON.stringify({ type: "result", result });
-    const stored = boundStoredLogLine(raw, 200);
-    const parsed = JSON.parse(stored) as { type?: string; recoveredText?: string };
+    const stored = boundStoredLogLine(raw);
+    const parsed = JSON.parse(stored) as {
+      type?: string;
+      recoveredText?: string;
+      preview?: string;
+      originalChars?: number;
+    };
     assert.equal(parsed.type, "log_truncated");
-    assert.equal(parsed.recoveredText, result);
+    assert.equal(parsed.recoveredText, undefined);
+    assert.equal(parsed.originalChars, raw.length);
+    assert.ok(stored.length <= MAX_LOG_LINE_CHARS);
+    assert.equal(stored.includes(result), false);
+    assert.equal(boundStoredLogLine(stored), stored);
+    assert.equal(extractTextFromEventLine(stored), undefined);
+  });
+
+  it("drops an oversized legacy recoveredText on reload bounding", () => {
+    const answer = "Q".repeat(20_000);
+    const legacy = JSON.stringify({
+      type: "log_truncated",
+      originalChars: 50_000,
+      recoveredText: answer,
+    });
+    const reloaded = boundStoredLogLine(legacy);
+    assert.ok(reloaded.length <= MAX_LOG_LINE_CHARS);
+    assert.equal(reloaded.includes(answer), false);
+    assert.equal(extractTextFromEventLine(reloaded), undefined);
+    assert.equal(boundStoredLogLine(reloaded), reloaded);
   });
 
   it("selects indices in original order", () => {

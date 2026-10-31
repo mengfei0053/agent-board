@@ -23,6 +23,7 @@ import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import { applyWorkspaceToPrompt } from "./workspaceApply.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
+  encodeStreamLogLine,
   extractFinalOutput,
   extractOutputsByIteration,
   extractPromptsByIteration,
@@ -141,17 +142,22 @@ function now() {
   return new Date().toISOString();
 }
 
-function writeLog(id: string, line: string) {
-  appendLog(id, line);
+function writeLog(id: string, line: string, source?: "stdout" | "stderr") {
+  // Tag child streams so reload can tell stdout from stderr. Board lines stay raw.
+  const stored =
+    source === "stdout" || source === "stderr" ? encodeStreamLogLine(source, line) : line;
+  appendLog(id, stored);
   const at = now();
   const cur = getTask(id);
   // After terminal status, keep logs in DB but do not flood SSE/UI with upserts.
   const terminal = cur && ["stopped", "succeeded", "failed", "archived"].includes(cur.status);
   if (!terminal) {
     // Never push multi-MB agent_end dumps over SSE — UI freezes.
-    publish({ type: "task_log", taskId: id, line: truncateLogLine(line), at });
+    publish({ type: "task_log", taskId: id, line: truncateLogLine(stored), at });
   }
   if (!cur || terminal) return;
+  // stderr is diagnostics only. It must not become task output or side jobs.
+  if (source === "stderr") return;
 
   const patchPartial: Partial<Task> = {};
   const piece = extractTextFromEventLine(line);
@@ -285,9 +291,9 @@ function spawnRunner(task: Task): Task {
       if (currentRunId(id) !== runId) return;
       applyStatus(id, p);
     },
-    onLog: (line) => {
+    onLog: (line, source) => {
       if (currentRunId(id) !== runId) return;
-      writeLog(id, line);
+      writeLog(id, line, source);
     },
   });
   if (currentRunId(id) !== runId) {
@@ -502,9 +508,9 @@ async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
         if (currentRunId(id) !== runId) return;
         applyStatus(id, p);
       },
-      onLog: (line) => {
+      onLog: (line, source) => {
         if (currentRunId(id) !== runId) return;
-        writeLog(id, line);
+        writeLog(id, line, source);
       },
     },
     { continuePrompt: contPrompt },

@@ -35,7 +35,7 @@ describe("spawnLogged protocol stream", () => {
       "process.stdout.write(JSON.stringify({ type: 'result', result: 'from-out' }) + '\\n');",
     ].join("");
     const classified: string[] = [];
-    const logged: string[] = [];
+    const logged: { line: string; source?: string }[] = [];
     let status: TaskStatus = "queued";
     const handle = spawnLogged(
       process.execPath,
@@ -45,7 +45,7 @@ describe("spawnLogged protocol stream", () => {
         onStatus: (patch) => {
           if (patch.status) status = patch.status;
         },
-        onLog: (line) => logged.push(line),
+        onLog: (line, source) => logged.push({ line, source }),
       },
       {
         cliKind: "pi",
@@ -56,7 +56,41 @@ describe("spawnLogged protocol stream", () => {
     await handle.settled;
     assert.ok(classified.some((line) => line.includes("from-out")));
     assert.equal(classified.some((line) => line.includes("from-err")), false);
-    assert.ok(logged.some((line) => line.includes("from-err")));
+    assert.ok(logged.some((entry) => entry.line.includes("from-err") && entry.source === "stderr"));
+    assert.ok(logged.some((entry) => entry.line.includes("from-out") && entry.source === "stdout"));
+  });
+
+  it("delivers complete lines before reporting an overlong tail in the same chunk", async () => {
+    const script = [
+      "process.stdout.write('{\"type\":\"result\",\"result\":\"kept-before-cut\"}\\n');",
+      "process.stdout.write('Z'.repeat(1000001));",
+    ].join("");
+    const events: { line: string; source?: string }[] = [];
+    const classified: string[] = [];
+    let status: TaskStatus = "queued";
+    const handle = spawnLogged(
+      process.execPath,
+      ["-e", script],
+      process.cwd(),
+      {
+        onStatus: (patch) => {
+          if (patch.status) status = patch.status;
+        },
+        onLog: (line, source) => events.push({ line, source }),
+      },
+      {
+        cliKind: "pi",
+        getStatus: () => status,
+        classifyLine: (line) => classified.push(line),
+      },
+    );
+    await handle.settled;
+    const lineIdx = events.findIndex((entry) => entry.line.includes("kept-before-cut"));
+    const truncIdx = events.findIndex((entry) => entry.line.includes("line_too_long"));
+    assert.ok(lineIdx >= 0);
+    assert.ok(truncIdx > lineIdx);
+    assert.equal(events[lineIdx]?.source, "stdout");
+    assert.ok(classified.some((line) => line.includes("kept-before-cut")));
   });
 
   it("stopAndWait returns after the child exits", async () => {

@@ -311,7 +311,7 @@ export function spawnLogged(
           preview: line.trim().slice(0, 180),
         })
       : line;
-    hooks.onLog(stored);
+    hooks.onLog(stored, stream);
     // Trusted protocol (session id, result text) is stdout only.
     // stderr is logged and may still trip the 429 watchdog.
     if (stream === "stdout") opts.classifyLine?.(line, hooks);
@@ -321,9 +321,13 @@ export function spawnLogged(
   const feed = (state: StreamLineState, stream: "stdout" | "stderr", chunk: Buffer) => {
     if (stoppedByUser || endedByWatchdog || closed) return;
     const pushed = pushStreamBytes(state, chunk);
+    // Complete lines in this chunk are delivered even when a later line is dropped.
+    for (const line of pushed.lines) {
+      emitLine(line, stream);
+      if (stoppedByUser || endedByWatchdog || closed) return;
+    }
     if (pushed.truncated) {
       hooks.onLog(JSON.stringify({ type: "stream_truncated", stream, reason: "line_too_long" }));
-      return;
     }
     if (pushed.droppedLines > 0) {
       hooks.onLog(
@@ -334,10 +338,6 @@ export function spawnLogged(
           droppedLines: pushed.droppedLines,
         }),
       );
-    }
-    for (const line of pushed.lines) {
-      emitLine(line, stream);
-      if (endedByWatchdog) return;
     }
   };
 

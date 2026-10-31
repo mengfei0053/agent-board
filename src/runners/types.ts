@@ -2,7 +2,8 @@ import type { Task } from "../types.js";
 
 export type RunnerHooks = {
   onStatus: (patch: Partial<Task>) => void;
-  onLog: (line: string) => void;
+  /** `source` is set for child stdout/stderr. Omitted for board-authored lines. */
+  onLog: (line: string, source?: "stdout" | "stderr") => void;
 };
 
 export type RunnerHandle = {
