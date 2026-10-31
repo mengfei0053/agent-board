@@ -10,7 +10,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import tech.mengfei.agentboard.MainActivity
 import tech.mengfei.agentboard.R
+import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
 import tech.mengfei.agentboard.protocol.DoneNotice
+import tech.mengfei.agentboard.protocol.statusLabel
+import tech.mengfei.agentboard.ui.prefersEnglish
 
 class DoneNotifier(private val context: Context) {
     fun ensureChannel() {
@@ -27,9 +30,11 @@ class DoneNotifier(private val context: Context) {
     }
 
     fun post(notice: DoneNotice) {
+        if (notice.status == ARCHIVED_STATUS) return
         ensureChannel()
-        val title = notice.title ?: "Task ${notice.status}"
-        val body = notice.summary ?: "${notice.taskId} ${notice.status}"
+        val english = prefersEnglish(java.util.Locale.getDefault().language)
+        val title = notice.title?.takeIf { it.isNotBlank() } ?: statusLabel(notice.status, english)
+        val body = "${notice.taskId} · ${statusLabel(notice.status, english)}"
         val open = PendingIntent.getActivity(
             context,
             0,

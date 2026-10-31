@@ -1,0 +1,96 @@
+const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+
+export type ArchiveRow = {
+  id: string;
+  title: string;
+  status: "archived";
+  updatedAt: number;
+  agent?: string;
+  workspaceId?: string;
+  cwd?: string;
+  prompt?: string;
+  promptPreview?: string;
+};
+
+export function mapArchiveRow(raw: unknown, full: boolean): ArchiveRow | null {
+  if (!isRecord(raw)) return null;
+  if (raw.status !== "archived") return null;
+  const id = typeof raw.id === "string" ? raw.id : "";
+  if (!TASK_ID.test(id)) return null;
+  const title = clean(typeof raw.title === "string" ? raw.title : "untitled", 200) || "untitled";
+  const updatedAt = readTime(raw.updatedAt);
+  const row: ArchiveRow = { id, title, status: "archived", updatedAt };
+  const agent = typeof raw.kind === "string" ? raw.kind : typeof raw.agent === "string" ? raw.agent : "";
+  if (agent && agent.length <= 64) row.agent = agent;
+  const workspaceId = typeof raw.workspaceId === "string" ? raw.workspaceId : "";
+  if (workspaceId && /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(workspaceId)) row.workspaceId = workspaceId;
+  const cwd = typeof raw.cwd === "string" ? raw.cwd : "";
+  if (cwd && cwd.length <= 1024 && !cwd.includes("://")) row.cwd = cwd;
+  const prompt = typeof raw.prompt === "string" ? clean(raw.prompt, full ? 2_000 : 240) : "";
+  if (prompt) {
+    if (full) row.prompt = prompt;
+    else row.promptPreview = prompt;
+  }
+  return row;
+}
+
+export function pageArchiveRows(rows: ArchiveRow[], cursor: string | undefined, limit: number):
+  { ok: true; tasks: ArchiveRow[]; nextCursor?: string } | { ok: false; message: string } {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) return { ok: false, message: "limit is invalid" };
+  if (cursor !== undefined && !ARCHIVE_CURSOR.test(cursor)) return { ok: false, message: "cursor is invalid" };
+  const sorted = [...rows].sort((a, b) => {
+    if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  let start = 0;
+  if (cursor) {
+    const split = cursor.indexOf(":");
+    const at = Number(cursor.slice(0, split));
+    const id = cursor.slice(split + 1);
+    const idx = sorted.findIndex((row) => row.updatedAt < at || (row.updatedAt === at && row.id > id));
+    start = idx < 0 ? sorted.length : idx;
+  }
+  const tasks = sorted.slice(start, start + limit);
+  const last = tasks.at(-1);
+  const more = start + tasks.length < sorted.length;
+  return { ok: true, tasks, ...(more && last ? { nextCursor: `${last.updatedAt}:${last.id}` } : {}) };
+}
+
+export function wireArchiveRow(row: ArchiveRow, full: boolean): Record<string, unknown> {
+  const wire: Record<string, unknown> = {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    updatedAt: row.updatedAt,
+  };
+  if (row.agent) wire.agent = row.agent;
+  if (row.workspaceId) wire.workspaceId = row.workspaceId;
+  if (row.cwd) wire.cwd = row.cwd;
+  if (full) {
+    wire.detail = "full";
+    if (row.prompt) wire.prompt = row.prompt;
+  } else if (row.promptPreview) {
+    wire.promptPreview = row.promptPreview;
+  }
+  return wire;
+}
+
+function readTime(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function clean(value: string, max: number): string {
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  if (cleaned.length <= max) return cleaned;
+  return cleaned.slice(0, max);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

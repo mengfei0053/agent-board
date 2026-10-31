@@ -3,9 +3,12 @@ package tech.mengfei.agentboard.protocol
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 val TASK_STATUSES = setOf("queued", "running", "paused", "succeeded", "failed", "stopped")
 val TERMINAL_STATUSES = setOf("succeeded", "failed", "stopped")
+const val ARCHIVED_STATUS = "archived"
+const val ARCHIVE_CAPABILITY = "archive.list"
 
 data class RelayTurn(
     val iteration: Int,
@@ -72,6 +75,26 @@ data class BoardInfo(
     val label: String?,
     val online: Boolean,
     val generation: Long?,
+    val capabilities: List<String> = emptyList(),
+)
+
+data class ArchivePage(
+    val tasks: List<RelayTask>,
+    val nextCursor: String?,
+)
+
+data class DetailRequest(
+    val requestId: String,
+    val boardId: String,
+    val taskId: String,
+    val epoch: Int,
+)
+
+data class ArchiveRequest(
+    val requestId: String,
+    val boardId: String,
+    val epoch: Int,
+    val reset: Boolean,
 )
 
 data class ThinWorkspace(
@@ -141,9 +164,11 @@ class BoardReducer(
         val generation = payload.longValue("generation")
         val generationChanged = generation != null && view.generation != null && generation != view.generation
         if (generationChanged) logDedupe.clear()
-        val tasks = readTaskList(payload["tasks"]).map { incoming ->
-            mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
-        }
+        val tasks = readTaskList(payload["tasks"])
+            .filter { it.status != ARCHIVED_STATUS }
+            .map { incoming ->
+                mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
+            }
         val seq = payload.longValue("seq") ?: payload.longValue("version")
         val stale = snapshotStillStale(generation, seq)
         return ApplyOutcome.Applied(view.copy(
@@ -162,6 +187,14 @@ class BoardReducer(
         val task = payload.obj("task")?.let(::readTask) ?: return ApplyOutcome.Ignored(view)
         val generation = payload.longValue("generation")
         val seq = payload.longValue("seq")
+        if (task.status == ARCHIVED_STATUS) {
+            return ApplyOutcome.Applied(view.copy(
+                tasks = view.tasks.filterNot { it.id == task.id },
+                generation = generation ?: view.generation,
+                seq = seq ?: view.seq,
+                needsResync = gapOpen(),
+            ))
+        }
         return ApplyOutcome.Applied(view.copy(
             tasks = upsert(view.tasks, task),
             generation = generation ?: view.generation,
@@ -302,7 +335,7 @@ fun readTask(obj: JsonObject): RelayTask? {
     val id = obj.text("id") ?: return null
     val title = obj.text("title") ?: return null
     val status = obj.text("status") ?: return null
-    if (status !in TASK_STATUSES) return null
+    if (status !in TASK_STATUSES && status != ARCHIVED_STATUS) return null
     val updatedAt = obj.longValue("updatedAt") ?: return null
     return RelayTask(
         id = id,
@@ -357,22 +390,34 @@ fun mergeRelayTask(previous: RelayTask?, incoming: RelayTask): RelayTask {
     )
 }
 
-fun statusLabel(status: String): String = when (status) {
+fun statusLabel(status: String, english: Boolean = false): String = if (english) when (status) {
     "queued" -> "Todo"
+    "running" -> "Running"
+    "paused" -> "Waiting"
+    "succeeded" -> "Succeeded"
+    "failed" -> "Failed"
+    "stopped" -> "Stopped"
+    ARCHIVED_STATUS -> "Archived"
+    else -> status
+} else when (status) {
+    "queued" -> "待办"
     "running" -> "进行中"
     "paused" -> "等待确认"
     "succeeded" -> "成功"
     "failed" -> "失败"
     "stopped" -> "已停止"
+    ARCHIVED_STATUS -> "已归档"
     else -> status
 }
 
 fun canStopStatus(status: String): Boolean = status == "queued" || status == "running" || status == "paused"
 
 /** Web continue is hidden for draft and disabled while queued or running. Paused (blocked) can continue. */
-fun canContinueStatus(status: String): Boolean = status != "queued" && status != "running"
+fun canContinueStatus(status: String): Boolean =
+    status != "queued" && status != "running" && status != ARCHIVED_STATUS
 
 fun continueHint(task: RelayTask): String {
+    if (task.status == ARCHIVED_STATUS) return "归档任务只读"
     if (!canContinueStatus(task.status)) return "任务运行中，请先停止再继续"
     val session = task.sessionId
     return if (!session.isNullOrBlank()) "将续会话 $session" else "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
@@ -642,6 +687,76 @@ fun readTaskList(element: JsonElement?): List<RelayTask> {
     return array.mapNotNull { (it as? JsonObject)?.let(::readTask) }
 }
 
+fun readCapabilities(obj: JsonObject): List<String> {
+    val array = obj.array("capabilities") ?: return emptyList()
+    return array.mapNotNull { item ->
+        val primitive = item as? JsonPrimitive ?: return@mapNotNull null
+        if (!primitive.isString) return@mapNotNull null
+        primitive.content
+    }
+}
+
+fun readArchivePage(payload: JsonObject): ArchivePage? {
+    val archive = payload.obj("archive") ?: return null
+    if ("tasks" !in archive) return null
+    val array = archive.array("tasks") ?: return null
+    if (array.size > 50) return null
+    val tasks = ArrayList<RelayTask>(array.size)
+    for (item in array) {
+        val row = item as? JsonObject ?: return null
+        val task = readTask(row) ?: return null
+        if (task.status != ARCHIVED_STATUS) return null
+        tasks.add(task)
+    }
+    return ArchivePage(tasks, archive.text("nextCursor")?.takeIf { it.isNotBlank() })
+}
+
+fun mergeArchivePages(existing: List<RelayTask>, more: List<RelayTask>): List<RelayTask> {
+    val seen = existing.mapTo(HashSet()) { it.id }
+    return existing + more.filter { seen.add(it.id) }
+}
+
+/** A newly selected board shows its own rows only. A mismatch is loading, not the previous board. */
+fun tasksAfterBoardSwitch(viewBoardId: String, selectedBoardId: String?, viewTasks: List<RelayTask>): List<RelayTask> {
+    if (selectedBoardId.isNullOrEmpty() || viewBoardId != selectedBoardId) return emptyList()
+    return viewTasks.filter { it.status != ARCHIVED_STATUS }
+}
+
+fun activeDetailTask(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): RelayTask? {
+    if (!detailMatches(request, epoch, viewBoardId, ref, task)) return null
+    if (task == null || task.status == ARCHIVED_STATUS) return null
+    return task
+}
+
+fun archivedDetailTask(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): RelayTask? {
+    if (!detailMatches(request, epoch, viewBoardId, ref, task)) return null
+    if (task == null || task.status != ARCHIVED_STATUS) return null
+    return task
+}
+
+private fun detailMatches(
+    request: DetailRequest,
+    epoch: Int,
+    viewBoardId: String,
+    ref: String?,
+    task: RelayTask?,
+): Boolean {
+    if (ref == null || ref != request.requestId || epoch != request.epoch || viewBoardId != request.boardId) return false
+    return task != null && task.id == request.taskId
+}
+
 fun parseBoardList(payload: JsonObject): List<BoardInfo>? {
     if ("boards" !in payload) return null
     val array = payload.array("boards") ?: return emptyList()
@@ -649,7 +764,13 @@ fun parseBoardList(payload: JsonObject): List<BoardInfo>? {
         val obj = item as? JsonObject ?: return@mapNotNull null
         val boardId = obj.text("boardId") ?: return@mapNotNull null
         val online = obj.bool("online") ?: return@mapNotNull null
-        BoardInfo(boardId, obj.text("label"), online, obj.longValue("generation"))
+        BoardInfo(
+            boardId,
+            obj.text("label"),
+            online,
+            obj.longValue("generation"),
+            readCapabilities(obj),
+        )
     }
 }
 

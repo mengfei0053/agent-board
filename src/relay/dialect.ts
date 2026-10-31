@@ -10,7 +10,8 @@ export type DialectResult = {
 /**
  * Map one in-process board event onto relay frames.
  * `task_delete` and workspace changes ask for a fresh snapshot.
- * Archived (and any unmapped status) is dropped: no `evt.task` and no done.
+ * Archived tasks are not `evt.task` and never `evt.task.done`.
+ * If the task was on the active list, the caller refreshes the snapshot so phones drop it.
  * `task_log` has no stream on the bus, so logs are marked `system`.
  */
 export function eventsFromBoardEvent(
@@ -22,8 +23,8 @@ export function eventsFromBoardEvent(
     case "task_upsert": {
       const mapped = mapBoardTask(ev.task);
       if (!mapped) {
-        cursor.forget(ev.task.id);
-        return { frames: [], needsSnapshot: false };
+        const removed = ev.task.status === "archived" && cursor.forget(ev.task.id);
+        return { frames: [], needsSnapshot: removed };
       }
       return { frames: cursor.observeTask(boardId, mapped), needsSnapshot: false };
     }

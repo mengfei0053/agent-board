@@ -13,6 +13,8 @@ describe("relay map", () => {
     assert.equal(mapStatus("failed"), "failed");
     assert.equal(mapStatus("stopped"), "stopped");
     assert.equal(mapStatus("archived"), null);
+    assert.equal(mapStatus("archived", true), "archived");
+    assert.equal(isTerminalStatus("archived"), false);
     assert.equal(mapStatus("nope"), null);
     assert.equal(isTerminalStatus("stopped"), true);
     assert.equal(isTerminalStatus("paused"), false);

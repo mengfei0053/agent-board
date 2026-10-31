@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Agent Board</string>
-    <string name="task_done_channel">Task finished</string>
-    <string name="task_done_channel_desc">A board task reached succeeded, failed, or stopped while this phone was online.</string>
+    <string name="task_done_channel">任务完成</string>
+    <string name="task_done_channel_desc">看板任务在这台手机在线时进入成功、失败或已停止。归档不会通知。</string>
 </resources>

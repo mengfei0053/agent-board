@@ -60,6 +60,28 @@ test("ThinkBook SSE names map onto relay events", () => {
   assert.equal(removed.some((event) => event.type === "evt.task.done"), false);
 });
 
+test("archiving a known task refreshes the snapshot and is not a completion", () => {
+  const cursor = new EventCursor("thinkbook-main");
+  cursor.reset(1);
+  const known = new Map<string, MappedTask>();
+  eventsFromBoardSse(cursor, known, "hello", JSON.stringify({
+    type: "hello",
+    tasks: [{ id: "task_01", title: "Fix login flake", kind: "cursor", status: "running", updatedAt: 10 }],
+  }));
+  const parked = eventsFromBoardSse(cursor, known, "task_upsert", JSON.stringify({
+    type: "task_upsert",
+    task: { id: "task_01", title: "Fix login flake", kind: "cursor", status: "archived", updatedAt: 14 },
+  }));
+  assert.equal(parked.some((event) => event.type === "evt.task.done"), false);
+  assert.equal(parked[0]?.type, "evt.snapshot");
+  assert.deepEqual(parked[0]?.payload.tasks, []);
+  const again = eventsFromBoardSse(cursor, known, "task_upsert", JSON.stringify({
+    type: "task_upsert",
+    task: { id: "task_01", title: "Fix login flake", status: "archived", updatedAt: 15 },
+  }));
+  assert.equal(again.length, 0);
+});
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

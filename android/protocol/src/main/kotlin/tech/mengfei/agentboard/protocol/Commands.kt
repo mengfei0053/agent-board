@@ -37,12 +37,20 @@ private val preStoreCodes = setOf(
     "unauthorized",
     "bad_request",
     "rate_limited",
+    "unsupported",
 )
 
 /**
  * The relay answers `cmd.detail` with `accepted` before the board sends the card.
  * That ack has no task. Keep waiting for `executed` (or an error). Do not clear the waiter.
  */
+/** `accepted` has no page yet. Wait for `executed` or an error. */
+fun archiveReplySettled(message: Envelope): Boolean {
+    if (message.type == "err") return true
+    if (message.type != "ack") return true
+    return message.payload.text("stage") != "accepted"
+}
+
 fun detailReplySettled(message: Envelope): Boolean {
     if (message.type == "err") return true
     if (message.type != "ack") return true

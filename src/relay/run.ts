@@ -244,6 +244,7 @@ async function runOnce(opts: {
         boardId: opts.config.boardId,
         token: opts.config.boardToken,
         label: opts.config.boardLabel,
+        capabilities: ["archive.list"],
       }, registerId)) {
         fail(new Error("register send failed"));
       }

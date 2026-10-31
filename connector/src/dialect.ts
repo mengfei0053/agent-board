@@ -31,7 +31,14 @@ export function eventsFromBoardSse(
   }
   if (name === "task_upsert") {
     const task = mapBoardTask(parsed.task);
-    if (!task) return [];
+    if (!task) {
+      const raw = parsed.task;
+      const id = isRecord(raw) && typeof raw.id === "string" ? raw.id : "";
+      if (isRecord(raw) && raw.status === "archived" && id && known.delete(id)) {
+        return [cursor.snapshot([...known.values()], Date.now(), workspaces)];
+      }
+      return [];
+    }
     known.set(task.id, task);
     return cursor.observe(task);
   }

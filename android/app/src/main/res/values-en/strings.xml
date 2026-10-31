@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Agent Board</string>
+    <string name="task_done_channel">Task finished</string>
+    <string name="task_done_channel_desc">A board task reached succeeded, failed, or stopped while this phone was online. Archiving does not notify.</string>
+</resources>

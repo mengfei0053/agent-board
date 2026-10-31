@@ -46,6 +46,89 @@ fun parsePairResponse(text: String): PairResponse {
     return PairResponse(deviceId, deviceToken, role, ids, expiresAt)
 }
 
+const val PAIR_CODE_LENGTH = 46
+
+private val pairSuffix = Regex("^[A-Za-z0-9_-]{43}$")
+
+enum class PairIssue {
+    Empty,
+    Prefix,
+    Alphabet,
+    Short,
+    Long,
+}
+
+/** Outer whitespace only. Internal characters stay so the user can correct them. */
+fun trimOuter(value: String): String = value.trim()
+
+fun inspectPairCode(raw: String): PairIssue? {
+    val code = trimOuter(raw)
+    if (code.isEmpty()) return PairIssue.Empty
+    if (code.length > PAIR_CODE_LENGTH) return PairIssue.Long
+    if (!code.startsWith("pc_")) return PairIssue.Prefix
+    if (code.length < PAIR_CODE_LENGTH) return PairIssue.Short
+    if (!pairSuffix.matches(code.substring(3))) return PairIssue.Alphabet
+    return null
+}
+
+fun pairSubmitAllowed(raw: String, httpBase: String, secure: Boolean, busy: Boolean): Boolean {
+    if (!secure || busy) return false
+    if (inspectPairCode(raw) != null) return false
+    return try {
+        deriveWsUrl(normalizeHttpBase(httpBase))
+        true
+    } catch (error: RelayFormatException) {
+        false
+    }
+}
+
+fun pairIssueMessage(issue: PairIssue, english: Boolean): String = when (issue) {
+    PairIssue.Empty -> if (english) "Enter the pair code from the relay." else "请输入配对码。"
+    PairIssue.Prefix -> if (english) "Pair codes start with pc_." else "配对码应以 pc_ 开头。"
+    PairIssue.Alphabet -> if (english) "The pair code contains a character that is not allowed." else "配对码含有无效字符。"
+    PairIssue.Short -> if (english) "The pair code is incomplete. A pc_ code is 46 characters." else "配对码不完整。完整的 pc_ 码是 46 位。"
+    PairIssue.Long -> if (english) {
+        "The pair code is longer than 46 characters and was not shortened."
+    } else {
+        "配对码超过 46 位，没有自动截断。请删掉多余内容。"
+    }
+}
+
+/**
+ * Unknown, expired, and already-used codes share one sentence.
+ * Rate limiting stays distinct. The relay body is not shown.
+ */
+fun pairHttpFailure(httpCode: Int, body: String, english: Boolean): String {
+    val code = relayErrorCode(body)
+    if (httpCode == 429 || code == "rate_limited") {
+        return if (english) {
+            "Too many pair attempts. Wait and try again. This phone will not retry automatically."
+        } else {
+            "请求过于频繁，请稍后再试。不会自动重试。"
+        }
+    }
+    if (httpCode == 401 || code == "unauthorized") {
+        return if (english) {
+            "Invalid or expired. Ask for a new pair code. It may be expired, already used, or mistyped — paste the full code."
+        } else {
+            "无效或已过期，请重新获取配对码。可能已过期、已使用或输入错误，请重新生成并粘贴完整配对码。"
+        }
+    }
+    if (httpCode in 500..599) {
+        return if (english) "The relay is unavailable. Try again later." else "中继暂不可用，请稍后重试。"
+    }
+    return if (english) "Could not pair with the relay." else "无法完成配对，请检查网络后再试。"
+}
+
+private fun relayErrorCode(text: String): String? {
+    val root = try {
+        relayJson.parseToJsonElement(text) as? JsonObject
+    } catch (error: Exception) {
+        null
+    }
+    return root?.obj("error")?.text("code")
+}
+
 fun parseRelayError(text: String): String {
     val root = try {
         relayJson.parseToJsonElement(text) as? JsonObject

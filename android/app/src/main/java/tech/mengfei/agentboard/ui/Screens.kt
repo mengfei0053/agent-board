@@ -4,6 +4,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,8 +36,14 @@ import tech.mengfei.agentboard.BoardViewModel
 import tech.mengfei.agentboard.Screen
 import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
+import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
+import tech.mengfei.agentboard.protocol.PAIR_CODE_LENGTH
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
+import tech.mengfei.agentboard.protocol.inspectPairCode
+import tech.mengfei.agentboard.protocol.pairIssueMessage
+import tech.mengfei.agentboard.protocol.pairSubmitAllowed
+import tech.mengfei.agentboard.protocol.trimOuter
 import tech.mengfei.agentboard.protocol.canContinueStatus
 import tech.mengfei.agentboard.protocol.canStopStatus
 import tech.mengfei.agentboard.protocol.continueHint
@@ -56,20 +63,24 @@ import java.util.Date
 @Composable
 fun RootScreen(state: UiState, model: BoardViewModel) {
     val title = when (val screen = state.screen) {
-        Screen.Pair -> "Pair this phone"
-        Screen.Boards -> "Boards"
-        Screen.Settings -> "Relay"
+        Screen.Pair -> state.tx("配对这台手机", "Pair this phone")
+        Screen.Boards -> state.tx("看板", "Boards")
+        Screen.Settings -> state.tx("中继", "Relay")
         is Screen.Tasks -> state.boards.find { it.boardId == screen.boardId }?.label ?: screen.boardId
-        is Screen.Detail -> state.tasks.find { it.id == screen.taskId }?.title ?: screen.taskId
-        is Screen.Create -> "New task"
-        is Screen.WorkspaceCreate -> "新建工作区"
+        is Screen.Detail -> {
+            val card = if (state.detailArchived) state.archiveDetail ?: state.archiveTasks.find { it.id == screen.taskId }
+            else state.tasks.find { it.id == screen.taskId }
+            card?.title ?: screen.taskId
+        }
+        is Screen.Create -> state.tx("新建任务", "New task")
+        is Screen.WorkspaceCreate -> state.tx("新建工作区", "New workspace")
     }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Text(title, style = MaterialTheme.typography.headlineSmall)
-                Text(connectionLabel(state.connection), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(connectionLabel(state.connection, state.englishUi), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
     ) { padding ->
@@ -87,43 +98,61 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
 
 @Composable
 private fun PairScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
+    val clipboard = LocalClipboardManager.current
+    val trimmed = trimOuter(state.pairCode)
+    val issue = inspectPairCode(state.pairCode)
     ScrollColumn(padding) {
         Text(
-            "This phone talks only to the relay. It never dials the ThinkBook board. Ask for a one-time pair code, then enter it here.",
+            state.tx(
+                "这台手机只连接中继，不会直接拨号 ThinkBook。请索取一次性配对码 pc_（共 46 位），再粘贴到这里。只去掉首尾空白。",
+                "This phone talks only to the relay. It never dials the ThinkBook board. Paste a one-time pc_ code (46 characters). Only outer whitespace is removed.",
+            ),
             style = MaterialTheme.typography.bodyMedium,
         )
         Banner(state.banner)
         OutlinedTextField(
             value = state.httpBase,
             onValueChange = model::updateHttpBase,
-            label = { Text("Relay HTTP URL") },
+            label = { Text(state.tx("中继 HTTP 地址", "Relay HTTP URL")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
-        Text(wsPreview(state.httpBase), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(wsPreview(state.httpBase, state.englishUi), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedTextField(
             value = state.pairCode,
             onValueChange = model::updatePairCode,
-            label = { Text("Pair code") },
+            label = { Text(state.tx("配对码", "Pair code")) },
             modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
+            minLines = 2,
+            maxLines = 4,
         )
+        Text(
+            "${trimmed.length}/$PAIR_CODE_LENGTH",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        if (issue != null && trimmed.isNotEmpty()) {
+            Text(pairIssueMessage(issue, state.englishUi), color = MaterialTheme.colorScheme.error)
+        }
+        TextButton(onClick = {
+            val pasted = clipboard.getText()?.text ?: return@TextButton
+            model.pastePairCode(pasted)
+        }) { Text(state.tx("从剪贴板粘贴", "Paste from clipboard")) }
         OutlinedTextField(
             value = state.deviceName,
             onValueChange = model::updateDeviceName,
-            label = { Text("Device name") },
+            label = { Text(state.tx("设备名称", "Device name")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         Button(
             onClick = model::pair,
-            enabled = !state.busy && state.secureStore,
+            enabled = pairSubmitAllowed(state.pairCode, state.httpBase, state.secureStore, state.busy),
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(if (state.busy) "Working" else "Pair") }
+        ) { Text(if (state.busy) state.tx("处理中", "Working") else state.tx("配对", "Pair")) }
         OutlinedButton(onClick = model::checkRelay, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-            Text("Check relay")
+            Text(state.tx("检查中继", "Check relay"))
         }
-        TextButton(onClick = model::openSettings) { Text("Relay settings") }
+        TextButton(onClick = model::openSettings) { Text(state.tx("中继设置", "Relay settings")) }
     }
 }
 
@@ -132,12 +161,15 @@ private fun BoardScreen(state: UiState, model: BoardViewModel, padding: PaddingV
     Column(Modifier.fillMaxSize().padding(padding)) {
         Banner(state.banner)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = model::refreshBoards, enabled = state.connection == "online") { Text("Refresh") }
-            TextButton(onClick = model::openSettings) { Text("Settings") }
+            TextButton(onClick = model::refreshBoards, enabled = state.connection == "online") { Text(state.tx("刷新", "Refresh")) }
+            TextButton(onClick = model::openSettings) { Text(state.tx("设置", "Settings")) }
         }
         if (state.boards.isEmpty()) {
             Text(
-                "No boards on this token yet. The connector has to register with the relay before a board appears.",
+                state.tx(
+                    "这个令牌下还没有看板。看板向中继注册之后才会出现。",
+                    "No boards on this token yet. The board has to register with the relay before one appears.",
+                ),
                 modifier = Modifier.padding(20.dp),
             )
         } else {
@@ -147,7 +179,7 @@ private fun BoardScreen(state: UiState, model: BoardViewModel, padding: PaddingV
                         Column(Modifier.fillMaxWidth()) {
                             Text(board.label ?: board.boardId, style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "${board.boardId} · ${if (board.online) "online" else "offline"}",
+                                "${board.boardId} · ${if (board.online) state.tx("在线", "online") else state.tx("离线", "offline")}",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -165,7 +197,7 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
         Banner(state.banner)
         if (state.selectedOnline == false) {
             Text(
-                "This board is offline. The relay will not queue a command.",
+                state.tx("看板不在线，中继不会排队。", "This board is offline. The relay will not queue a command."),
                 modifier = Modifier.padding(horizontal = 20.dp),
                 color = MaterialTheme.colorScheme.error,
             )
@@ -173,11 +205,16 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
         Banner(state.commandNote)
         Banner(state.formError)
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = model::pop) { Text("Boards") }
-            TextButton(onClick = model::openCreate) { Text("New task") }
+            TextButton(onClick = model::pop) { Text(state.tx("看板", "Boards")) }
+            TextButton(onClick = model::openCreate, enabled = state.lane == "active") { Text(state.tx("新建任务", "New task")) }
         }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = state.lane == "active", onClick = model::showActive, label = { Text(state.tx("进行中", "Active")) })
+            FilterChip(selected = state.lane == "archive", onClick = model::showArchive, label = { Text(state.tx("归档", "Archive")) })
+        }
+        if (state.lane == "active") {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = model::openWorkspaceCreate) { Text("新建工作区") }
+            TextButton(onClick = model::openWorkspaceCreate) { Text(state.tx("新建工作区", "New workspace")) }
             TextButton(
                 onClick = model::requestDeleteWorkspace,
                 enabled = state.workspaces.any { it.id == state.selectedWorkspaceId },
@@ -185,7 +222,7 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
         }
         if (state.workspaceDeleteMode == "lookup") {
             TextButton(onClick = model::startDifferentWorkspaceDelete, modifier = Modifier.padding(horizontal = 12.dp)) {
-                Text("Start a different delete (new idempotency key)")
+                Text(state.tx("换一次删除（新的幂等键）", "Start a different delete (new idempotency key)"))
             }
         }
         val chips = workspaceSwitchItems(state.tasks, state.workspaces)
@@ -210,19 +247,26 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        }
+        if (state.lane == "archive") {
+            ArchiveList(state, model)
+        } else {
         val visible = visibleTasks(state.tasks, state.workspaces, state.selectedWorkspaceId)
-        if (visible.isEmpty()) {
+        if (!state.sawSnapshot) {
+            Text(state.tx("正在加载任务…", "Loading tasks…"), modifier = Modifier.padding(horizontal = 20.dp))
+        } else if (visible.isEmpty()) {
             Text(
-                if (state.selectedWorkspaceId == null) "当前没有工作区。" else "当前工作区暂无任务",
+                if (state.selectedWorkspaceId == null) state.tx("当前没有工作区。", "No workspace yet.") else state.tx("当前工作区暂无任务", "No tasks in this workspace"),
                 modifier = Modifier.padding(horizontal = 20.dp),
             )
         } else {
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
                 items(visible, key = { it.id }) { task ->
-                    TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces)) { model.openTask(task.id) }
+                    TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces), state.englishUi) { model.openTask(task.id) }
                     HorizontalDivider()
                 }
             }
+        }
         }
         if (state.confirmDeleteWorkspace) {
             val name = state.workspaces.find { it.id == state.selectedWorkspaceId }?.name ?: ""
@@ -245,13 +289,53 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
 }
 
 @Composable
-private fun TaskRow(task: RelayTask, workspaceLabel: String, onClick: () -> Unit) {
+private fun ColumnScope.ArchiveList(state: UiState, model: BoardViewModel) {
+    when {
+        !state.archiveSupported -> Text(
+            state.archiveError ?: state.tx(
+                "此看板暂不支持归档浏览。需要更新后的中继和看板连接。",
+                "This board cannot list archived tasks yet.",
+            ),
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+        state.archiveBusy && state.archiveTasks.isEmpty() -> Text(
+            state.tx("正在加载归档…", "Loading archive…"),
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+        state.archiveTasks.isEmpty() -> Text(
+            state.archiveError ?: state.tx("没有归档任务", "No archived tasks"),
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+        else -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
+            items(state.archiveTasks, key = { it.id }) { task ->
+                TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces), state.englishUi) {
+                    model.openArchiveTask(task.id)
+                }
+                HorizontalDivider()
+            }
+            item {
+                state.archiveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (state.archiveStale) {
+                    Text(state.tx("归档列表已过期，正在刷新。", "Archive list is stale and refreshing."))
+                }
+                if (state.archiveNextCursor != null) {
+                    TextButton(onClick = model::loadMoreArchive, enabled = !state.archiveBusy) {
+                        Text(if (state.archiveBusy) state.tx("加载中", "Loading") else state.tx("加载更多", "Load more"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskRow(task: RelayTask, workspaceLabel: String, english: Boolean, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Text(task.title, style = MaterialTheme.typography.titleMedium)
             Text(workspaceLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                "${task.status}${task.agent?.let { " · $it" } ?: ""}",
+                "${statusLabel(task.status, english)}${task.agent?.let { " · $it" } ?: ""}",
                 color = statusColor(task.status),
             )
         }
@@ -260,21 +344,26 @@ private fun TaskRow(task: RelayTask, workspaceLabel: String, onClick: () -> Unit
 
 @Composable
 private fun DetailScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
-    val task = state.tasks.find { it.id == state.selectedTaskId }
+    val task = if (state.detailArchived) {
+        state.archiveDetail ?: state.archiveTasks.find { it.id == state.selectedTaskId }
+    } else {
+        state.tasks.find { it.id == state.selectedTaskId }
+    }
+    val readOnly = task?.status == ARCHIVED_STATUS
     val clipboard = LocalClipboardManager.current
     ScrollColumn(padding) {
-        TextButton(onClick = model::pop) { Text("Tasks") }
+        TextButton(onClick = model::pop) { Text(state.tx("返回任务", "Tasks")) }
         if (task == null) {
-            Text("This task is not in the current snapshot.")
+            Text(state.tx("当前列表里没有这个任务。", "This task is not in the current list."))
         } else {
             Text(
-                "${task.id} · ${task.agent ?: "—"} · ${statusLabel(task.status)} · 迭代 ${task.iteration ?: 1}",
+                "${task.id} · ${task.agent ?: "—"} · ${statusLabel(task.status, state.englishUi)} · ${state.tx("迭代", "iteration")} ${task.iteration ?: 1}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text("任务信息", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
             MetaLine("任务 ID", task.id)
-            MetaLine("状态", statusLabel(task.status))
+            MetaLine(state.tx("状态", "Status"), statusLabel(task.status, state.englishUi))
             MetaLine("迭代", (task.iteration ?: 1).toString())
             MetaLine("开始时间", epochLabel(task.startedAt))
             MetaLine("结束时间", epochLabel(task.endedAt))
@@ -353,12 +442,15 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
         }
         Banner(state.commandNote)
         Banner(state.formError)
-        if (task != null && (canStopStatus(task.status) || state.stopMode != "send")) {
+        if (readOnly) {
+            Text(state.tx("归档任务只读，不能停止或继续。", "Archived tasks are read-only."))
+        }
+        if (!readOnly && task != null && (canStopStatus(task.status) || state.stopMode != "send")) {
             Button(onClick = model::submitStop, enabled = state.stopMode != "busy") {
-                Text(actionLabel(state.stopMode, "停止"))
+                Text(actionLabel(state.stopMode, state.tx("停止", "Stop"), state.englishUi))
             }
         }
-        if (task != null) {
+        if (!readOnly && task != null) {
             OutlinedTextField(
                 value = state.continuePrompt,
                 onValueChange = model::updateContinuePrompt,
@@ -370,14 +462,14 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
             Text(continueHint(task), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val continueEnabled = state.continueMode != "busy" && (state.continueMode != "send" || canContinueStatus(task.status))
             OutlinedButton(onClick = model::submitContinue, enabled = continueEnabled) {
-                Text(actionLabel(state.continueMode, "继续任务"))
+                Text(actionLabel(state.continueMode, state.tx("继续任务", "Continue"), state.englishUi))
             }
         }
-        if (state.stopResend) {
-            TextButton(onClick = model::resendStop) { Text("Send a new stop") }
+        if (!readOnly && state.stopResend) {
+            TextButton(onClick = model::resendStop) { Text(state.tx("再发一次停止", "Send a new stop")) }
         }
-        if (state.continueResend) {
-            TextButton(onClick = model::resendContinue) { Text("Send a new continue") }
+        if (!readOnly && state.continueResend) {
+            TextButton(onClick = model::resendContinue) { Text(state.tx("再发一次继续", "Send a new continue")) }
         }
         Text("原始日志", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
         if (state.logs.isEmpty()) {
@@ -430,26 +522,29 @@ private fun sideJobStatus(status: String): String = when (status) {
 @Composable
 private fun CreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
-        TextButton(onClick = model::pop) { Text("Tasks") }
+        TextButton(onClick = model::pop) { Text(state.tx("返回任务", "Tasks")) }
         val selected = state.workspaces.find { it.id == state.selectedWorkspaceId }
         if (selected != null && state.draftCwd.trim() == selected.path) {
             Text("工作区：${selected.name} · ${selected.path}")
         }
-        Text("The connector needs an agent and a local working directory. A path that is not a workspace root still runs, and the board may file it under the default workspace.")
+        Text(state.tx(
+            "需要选择 Agent 和本机工作目录。路径可以不是工作区根目录，看板仍可能把它归到默认工作区。",
+            "The board needs an agent and a local working directory. A path that is not a workspace root still runs, and the board may file it under the default workspace.",
+        ))
         Banner(state.banner)
         Banner(state.commandNote)
         Banner(state.formError)
         OutlinedTextField(
             value = state.draftTitle,
             onValueChange = model::updateDraftTitle,
-            label = { Text("Title") },
+            label = { Text(state.tx("标题", "Title")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         OutlinedTextField(
             value = state.draftPrompt,
             onValueChange = model::updateDraftPrompt,
-            label = { Text("Prompt") },
+            label = { Text(state.tx("提示词", "Prompt")) },
             modifier = Modifier.fillMaxWidth(),
             minLines = 4,
         )
@@ -469,7 +564,7 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
         OutlinedTextField(
             value = state.draftCwd,
             onValueChange = model::updateDraftCwd,
-            label = { Text("Working directory") },
+            label = { Text(state.tx("工作目录", "Working directory")) },
             placeholder = { Text("/home/me/src/app") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -480,13 +575,19 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                 onCheckedChange = model::setUseGitWorktree,
                 enabled = state.worktreeEnabled,
             )
-            Text("Start in a git worktree")
+            Text(state.tx("在 Git worktree 中启动", "Start in a git worktree"))
         }
         Text(
             if (state.worktreeEnabled) {
-                "Off by default. This cwd matches a git workspace root in the current snapshot."
+                state.tx(
+                    "默认关闭。当前目录与快照里的 Git 工作区根目录一致。",
+                    "Off by default. This cwd matches a git workspace root in the current snapshot.",
+                )
             } else {
-                "Off by default. It stays disabled until this cwd matches a git workspace root in a current snapshot, while the relay is connected and the task list is not stale."
+                state.tx(
+                    "默认关闭。需要当前目录是快照里的 Git 工作区根目录，中继已连接，且任务列表没有过期。",
+                    "Off by default. It stays disabled until this cwd matches a git workspace root in a current snapshot, while the relay is connected and the task list is not stale.",
+                )
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -495,10 +596,10 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
             onClick = model::submitCreate,
             enabled = state.createMode != "busy",
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(actionLabel(state.createMode, "Create")) }
+        ) { Text(actionLabel(state.createMode, state.tx("创建", "Create"), state.englishUi)) }
         if (state.createMode == "lookup") {
             TextButton(onClick = model::startDifferentCreate) {
-                Text("Start a different command (new idempotency key)")
+                Text(state.tx("换一条新命令（新的幂等键）", "Start a different command (new idempotency key)"))
             }
         }
     }
@@ -507,21 +608,24 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
 @Composable
 private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
-        TextButton(onClick = model::pop) { Text("Tasks") }
-        Text("名称和路径与网页看板的新建工作区相同。路径必须是 ThinkBook 上的绝对目录。")
+        TextButton(onClick = model::pop) { Text(state.tx("返回任务", "Tasks")) }
+        Text(state.tx(
+            "名称和路径与网页看板的新建工作区相同。路径必须是 ThinkBook 上的绝对目录。",
+            "Name and path match the web board. The path must be an absolute directory on the board.",
+        ))
         Banner(state.commandNote)
         Banner(state.formError)
         OutlinedTextField(
             value = state.draftWorkspaceName,
             onValueChange = model::updateDraftWorkspaceName,
-            label = { Text("名称") },
+            label = { Text(state.tx("名称", "Name")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         OutlinedTextField(
             value = state.draftWorkspacePath,
             onValueChange = model::updateDraftWorkspacePath,
-            label = { Text("路径") },
+            label = { Text(state.tx("路径", "Path")) },
             placeholder = { Text("/home/me/src/app") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
@@ -530,10 +634,10 @@ private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding
             onClick = model::submitWorkspaceCreate,
             enabled = state.workspaceCreateMode != "busy",
             modifier = Modifier.fillMaxWidth(),
-        ) { Text(actionLabel(state.workspaceCreateMode, "新建")) }
+        ) { Text(actionLabel(state.workspaceCreateMode, state.tx("新建", "Create"), state.englishUi)) }
         if (state.workspaceCreateMode == "lookup") {
             TextButton(onClick = model::startDifferentWorkspaceCreate) {
-                Text("Start a different command (new idempotency key)")
+                Text(state.tx("换一条新命令（新的幂等键）", "Start a different command (new idempotency key)"))
             }
         }
     }
@@ -542,41 +646,48 @@ private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding
 @Composable
 private fun SettingsScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
-        TextButton(onClick = model::pop) { Text("Back") }
+        TextButton(onClick = model::pop) { Text(state.tx("返回", "Back")) }
         Banner(state.banner)
         OutlinedTextField(
             value = state.httpBase,
             onValueChange = model::updateHttpBase,
-            label = { Text("Relay HTTP URL") },
+            label = { Text(state.tx("中继 HTTP 地址", "Relay HTTP URL")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
-        Text(wsPreview(state.httpBase), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(wsPreview(state.httpBase, state.englishUi), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         OutlinedTextField(
             value = state.deviceName,
             onValueChange = model::updateDeviceName,
-            label = { Text("Device name") },
+            label = { Text(state.tx("设备名称", "Device name")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         Button(onClick = model::saveRelay, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-            Text("Save relay URL")
+            Text(state.tx("保存中继地址", "Save relay URL"))
         }
         if (state.paired) {
-            state.deviceId?.let { Text("Device $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            state.deviceId?.let { Text("${state.tx("设备", "Device")} $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             state.expiresAt?.let {
+                val whenText = DateFormat.getDateTimeInstance().format(Date(it))
                 Text(
-                    "Token expires ${DateFormat.getDateTimeInstance().format(Date(it))}",
+                    state.tx(
+                        "设备令牌到期（不是配对码）：$whenText",
+                        "Device token expires (not the pair code): $whenText",
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             OutlinedButton(onClick = model::refreshToken, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-                Text("Refresh device token")
+                Text(state.tx("刷新设备令牌", "Refresh device token"))
             }
-            TextButton(onClick = { model.forget() }) { Text("Forget this phone") }
+            TextButton(onClick = { model.forget() }) { Text(state.tx("忘记这台手机", "Forget this phone")) }
         }
         Text(
-            "The default host is a placeholder for relay.mengfei.tech. Point this at the relay, not at 127.0.0.1 on the ThinkBook. An emulator reaches a relay on the computer at http://10.0.2.2:8787.",
+            state.tx(
+                "默认主机 relay.mengfei.tech 只是占位。请指向中继，不要填 ThinkBook 上的 127.0.0.1。模拟器访问电脑上的中继用 http://10.0.2.2:8787。",
+                "The default host is a placeholder for relay.mengfei.tech. Point this at the relay, not at 127.0.0.1 on the ThinkBook. An emulator reaches a relay on the computer at http://10.0.2.2:8787.",
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -598,22 +709,24 @@ private fun Banner(text: String?) {
     Text(text, color = MaterialTheme.colorScheme.primary)
 }
 
-private fun connectionLabel(connection: String): String = when (connection) {
-    "online" -> "Connected"
-    "connecting" -> "Connecting"
-    "reconnecting" -> "Reconnecting"
-    else -> "Not connected"
+private fun UiState.tx(zh: String, en: String): String = if (englishUi) en else zh
+
+private fun connectionLabel(connection: String, english: Boolean): String = when (connection) {
+    "online" -> if (english) "Connected" else "已连接"
+    "connecting" -> if (english) "Connecting" else "连接中"
+    "reconnecting" -> if (english) "Reconnecting" else "正在重连"
+    else -> if (english) "Not connected" else "未连接"
 }
 
-private fun actionLabel(mode: String, send: String): String = when (mode) {
-    "busy" -> "Waiting"
-    "lookup" -> "Check stored result"
-    "reuse" -> "$send again"
+private fun actionLabel(mode: String, send: String, english: Boolean): String = when (mode) {
+    "busy" -> if (english) "Waiting" else "等待中"
+    "lookup" -> if (english) "Check stored result" else "查看已保存的结果"
+    "reuse" -> if (english) "$send again" else "$send 再试一次"
     else -> send
 }
 
-private fun wsPreview(httpBase: String): String = try {
+private fun wsPreview(httpBase: String, english: Boolean): String = try {
     "WebSocket ${deriveWsUrl(httpBase)}"
 } catch (error: RelayFormatException) {
-    error.message ?: "Enter an http or https relay URL"
+    localize(english, error.message ?: "relay URL is invalid")
 }
