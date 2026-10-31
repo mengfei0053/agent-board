@@ -124,6 +124,8 @@ data class DoneNotice(
     val status: String,
     val title: String?,
     val summary: String?,
+    val sessionId: String? = null,
+    val displayName: String? = null,
 )
 
 sealed interface ApplyOutcome {

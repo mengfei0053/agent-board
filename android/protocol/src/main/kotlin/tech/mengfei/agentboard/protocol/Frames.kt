@@ -27,10 +27,10 @@ fun subTasksEnvelope(id: String, ts: Long, boardId: String): Envelope = frame(
     id, ts, "sub.tasks", buildJsonObject { put("boardId", boardId) },
 )
 
-fun subLogsEnvelope(id: String, ts: Long, boardId: String, taskId: String? = null): Envelope = frame(
+fun subLogsEnvelope(id: String, ts: Long, boardId: String, taskId: String): Envelope = frame(
     id, ts, "sub.logs", buildJsonObject {
         put("boardId", boardId)
-        if (!taskId.isNullOrBlank()) put("taskId", taskId)
+        put("taskId", taskId)
     },
 )
 
