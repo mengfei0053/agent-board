@@ -1,0 +1,98 @@
+import { assertLoopbackHttp } from "./config.js";
+import { mapBoardTask, type CreateBody, type MappedTask } from "./map.js";
+import type { WorkspaceStub } from "./workspaces.js";
+
+export class BoardHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+  ) {
+    super(`${path} returned ${status}`);
+  }
+}
+
+export class BoardClient {
+  readonly base: URL;
+
+  constructor(
+    baseUrl: string,
+    private readonly timeoutMs: number,
+  ) {
+    const checked = assertLoopbackHttp(baseUrl);
+    if (!checked.ok) throw new Error(checked.message);
+    this.base = new URL(checked.url);
+  }
+
+  createTask(body: CreateBody): Promise<MappedTask> {
+    return this.send("/api/tasks", { method: "POST", body });
+  }
+
+  stopTask(id: string): Promise<MappedTask> {
+    return this.send(`/api/tasks/${encodeURIComponent(id)}/stop`, { method: "POST", body: {} });
+  }
+
+  continueTask(id: string): Promise<MappedTask> {
+    return this.send(`/api/tasks/${encodeURIComponent(id)}/continue`, { method: "POST", body: {} });
+  }
+
+  async listWorkspaces(): Promise<WorkspaceStub[]> {
+    const payload = await this.request("/api/workspaces", { method: "GET" });
+    const list = Array.isArray(payload) ? payload : isRecord(payload) && Array.isArray(payload.workspaces) ? payload.workspaces : [];
+    const stubs: WorkspaceStub[] = [];
+    for (const item of list) {
+      if (!isRecord(item)) continue;
+      const id = typeof item.id === "string" ? item.id : "";
+      const name = typeof item.name === "string" ? item.name : "";
+      const path = typeof item.path === "string" ? item.path : "";
+      if (!id || !name || !path) continue;
+      stubs.push({ id, name, path });
+    }
+    return stubs;
+  }
+
+  async workspaceIsGit(id: string): Promise<boolean> {
+    const payload = await this.request(`/api/workspaces/${encodeURIComponent(id)}/git-worktree-eligibility`, { method: "GET" });
+    if (!isRecord(payload)) return false;
+    return payload.ok === true || payload.eligible === true;
+  }
+
+  async listTasks(): Promise<MappedTask[]> {
+    const payload = await this.request("/api/tasks", { method: "GET" });
+    const list = Array.isArray(payload) ? payload : isRecord(payload) && Array.isArray(payload.tasks) ? payload.tasks : [];
+    return list.map(mapBoardTask).filter((task): task is MappedTask => task !== null);
+  }
+
+  private async send(path: string, init: { method: string; body?: unknown }): Promise<MappedTask> {
+    const payload = await this.request(path, init);
+    const task = mapBoardTask(isRecord(payload) && payload.task !== undefined ? payload.task : payload);
+    if (!task) throw new BoardHttpError(502, path);
+    return task;
+  }
+
+  private async request(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(new URL(path, this.base), {
+        method: init.method,
+        redirect: "manual",
+        signal: controller.signal,
+        headers: init.body === undefined ? undefined : { "content-type": "application/json" },
+        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      });
+      if (response.status >= 300 && response.status < 400) throw new BoardHttpError(response.status, path);
+      if (!response.ok) throw new BoardHttpError(response.status, path);
+      if (response.status === 204) return {};
+      return (await response.json()) as unknown;
+    } catch (error) {
+      if (error instanceof BoardHttpError) throw error;
+      throw new BoardHttpError(0, path);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

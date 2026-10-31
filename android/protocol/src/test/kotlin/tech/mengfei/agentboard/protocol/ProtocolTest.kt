@@ -1,0 +1,581 @@
+package tech.mengfei.agentboard.protocol
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PairingTest {
+    @Test
+    fun parsesPairResponse() {
+        val parsed = parsePairResponse(
+            """
+            {"deviceId":"dev_0123abcd","deviceToken":"dt_example","role":"phone",
+             "boardIds":["thinkbook-main"],"expiresAt":1761890300000}
+            """.trimIndent(),
+        )
+        assertEquals("dev_0123abcd", parsed.deviceId)
+        assertEquals("dt_example", parsed.deviceToken)
+        assertEquals("phone", parsed.role)
+        assertEquals(listOf("thinkbook-main"), parsed.boardIds)
+        assertEquals(1761890300000L, parsed.expiresAt)
+    }
+
+    @Test
+    fun rejectsPairResponseWithoutToken() {
+        val error = runCatching { parsePairResponse("""{"deviceId":"dev_1","role":"phone","boardIds":[],"expiresAt":1}""") }
+        assertTrue(error.exceptionOrNull() is RelayFormatException)
+    }
+
+    @Test
+    fun pairBodyEscapesDeviceName() {
+        val body = encodePairBody("pc_abc", """Pixel "8"""")
+        val parsed = relayJson.parseToJsonElement(body) as kotlinx.serialization.json.JsonObject
+        assertEquals("pc_abc", parsed.text("pairCode"))
+        assertEquals("""Pixel "8"""", parsed.text("deviceName"))
+    }
+
+    @Test
+    fun readsRelayError() {
+        assertEquals("unauthorized: pair code rejected", parseRelayError("""{"error":{"code":"unauthorized","message":"pair code rejected"}}"""))
+    }
+}
+
+class RelayUrlTest {
+    @Test
+    fun derivesWebSocketFromHttp() {
+        assertEquals("wss://relay.mengfei.tech/v1/ws", deriveWsUrl("https://relay.mengfei.tech"))
+        assertEquals("wss://relay.mengfei.tech/v1/ws", deriveWsUrl("https://relay.mengfei.tech/"))
+        assertEquals("ws://10.0.2.2:8787/v1/ws", deriveWsUrl("http://10.0.2.2:8787"))
+        assertEquals("https://relay.mengfei.tech", normalizeHttpBase("https://relay.mengfei.tech/v1/ws"))
+    }
+}
+
+class EventApplyTest {
+    private val reducer = BoardReducer(logTail = 2)
+
+    @Test
+    fun snapshotThenTaskUpsertsTheRow() {
+        var view = BoardView("thinkbook-main")
+        view = applied(view, snapshot("""{"id":"task_01","title":"Fix login flake","status":"queued","updatedAt":10,"agent":"cursor"}"""))
+        assertEquals(1, view.tasks.size)
+        assertEquals("queued", view.tasks.single().status)
+        view = applied(view, taskEvent("""{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":20,"agent":"cursor"}""", seq = 2))
+        assertEquals("running", view.tasks.single().status)
+        assertEquals(2L, view.seq)
+        assertNull(notice(viewOf = null, raw = snapshot("""{"id":"task_01","title":"Done already","status":"succeeded","updatedAt":5}""")))
+    }
+
+    @Test
+    fun doneIsOncePerEventIdAndSurvivesALaterSnapshot() {
+        var view = BoardView("thinkbook-main")
+        val first = reducer.apply(view, done("evt-done-1"))
+        val applied = first as ApplyOutcome.Applied
+        assertEquals("evt-done-1", applied.notice?.eventId)
+        assertEquals("stopped", applied.notice?.status)
+        assertEquals("Fix login flake", applied.notice?.title)
+        assertEquals("stopped", applied.view.tasks.single().status)
+        view = applied.view
+        val repeat = reducer.apply(view, done("evt-done-1"))
+        assertTrue(repeat is ApplyOutcome.Ignored)
+        view = applied(view, snapshot("""{"id":"task_01","title":"Fix login flake","status":"stopped","updatedAt":30}"""))
+        assertEquals("stopped", view.tasks.single().status)
+        assertFalse(view.needsResync)
+        val again = reducer.apply(view, done("evt-done-1"))
+        assertTrue(again is ApplyOutcome.Ignored)
+    }
+
+    @Test
+    fun deduperDropsOldestEventId() {
+        val dedupe = EventIdDeduper(capacity = 2)
+        assertTrue(dedupe.claim("a"))
+        assertTrue(dedupe.claim("b"))
+        assertFalse(dedupe.claim("a"))
+        assertTrue(dedupe.claim("c"))
+        assertTrue(dedupe.claim("a"))
+    }
+
+    @Test
+    fun gapThenCachedSnapshotStaysStaleUntilANewerSnapshot() {
+        var view = applied(BoardView("thinkbook-main"), snapshot("""{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":10}"""))
+        val gap = reducer.apply(view, env("evt.gap", """{"boardId":"thinkbook-main","generation":1,"expectedSeq":3,"gotSeq":5,"reason":"seq_gap"}"""))
+        val resync = gap as ApplyOutcome.Resync
+        assertEquals("seq_gap", resync.reason)
+        assertEquals("task_01", resync.view.tasks.single().id)
+        assertTrue(resync.view.needsResync)
+        view = applied(resync.view, snapshot("""{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":11}""", seq = 1))
+        assertEquals("task_01", view.tasks.single().id)
+        assertTrue(view.needsResync)
+        view = applied(view, snapshot("""{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":12}""", seq = 3, eventId = "snap-fresh"))
+        assertFalse(view.needsResync)
+    }
+
+    @Test
+    fun contiguousLogDoesNotClearAGapBeforeARecoverySnapshot() {
+        val task = """{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":10}"""
+        var view = applied(BoardView("thinkbook-main"), snapshot(task))
+        view = (reducer.apply(view, env(
+            "evt.gap",
+            """{"boardId":"thinkbook-main","generation":1,"expectedSeq":3,"gotSeq":5,"reason":"seq_gap"}""",
+        )) as ApplyOutcome.Resync).view
+        view = applied(view, snapshot(task, seq = 1, eventId = "snap-cached"))
+        assertTrue(view.needsResync)
+        view = applied(view, log("log-contiguous", "accepted after the hole"))
+        assertTrue(view.needsResync)
+        view = applied(view, taskEvent(task, seq = 4))
+        assertTrue(view.needsResync)
+        view = applied(view, done("evt-done-after-gap"))
+        assertTrue(view.needsResync)
+        view = applied(view, snapshot(task, seq = 1, eventId = "snap-cached-again"))
+        assertTrue(view.needsResync)
+        assertEquals("running", view.tasks.single().status)
+        view = applied(view, snapshot(task, seq = 3, eventId = "snap-recovered"))
+        assertFalse(view.needsResync)
+    }
+
+    @Test
+    fun aNewGenerationClearsTheGap() {
+        var view = applied(BoardView("thinkbook-main"), snapshot("""{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":10}"""))
+        view = (reducer.apply(view, env("evt.gap", """{"boardId":"thinkbook-main","generation":1,"expectedSeq":3,"gotSeq":5,"reason":"seq_gap"}""")) as ApplyOutcome.Resync).view
+        val fresh = reducer.apply(view, env(
+            "evt.snapshot",
+            """{"boardId":"thinkbook-main","generation":2,"seq":1,"eventId":"snap-gen2","version":1,"tasks":[{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":12}]}""",
+        )) as ApplyOutcome.Applied
+        assertFalse(fresh.view.needsResync)
+        assertEquals(2L, fresh.view.generation)
+    }
+
+    @Test
+    fun doneDedupeIsSharedAcrossBoardReducers() {
+        val dones = EventIdDeduper()
+        val first = BoardReducer(doneDedupe = dones)
+        val second = BoardReducer(doneDedupe = dones)
+        val once = first.apply(BoardView("thinkbook-main"), done("evt-done-1")) as ApplyOutcome.Applied
+        assertEquals("evt-done-1", once.notice?.eventId)
+        val again = second.apply(BoardView("other-board"), done("evt-done-1"))
+        assertTrue(again is ApplyOutcome.Ignored)
+    }
+
+    @Test
+    fun logTailDedupesEventId() {
+        var view = BoardView("thinkbook-main")
+        view = applied(view, log("log-1", "one"))
+        assertTrue(reducer.apply(view, log("log-1", "one again")) is ApplyOutcome.Ignored)
+        view = applied(view, log("log-2", "two"))
+        view = applied(view, log("log-3", "three"))
+        assertEquals(listOf("two", "three"), view.logs.getValue("task_01").map { it.line })
+    }
+
+    @Test
+    fun generationChangeClearsLogsWithoutNotifyingTerminalSnapshot() {
+        var view = applied(BoardView("thinkbook-main"), log("log-1", "kept"))
+        view = view.copy(generation = 1)
+        val outcome = reducer.apply(view, env(
+            "evt.snapshot",
+            """{"boardId":"thinkbook-main","generation":2,"seq":1,"eventId":"snap-2","version":1,"tasks":[{"id":"task_01","title":"Old","status":"succeeded","updatedAt":9}]}""",
+        ))
+        val applied = outcome as ApplyOutcome.Applied
+        assertNull(applied.notice)
+        assertTrue(applied.view.logs.isEmpty())
+        assertEquals(2L, applied.view.generation)
+    }
+
+    private fun applied(view: BoardView, message: Envelope): BoardView {
+        val outcome = reducer.apply(view, message)
+        return (outcome as ApplyOutcome.Applied).view
+    }
+
+    private fun notice(viewOf: BoardView?, raw: Envelope): DoneNotice? {
+        val outcome = reducer.apply(viewOf ?: BoardView("thinkbook-main"), raw)
+        return (outcome as? ApplyOutcome.Applied)?.notice
+    }
+
+    private fun snapshot(task: String, seq: Long = 1, eventId: String = "snap-$seq") = env(
+        "evt.snapshot",
+        """{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"$eventId","version":$seq,"tasks":[$task]}""",
+    )
+
+    private fun taskEvent(task: String, seq: Long) = env(
+        "evt.task",
+        """{"boardId":"thinkbook-main","generation":1,"seq":$seq,"eventId":"task-$seq","task":$task}""",
+    )
+
+    private fun done(eventId: String) = env(
+        "evt.task.done",
+        """{"boardId":"thinkbook-main","taskId":"task_01","status":"stopped","generation":1,"seq":5,"eventId":"$eventId","title":"Fix login flake","summary":"Stopped by client"}""",
+    )
+
+    private fun log(eventId: String, line: String) = env(
+        "evt.log",
+        """{"boardId":"thinkbook-main","generation":1,"seq":3,"eventId":"$eventId","taskId":"task_01","stream":"system","line":"$line"}""",
+    )
+
+    private fun env(type: String, payload: String) = parseEnvelope("""{"v":1,"id":"m1","type":"$type","ts":10,"payload":$payload}""")
+}
+
+class WorktreeChoiceTest {
+    private val app = ThinWorkspace("ws_app", "App", "/home/me/src/app", true)
+
+    @Test
+    fun checkboxMatchesOnlyAnExactGitWorkspacePath() {
+        val rooms = listOf(app)
+        assertTrue(worktreeAllowed("/home/me/src/app", rooms))
+        assertFalse(worktreeAllowed("/home/me/src/app/", rooms))
+        assertFalse(worktreeAllowed("/tmp/other", rooms))
+        assertFalse(worktreeAllowed("/home/me/src/app", listOf(app.copy(isGit = false))))
+        assertFalse(worktreeAllowed("/home/me/src/app", emptyList()))
+        val key = workspaceListKey(rooms)
+        assertTrue(keptWorktreeChoice(true, "/home/me/src/app", rooms, key))
+        assertFalse(keptWorktreeChoice(true, "/tmp/other", rooms, key))
+        assertFalse(keptWorktreeChoice(true, "/home/me/src/app", rooms, "changed"))
+    }
+
+    @Test
+    fun disconnectClearsTheWorktreeChoiceUntilAFreshSnapshot() {
+        val rooms = listOf(app)
+        var session = WorktreeSession(cwd = "/home/me/src/app", online = true)
+            .snapshot(rooms, stillStale = false)
+            .check()
+        assertTrue(session.allowed)
+        assertTrue(session.checked)
+        session = session.disconnect()
+        assertFalse(session.allowed)
+        assertFalse(session.checked)
+        assertFalse(worktreeAllowedFresh("/home/me/src/app", rooms, online = false, needsResync = false, eligibilityFresh = false))
+        session = session.hello()
+        assertFalse(session.allowed)
+        assertFalse(session.checked)
+        session = session.snapshot(rooms, stillStale = false).check()
+        assertTrue(session.allowed)
+        assertTrue(session.checked)
+    }
+
+    @Test
+    fun gapClearsTheWorktreeChoiceUntilTheRecoverySnapshot() {
+        val rooms = listOf(app)
+        var session = WorktreeSession(cwd = "/home/me/src/app", online = true)
+            .snapshot(rooms, stillStale = false)
+            .check()
+        session = session.gap()
+        assertFalse(session.allowed)
+        assertFalse(session.checked)
+        session = session.snapshot(rooms, stillStale = true)
+        assertFalse(session.allowed)
+        assertFalse(session.checked)
+        session = session.snapshot(rooms, stillStale = false)
+        assertTrue(session.allowed)
+        assertFalse(session.checked)
+        assertTrue(session.check().checked)
+        session = session.switchBoard()
+        assertFalse(session.allowed)
+        assertFalse(session.checked)
+    }
+
+    @Test
+    fun missingWorkspacesFailClosedAndATaskEventDoesNotClearThem() {
+        val reducer = BoardReducer()
+        val first = reducer.apply(BoardView("thinkbook-main"), snap(
+            """"workspaces":[{"id":"ws_app","name":"App","path":"/home/me/src/app","isGit":true}]""",
+        )) as ApplyOutcome.Applied
+        assertTrue(worktreeAllowed("/home/me/src/app", first.view.workspaces))
+        val task = reducer.apply(first.view, parseEnvelope(
+            """{"v":1,"id":"m","type":"evt.task","ts":2,"payload":{"boardId":"thinkbook-main","generation":1,"seq":2,"eventId":"t2","task":{"id":"task_01","title":"Fix login flake","status":"running","updatedAt":2,"agent":"cursor"}}}""",
+        )) as ApplyOutcome.Applied
+        assertEquals("/home/me/src/app", task.view.workspaces.single().path)
+        val old = reducer.apply(task.view, snap("")) as ApplyOutcome.Applied
+        assertTrue(old.view.workspaces.isEmpty())
+        assertFalse(worktreeAllowed("/home/me/src/app", old.view.workspaces))
+        val broken = reducer.apply(first.view, snap(
+            """"workspaces":[{"id":"ws_app","name":"App","path":"/home/me/src/app","isGit":"yes"}]""",
+        )) as ApplyOutcome.Applied
+        assertTrue(broken.view.workspaces.isEmpty())
+    }
+
+    private fun snap(extra: String): Envelope {
+        val tail = if (extra.isEmpty()) "" else ",$extra"
+        return parseEnvelope(
+            """{"v":1,"id":"m","type":"evt.snapshot","ts":1,"payload":{"boardId":"thinkbook-main","generation":1,"seq":1,"eventId":"s1","version":1,"tasks":[]$tail}}""",
+        )
+    }
+}
+
+class ResyncSchedulerTest {
+    @Test
+    fun snapshotCancelsTheGapResubscribe() {
+        val gate = ResyncScheduler()
+        assertTrue(gate.onGap())
+        assertFalse(gate.onGap())
+        gate.onSnapshot()
+        assertFalse(gate.consumeIfStillNeeded())
+    }
+
+    @Test
+    fun gapWithoutSnapshotResubscribesOnce() {
+        val gate = ResyncScheduler()
+        assertTrue(gate.onGap())
+        assertTrue(gate.consumeIfStillNeeded())
+        assertFalse(gate.consumeIfStillNeeded())
+    }
+}
+
+class CreatePayloadTest {
+    @Test
+    fun createPayloadCarriesRequiredFields() {
+        val built = validateCreate(
+            id = "phone-create-1",
+            ts = 1761890000000,
+            boardId = "thinkbook-main",
+            title = "Fix login flake",
+            prompt = "Investigate the flaky login test.",
+            agent = "cursor",
+            cwd = "/home/me/src/app",
+            idempotencyKey = "android-req-7f3a",
+        ) as Validated.Ok
+        val message = built.value
+        assertEquals("cmd.create", message.type)
+        assertEquals(1, message.v)
+        assertEquals("thinkbook-main", message.payload.text("boardId"))
+        assertEquals("android-req-7f3a", message.payload.text("idempotencyKey"))
+        assertEquals("Fix login flake", message.payload.text("title"))
+        assertEquals("Investigate the flaky login test.", message.payload.text("prompt"))
+        assertEquals("cursor", message.payload.text("agent"))
+        assertEquals("/home/me/src/app", message.payload.text("cwd"))
+        assertFalse(encodeEnvelope(message).contains("deviceToken"))
+        assertNull(message.payload.bool("useGitWorktree"))
+        val opted = validateCreate(
+            id = "phone-create-1",
+            ts = 1761890000000,
+            boardId = "thinkbook-main",
+            title = "Fix login flake",
+            prompt = "Investigate the flaky login test.",
+            agent = "cursor",
+            cwd = "/home/me/src/app",
+            idempotencyKey = "android-req-7f3a",
+            useGitWorktree = true,
+        ) as Validated.Ok
+        assertEquals(true, opted.value.payload.bool("useGitWorktree"))
+    }
+
+    @Test
+    fun createRejectsMissingCwdUnknownAgentAndShortKey() {
+        assertTrue(validateCreate("id", 1, "thinkbook-main", "T", "prompt", "cursor", "", "android-req-7f3a") is Validated.Invalid)
+        assertTrue(validateCreate("id", 1, "thinkbook-main", "T", "prompt", "cursor", "https://example", "android-req-7f3a") is Validated.Invalid)
+        assertTrue(validateCreate("id", 1, "thinkbook-main", "T", "prompt", "Claude", "/home/me", "android-req-7f3a") is Validated.Invalid)
+        assertTrue(validateCreate("id", 1, "thinkbook-main", "T", "prompt", "cursor", "/home/me", "short") is Validated.Invalid)
+    }
+
+    @Test
+    fun stopAndContinueShapes() {
+        val stop = validateStop("phone-stop-1", 20, "thinkbook-main", "task_01", "idem-stop-01") as Validated.Ok
+        assertEquals("cmd.stop", stop.value.type)
+        assertEquals("task_01", stop.value.payload.text("taskId"))
+        assertEquals("user tapped stop", stop.value.payload.text("reason"))
+        val cont = validateContinue("phone-continue-1", 21, "thinkbook-main", "task_01", "idem-continue") as Validated.Ok
+        assertEquals("cmd.continue", cont.value.type)
+        assertNull(cont.value.payload.text("reason"))
+    }
+}
+
+class CommandPolicyTest {
+    @Test
+    fun timeoutLooksUpAndDoesNotMintACreate() {
+        val timeout = interpretCommand(ack("timeout", "timeout"))!!
+        assertEquals(Retry.LookupOnly, timeout.retry)
+        assertEquals(CommandAction.SendLookup, nextCommandAction(lookupAlreadySent = false, timeout))
+        assertEquals(CommandAction.Settle, nextCommandAction(lookupAlreadySent = true, timeout))
+        var minted = false
+        val plan = planSubmit("cmd.create", inflight = false, timeout, "android-req-7f3a") {
+            minted = true
+            "new-key-should-not-happen"
+        }
+        val lookup = plan as SubmitPlan.Lookup
+        assertEquals("android-req-7f3a", lookup.idempotencyKey)
+        assertEquals("cmd.create", lookup.cmd)
+        assertFalse(minted)
+        assertFalse(explicitResendAllowed("cmd.create", timeout))
+    }
+
+    @Test
+    fun offlineErrorReusesTheSameKey() {
+        val offline = interpretCommand(err("board_offline", "board thinkbook-main is not connected"))!!
+        assertEquals(Retry.ReuseSameKey, offline.retry)
+        assertEquals(CommandAction.Settle, nextCommandAction(false, offline))
+        val plan = planSubmit("cmd.create", false, offline, "android-req-7f3a") { error("mint") }
+        assertEquals("android-req-7f3a", (plan as SubmitPlan.Send).idempotencyKey)
+    }
+
+    @Test
+    fun acceptedWaitsAndExecutedCanSendANewCommand() {
+        val accepted = interpretCommand(ack("accepted", null))!!
+        assertFalse(accepted.settled)
+        assertEquals(CommandAction.Wait, nextCommandAction(false, accepted))
+        val executed = interpretCommand(parseEnvelope(
+            """{"v":1,"id":"r","type":"ack","ts":3,"payload":{"ref":"c","stage":"executed","task":{"id":"task_01","title":"Fix login flake","status":"queued","updatedAt":4,"agent":"cursor"}}}""",
+        ))!!
+        assertEquals("task_01", executed.task?.id)
+        assertEquals("queued", executed.task?.status)
+        val plan = planSubmit("cmd.create", false, executed, "android-req-7f3a") { "ph-next" }
+        assertEquals("ph-next", (plan as SubmitPlan.Send).idempotencyKey)
+        assertEquals(SubmitPlan.Busy, planSubmit("cmd.stop", inflight = true, null, null) { "x" })
+    }
+
+    @Test
+    fun storedFailureLooksUpInsteadOfCreate() {
+        val failed = interpretCommand(ack("failed", "board_http"))!!
+        assertEquals(Retry.LookupOnly, failed.retry)
+        val unknown = interpretCommand(ack("unknown", null))!!
+        assertEquals(Retry.LookupOnly, unknown.retry)
+        assertTrue(explicitResendAllowed("cmd.stop", failed))
+    }
+
+    private fun ack(stage: String, code: String?): Envelope {
+        val extra = if (code == null) "" else ""","code":"$code","message":"board did not acknowledge the command""""
+        return parseEnvelope("""{"v":1,"id":"r","type":"ack","ts":2,"payload":{"ref":"c","stage":"$stage"$extra}}""")
+    }
+
+    private fun err(code: String, message: String) = parseEnvelope(
+        """{"v":1,"id":"r","type":"err","ts":2,"payload":{"ref":"c","stage":"failed","code":"$code","message":"$message","idempotencyKey":"android-req-7f3a"}}""",
+    )
+}
+
+class ReconnectRecoveryTest {
+    @Test
+    fun droppedCreateLooksUpAndIsNotBusyForever() {
+        val tracker = InflightTracker()
+        tracker.start("cmd.create", "thinkbook-main", "android-req-7f3a")
+        tracker.reconnect()
+        assertEquals(listOf("cmd.lookup"), tracker.outbound)
+        assertTrue(tracker.busy)
+        tracker.lookupReply(ack("timeout", "timeout"))
+        assertFalse(tracker.busy)
+        assertFalse(tracker.outbound.any { it == "cmd.create" || it == "cmd.stop" })
+        var minted = false
+        val plan = planSubmit("cmd.create", tracker.busy, tracker.interpretation, "android-req-7f3a") {
+            minted = true
+            "new-key"
+        }
+        assertTrue(plan is SubmitPlan.Lookup)
+        assertEquals("android-req-7f3a", (plan as SubmitPlan.Lookup).idempotencyKey)
+        assertFalse(minted)
+    }
+
+    @Test
+    fun droppedStopLooksUpInsteadOfStoppingAgain() {
+        val tracker = InflightTracker()
+        tracker.start("cmd.stop", "thinkbook-main", "idem-stop-01")
+        tracker.reconnect()
+        tracker.lookupReply(ack("executed", null))
+        assertFalse(tracker.busy)
+        assertEquals(listOf("cmd.lookup"), tracker.outbound)
+    }
+
+    @Test
+    fun acceptedLookupPollsThenClearsWithoutResend() {
+        val tracker = InflightTracker()
+        tracker.start("cmd.create", "thinkbook-main", "android-req-7f3a")
+        tracker.reconnect()
+        repeat(MAX_ACCEPTED_POLLS) {
+            assertTrue(tracker.busy)
+            tracker.lookupReply(ack("accepted", null))
+        }
+        assertFalse(tracker.busy)
+        assertTrue(tracker.outbound.all { it == "cmd.lookup" })
+        assertEquals(MAX_ACCEPTED_POLLS, tracker.outbound.size)
+        val plan = planSubmit("cmd.create", tracker.busy, tracker.interpretation, "android-req-7f3a") { error("mint") }
+        assertTrue(plan is SubmitPlan.Lookup)
+    }
+
+    @Test
+    fun missingKeyClearsBusy() {
+        val tracker = InflightTracker()
+        tracker.start("cmd.create", "thinkbook-main", "")
+        tracker.reconnect()
+        assertFalse(tracker.busy)
+        assertTrue(tracker.outbound.isEmpty())
+        assertTrue(tracker.note!!.contains("not sent again"))
+    }
+
+    private fun ack(stage: String, code: String?): Envelope {
+        val extra = if (code == null) "" else ""","code":"$code","message":"board did not acknowledge the command""""
+        return parseEnvelope("""{"v":1,"id":"r","type":"ack","ts":2,"payload":{"ref":"c","stage":"$stage"$extra}}""")
+    }
+}
+
+/**
+ * Mirrors reconnect recovery: lookup only, then clear Busy when the lookup settles or polls run out.
+ */
+private class InflightTracker {
+    private var outstanding: OutstandingCommand? = null
+    var busy: Boolean = false
+        private set
+    var interpretation: CommandInterpretation? = null
+        private set
+    var note: String? = null
+        private set
+    val outbound = mutableListOf<String>()
+
+    fun start(cmd: String, boardId: String, key: String) {
+        outstanding = OutstandingCommand(cmd, boardId, key)
+        busy = true
+    }
+
+    fun reconnect() = apply(recoverAfterHello(outstanding))
+
+    fun lookupReply(message: Envelope) {
+        val current = outstanding ?: return
+        apply(recoverFromLookup(current, message))
+    }
+
+    private fun apply(step: Recovery?) {
+        when (step) {
+            null -> Unit
+            is Recovery.Lookup -> {
+                outbound += "cmd.lookup"
+                outstanding = step.command
+                busy = true
+            }
+            is Recovery.Poll -> {
+                outbound += "cmd.lookup"
+                outstanding = step.command
+                busy = true
+            }
+            is Recovery.Clear -> {
+                outstanding = null
+                busy = false
+                note = step.summary
+                interpretation = step.interpretation
+            }
+        }
+    }
+}
+
+class PairPersistTest {
+    @Test
+    fun failedCommitDoesNotConnect() {
+        val store = FakeDeviceTokenStore(commitSucceeds = false)
+        var connected = false
+        val saved = store.saveToken(samplePair())
+        when (val gate = persistThenConnect(saved)) {
+            PairGate.OpenSocket -> connected = true
+            is PairGate.Hold -> assertTrue(gate.message.contains("Not connecting"))
+        }
+        assertFalse(saved)
+        assertFalse(connected)
+        assertNull(store.stored)
+    }
+
+    @Test
+    fun successfulCommitCanConnect() {
+        val store = FakeDeviceTokenStore(commitSucceeds = true)
+        var connected = false
+        val saved = store.saveToken(samplePair())
+        if (persistThenConnect(saved) == PairGate.OpenSocket) connected = true
+        assertTrue(connected)
+        assertEquals("dt_example", store.stored?.deviceToken)
+    }
+
+    private fun samplePair() = parsePairResponse(
+        """{"deviceId":"dev_0123abcd","deviceToken":"dt_example","role":"phone","boardIds":["thinkbook-main"],"expiresAt":1761890300000}""",
+    )
+}

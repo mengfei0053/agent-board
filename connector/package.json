@@ -1,0 +1,22 @@
+{
+  "name": "agent-board-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ThinkBook sidecar that registers with the agent-board relay and maps commands onto local agent-board HTTP.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6"
+  }
+}

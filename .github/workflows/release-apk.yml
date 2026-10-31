@@ -1,0 +1,55 @@
+name: Release APK
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Assemble unsigned release APK
+        working-directory: android
+        run: chmod +x ./gradlew && ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Name the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          src=$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          test -n "$src"
+          tag="${GITHUB_REF_NAME}"
+          dest="agent-board-${tag}.apk"
+          cp "$src" "$dest"
+          echo "path=$dest" >> "$GITHUB_OUTPUT"
+          echo "Built $dest from $src (unsigned; no keystore secrets are used)."
+
+      - name: Keep the APK as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.path }}
+          path: ${{ steps.apk.outputs.path }}
+
+      - name: Attach the APK to the GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
