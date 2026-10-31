@@ -220,6 +220,13 @@ export class ConnectorSession {
 
   private async applyCommand(message: Envelope): Promise<void> {
     if (this.closed || this.overflowed) return;
+    if (
+      message.type !== "cmd.create"
+      && message.type !== "cmd.continue"
+      && message.type !== "cmd.stop"
+    ) {
+      return;
+    }
     try {
       if (message.type === "cmd.create") {
         await this.applyCreate(message);
@@ -250,6 +257,7 @@ export class ConnectorSession {
     });
     if (this.closed) return;
     this.opts.send("ack", {
+      ref: message.id,
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: key,
@@ -270,6 +278,7 @@ export class ConnectorSession {
     if (!mapped) throw new RelayCommandError("board_http", "board request failed");
     if (this.closed) return;
     this.opts.send("ack", {
+      ref: message.id,
       stage: "executed",
       boardId: this.opts.boardId,
       idempotencyKey: parsed.key,
@@ -282,6 +291,7 @@ export class ConnectorSession {
     const safe = relayErrorFrom(err);
     this.opts.log?.("warn", `relay command ${message.type} failed: ${safe.code}`);
     this.opts.send("err", {
+      ref: message.id,
       code: safe.code,
       message: safe.message,
       boardId: this.opts.boardId,

@@ -16,6 +16,31 @@ import {
 } from "./harness.js";
 
 describe("embedded relay run", { concurrency: 1 }, () => {
+  it("accepts a register ack when the envelope id differs and payload.ref is the register id", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const dialer = startEmbeddedRelay({
+      config: enabledConfig(relay.url),
+      facade,
+      log: () => {},
+    });
+    try {
+      await dialer.ready;
+      const register = relay.received.find((frame) => frame.type === "board.register");
+      const ack = relay.sent.find((frame) => frame.type === "ack" && frame.payload.ref === register?.id);
+      assert.ok(register);
+      assert.ok(ack);
+      assert.notEqual(ack.id, register.id);
+      assert.equal(ack.payload.ref, register.id);
+      assert.equal(ack.payload.generation, 1);
+    } finally {
+      await dialer.close();
+      await relay.close();
+    }
+    assert.equal(facade.listeners.size, 0);
+  });
+
   it("registers, sends a snapshot, and resets backoff after a registered session", async () => {
     const relay = new MockRelay();
     await relay.listen();

@@ -40,6 +40,23 @@ describe("relay cursor", () => {
     assert.equal(frames[1]?.payload.taskId, "A");
   });
 
+  it("stamps a snapshot with eventId, capturedAt, and version equal to seq", () => {
+    const cursor = new RelayCursor(7);
+    const before = Date.now();
+    const running = mapBoardTask(makeTask({ status: "running" }))!;
+    const snap = cursor.buildSnapshot("thinkbook", [running], []);
+    const after = Date.now();
+    assert.equal(typeof snap.payload.eventId, "string");
+    assert.ok(String(snap.payload.eventId).length > 0);
+    assert.equal(typeof snap.payload.capturedAt, "number");
+    assert.equal(Number.isFinite(snap.payload.capturedAt), true);
+    assert.ok((snap.payload.capturedAt as number) >= before);
+    assert.ok((snap.payload.capturedAt as number) <= after);
+    assert.equal(snap.payload.version, snap.payload.seq);
+    assert.equal(snap.payload.seq, 1);
+    assert.equal(snap.payload.generation, 7);
+  });
+
   it("does not emit done for a task that was already terminal in the snapshot", () => {
     const cursor = new RelayCursor(2);
     const done = mapBoardTask(makeTask({ status: "failed" }))!;

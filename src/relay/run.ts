@@ -178,7 +178,11 @@ async function runOnce(opts: {
           safeClose(ws);
           return;
         }
-        if (resolveAck && msg.id === registerId && (msg.type === "ack" || msg.type === "err")) {
+        if (
+          resolveAck
+          && (msg.type === "ack" || msg.type === "err")
+          && msg.payload.ref === registerId
+        ) {
           const done = resolveAck;
           resolveAck = null;
           done(msg);
