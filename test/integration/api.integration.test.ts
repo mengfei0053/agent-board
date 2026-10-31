@@ -18,7 +18,7 @@ import {
 import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { browseHome } from "../../src/fsbrowse.js";
-import { jsonDbPath, logsDir } from "../../src/db.js";
+import { isRepoDataPath, jsonDbPath, logsDir } from "../../src/db.js";
 
 await startTestDb();
 
@@ -426,10 +426,11 @@ describe("integration I1–I12", () => {
         },
       ],
     };
-    mkdirSync(logsDir, { recursive: true });
-    writeFileSync(jsonDbPath, JSON.stringify(payload), "utf8");
+    assert.equal(isRepoDataPath(logsDir()), false);
+    mkdirSync(logsDir(), { recursive: true });
+    writeFileSync(jsonDbPath(), JSON.stringify(payload), "utf8");
     writeFileSync(
-      join(logsDir, `${migId}.jsonl`),
+      join(logsDir(), `${migId}.jsonl`),
       `${JSON.stringify({ type: "start" })}\nmigrated-log-line\n`,
       "utf8",
     );
@@ -449,14 +450,14 @@ describe("integration I1–I12", () => {
       ),
     );
 
-    assert.equal(existsSync(jsonDbPath), false);
-    const archived = readdirSync(join(jsonDbPath, "..")).filter((f) =>
+    assert.equal(existsSync(jsonDbPath()), false);
+    const archived = readdirSync(join(jsonDbPath(), "..")).filter((f) =>
       f.startsWith("db.json.migrated-"),
     );
     assert.ok(archived.length >= 1);
     for (const f of archived) {
       try {
-        unlinkSync(join(jsonDbPath, "..", f));
+        unlinkSync(join(jsonDbPath(), "..", f));
       } catch {
         /* ignore */
       }
@@ -779,6 +780,179 @@ describe("integration I1–I12", () => {
       rows.rows.map((r) => r.line),
       [start, cont, "C", exit],
     );
+  });
+
+  it("R2-M1 DB prune applies the character budget under the line cap", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "字符预算", path }),
+      }),
+    );
+    const { task } = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "pi", workspaceId: workspace.id, prompt: "chars", start: false }),
+      }),
+    );
+    for (let i = 0; i < 6; i++) appendLog(task.id, `L${i}${"x".repeat(1000)}`);
+    await flushPersist();
+    await pruneTaskLogsForTests(task.id, 100, 2500);
+    const rows = await getPool().query<{ line: string }>(
+      `SELECT line FROM task_logs WHERE task_id = $1 ORDER BY id ASC`,
+      [task.id],
+    );
+    const total = rows.rows.reduce((n, r) => n + r.line.length, 0);
+    assert.ok(rows.rows.length < 6);
+    assert.ok(total <= 2500);
+  });
+
+  it("R2-M2 keeps degrade until a failed task batch is retried", async () => {
+    const { failNextPersistForTests, upsertTask, isPersistDegraded } = await import("../../src/store.js");
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "批次故障", path }),
+      }),
+    );
+    const make = async (prompt: string) => {
+      const { task } = await jsonOf(
+        await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "pi", workspaceId: workspace.id, prompt, start: false }),
+        }),
+      );
+      return task;
+    };
+    const a = await make("batch-a");
+    const b = await make("batch-b");
+    await flushPersist();
+    failNextPersistForTests("task");
+    failNextPersistForTests("task");
+    upsertTask({ ...a, title: "title-a2", updatedAt: new Date().toISOString() });
+    upsertTask({ ...b, title: "title-b2", updatedAt: new Date().toISOString() });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(isPersistDegraded(), true);
+    const other = freshWorkspacePath();
+    ensureDir(other);
+    const again = await app.request("/api/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "无关成功", path: other }),
+    });
+    assert.equal(again.status, 201);
+    const health = await app.request("/api/health");
+    assert.equal(health.status, 503);
+    await flushPersist().catch(() => undefined);
+    const rows = await getPool().query<{ title: string }>(
+      `SELECT title FROM tasks WHERE id = ANY($1::text[]) ORDER BY title ASC`,
+      [[a.id, b.id]],
+    );
+    assert.deepEqual(rows.rows.map((r) => r.title), ["title-a2", "title-b2"]);
+    const health2 = await app.request("/api/health");
+    assert.equal(health2.status, 200);
+  });
+
+  it("R2-M12 invalid continue JSON does not start the task", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "继续校验", path }),
+      }),
+    );
+    const created = await jsonOf(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "pi",
+          workspaceId: workspace.id,
+          prompt: "base",
+          start: true,
+        }),
+      }),
+    );
+    const settled = await waitSettled(created.task.id);
+    assert.equal(settled.status, "succeeded");
+    const callsBefore = runnerCalls.length;
+    const bad = await app.request(`/api/tasks/${created.task.id}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{\"prompt\":",
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(runnerCalls.length, callsBefore);
+    const empty = await app.request(`/api/tasks/${created.task.id}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "",
+    });
+    assert.equal(empty.status, 200);
+  });
+
+  it("R2-M12 rejects workspace settings of the wrong type", async () => {
+    const path = freshWorkspacePath();
+    ensureDir(path);
+    const { workspace } = await jsonOf(
+      await app.request("/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "设置类型", path }),
+      }),
+    );
+    const primed = await app.request(`/api/workspaces/${workspace.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { systemPrompt: "keep-me" } }),
+    });
+    assert.equal(primed.status, 200);
+    const bad = await app.request(`/api/workspaces/${workspace.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: "bad" }),
+    });
+    assert.equal(bad.status, 400);
+    const got = await jsonOf(await app.request(`/api/workspaces/${workspace.id}`));
+    assert.equal(got.workspace.settings.systemPrompt, "keep-me");
+  });
+
+  it("R2-M13 concurrent settings patches keep both CLI keys", async () => {
+    const { setSettingsBarrierForTests } = await import("../../src/settingsLock.js");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setSettingsBarrierForTests(gate);
+    const a = app.request("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cliPaths: { pi: "/tmp/pi-from-a" } }),
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const b = app.request("/api/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cliPaths: { claude: "/tmp/claude-from-b" } }),
+    });
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(ra.status, 200);
+    assert.equal(rb.status, 200);
+    const body = await jsonOf(await app.request("/api/settings"));
+    assert.equal(body.cliPaths.pi.override, "/tmp/pi-from-a");
+    assert.equal(body.cliPaths.claude.override, "/tmp/claude-from-b");
+    setSettingsBarrierForTests(null);
   });
 });
 

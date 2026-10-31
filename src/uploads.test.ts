@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -8,6 +9,7 @@ import {
   MAX_UPLOAD_BYTES,
   absoluteUploadPath,
   appendAttachmentsToPrompt,
+  collectUploadRefs,
   expandUploadUrlsInPrompt,
   extForMime,
   isAllowedImageMime,
@@ -21,6 +23,10 @@ import {
   uploadsDir,
   ensureUploadsDir,
 } from "./uploads.js";
+
+const tempUploads = mkdtempSync(join(tmpdir(), "agent-board-uploads-test-"));
+process.env.UPLOADS_DIR = tempUploads;
+process.env.AGENT_BOARD_REFUSE_REPO_DATA = "1";
 
 describe("uploads mime / name guards", () => {
   it("allows known image mimes and maps ext", () => {
@@ -46,7 +52,7 @@ describe("uploads mime / name guards", () => {
     ensureUploadsDir();
     const ok = absoluteUploadPath("safe_file.png");
     assert.ok(ok);
-    assert.ok(ok!.startsWith(uploadsDir));
+    assert.ok(ok!.startsWith(uploadsDir()));
     assert.equal(absoluteUploadPath("../escape.png"), null);
     assert.equal(absoluteUploadPath("bad name.png"), null);
   });
@@ -71,13 +77,27 @@ describe("uploadNameReferenced", () => {
     assert.equal(uploadNameReferenced("b.png", tasks), true);
     assert.equal(uploadNameReferenced("c.png", tasks), false);
   });
+
+  it("sees continue prompts and historical outputs", () => {
+    const names = collectUploadRefs([
+      {
+        prompts: [{ prompt: "see /uploads/cont.png" }],
+        outputs: [{ text: "saved /uploads/hist.pdf" }],
+      },
+    ]);
+    assert.equal(names.has("cont.png"), true);
+    assert.equal(names.has("hist.pdf"), true);
+    assert.equal(uploadNameReferenced("hist.pdf", [
+      { outputs: [{ text: "saved /uploads/hist.pdf" }] },
+    ]), true);
+  });
 });
 
 describe("expandUploadUrlsInPrompt / appendAttachmentsToPrompt", () => {
   const imgName = "utest_img_aa1.png";
   const attName = "utest_att_bb2.pdf";
-  const imgPath = join(uploadsDir, imgName);
-  const attPath = join(uploadsDir, attName);
+  const imgPath = join(tempUploads, imgName);
+  const attPath = join(tempUploads, attName);
 
   before(() => {
     ensureUploadsDir();
@@ -146,7 +166,7 @@ describe("expandUploadUrlsInPrompt / appendAttachmentsToPrompt", () => {
 
 describe("stripImageMarkdown / normalizeAttachmentsInput", () => {
   const attName = "utest_norm_cc3.txt";
-  const attPath = join(uploadsDir, attName);
+  const attPath = join(tempUploads, attName);
 
   before(() => {
     ensureUploadsDir();
@@ -187,8 +207,11 @@ describe("stripImageMarkdown / normalizeAttachmentsInput", () => {
     );
   });
 
-  it("returns [] for non-array", () => {
+  it("returns [] for null and rejects a non-array", () => {
     assert.deepEqual(normalizeAttachmentsInput(null), []);
-    assert.deepEqual(normalizeAttachmentsInput({}), []);
+    assert.throws(
+      () => normalizeAttachmentsInput({}),
+      (err: { status?: number }) => err?.status === 400,
+    );
   });
 });

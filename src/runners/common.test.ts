@@ -29,6 +29,19 @@ describe("stream line buffer", () => {
     assert.deepEqual(pushed.lines, []);
     assert.equal(state.buf, "");
   });
+
+  it("discards the rest of an over-long line until the next newline", () => {
+    const state = createStreamLineState();
+    const huge = Buffer.alloc(1_000_001, 0x61);
+    pushStreamBytes(state, huge);
+    const mid = pushStreamBytes(state, Buffer.from("still-same-line"));
+    assert.deepEqual(mid.lines, []);
+    const next = pushStreamBytes(
+      state,
+      Buffer.from('\n{"type":"result","result":"ok"}\n'),
+    );
+    assert.deepEqual(next.lines, ['{"type":"result","result":"ok"}']);
+  });
 });
 
 describe("429 detection", () => {

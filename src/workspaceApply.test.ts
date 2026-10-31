@@ -9,11 +9,16 @@ import {
 } from "./workspaceApply.js";
 
 describe("normalizeWorkspaceSettings", () => {
-  it("returns undefined for empty / invalid", () => {
+  it("returns undefined for empty and rejects wrong types", () => {
     assert.equal(normalizeWorkspaceSettings(null), undefined);
     assert.equal(normalizeWorkspaceSettings(undefined), undefined);
     assert.equal(normalizeWorkspaceSettings({}), undefined);
-    assert.equal(normalizeWorkspaceSettings([]), undefined);
+    assert.throws(() => normalizeWorkspaceSettings([]), /settings must be an object/);
+    assert.throws(() => normalizeWorkspaceSettings("bad"), /settings must be an object/);
+    assert.throws(
+      () => normalizeWorkspaceSettings({ systemPrompt: 1 }),
+      /systemPrompt must be a string/,
+    );
     assert.equal(
       normalizeWorkspaceSettings({ systemPrompt: "  ", skills: [], mcp: "" }),
       undefined,
@@ -143,15 +148,17 @@ describe("workspaceSettingsSummary", () => {
 });
 
 describe("workspaceApply remaining branches (U15)", () => {
-  it("normalize ignores non-string skill entries and non-object raw", () => {
-    assert.equal(normalizeWorkspaceSettings("nope"), undefined);
-    assert.equal(normalizeWorkspaceSettings(42), undefined);
-    const s = normalizeWorkspaceSettings({
-      skills: ["ok", 1 as never, null as never, "  dual  "],
-      systemPrompt: 9 as never,
-      mcp: 3 as never,
-    });
-    assert.deepEqual(s, { skills: ["ok", "dual"] });
+  it("rejects non-object settings and non-string fields", () => {
+    assert.throws(() => normalizeWorkspaceSettings("nope"), /settings must be an object/);
+    assert.throws(() => normalizeWorkspaceSettings(42), /settings must be an object/);
+    assert.throws(
+      () => normalizeWorkspaceSettings({ skills: ["ok", 1 as never] }),
+      /skills must be an array of strings/,
+    );
+    assert.throws(
+      () => normalizeWorkspaceSettings({ systemPrompt: 9 as never }),
+      /systemPrompt must be a string/,
+    );
   });
 
   it("merge returns prev when patch undefined; clears mcp only", () => {

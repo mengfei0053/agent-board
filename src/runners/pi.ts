@@ -1,8 +1,10 @@
+import { nanoid } from "nanoid";
 import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
+import { mergeContinueWithoutSession } from "./promptForRun.js";
 
 export type PiArgInput = {
   id: string;
@@ -14,10 +16,15 @@ export type PiArgInput = {
 /** Pure CLI argv for pi (no spawn). */
 export function buildPiArgs(
   task: PiArgInput,
-  opts?: { continuePrompt?: string },
+  opts?: { continuePrompt?: string; freshSessionId?: string },
 ): { args: string[]; prompt: string; sessionId: string; assignSession: boolean } {
-  const prompt = opts?.continuePrompt?.trim() || task.prompt;
-  const sessionId = task.sessionId || task.id;
+  const isContinue = Boolean(opts?.continuePrompt?.trim());
+  const prompt =
+    isContinue && !task.sessionId
+      ? mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "")
+      : opts?.continuePrompt?.trim() || task.prompt;
+  // A fresh run must not reuse task.id — that session file would keep the previous chat.
+  const sessionId = task.sessionId || opts?.freshSessionId || `${task.id}-${nanoid(8)}`;
   const args = ["-p", "--mode", "json", "--session-id", sessionId];
   if (task.model) args.push("--model", task.model);
   args.push(prompt);

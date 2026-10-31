@@ -6,6 +6,7 @@ import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import {
   archiveJsonDb,
   dataDir,
+  ensureDataDirs,
   ensureSchema,
   closePool,
   getPool,
@@ -20,7 +21,8 @@ import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
 import { boardMetaLineSqlPattern } from "./extractOutput.js";
-import { gcOrphanUploads } from "./uploads.js";
+import { collectUploadRefs, gcOrphanUploads } from "./uploads.js";
+import { finalizeRunningSideJobs } from "./sideJobs.js";
 import {
   boundStoredLogLine,
   DEFAULT_LOG_TAIL_CHARS,
@@ -77,12 +79,25 @@ function normalizeTask(t: Task): Task {
 
 type PersistOp = "task" | "delete" | "workspace" | "log";
 
-let persistFault: { op: PersistOp; error: Error } | null = null;
-/** Set when a job fails. Cleared by a later successful job. */
+let persistFaults: { op: PersistOp; error: Error }[] = [];
+/**
+ * Set when a job fails. Cleared only when no unrecovered task snapshots or
+ * log rows remain — a later unrelated success must not hide a dropped batch.
+ */
 let persistDegraded: unknown = null;
 /** Failure not yet observed by flushPersist(). */
 let unreportedFailure: unknown = null;
 let persistDepth = 0;
+/** Snapshots that failed mid-batch and must be written again. */
+const failedTaskIds = new Set<string>();
+/** One automatic retry is chained; further retries wait for flush or a new write. */
+let taskRetryQueued = false;
+/** True while a log insert failed and those rows are still queued. */
+let logPersistFailed = false;
+let logRetryQueued = false;
+/** Test hook: saveTaskDurable awaits this before writing. */
+let durableDelay: Promise<void> | null = null;
+let durableWaiters = 0;
 
 const pendingTaskWrites = new Map<string, Task>();
 let coalesceQueued = false;
@@ -94,15 +109,16 @@ let logBatchQueued = false;
 const MAX_LOG_BATCH = 5_000;
 
 function consumePersistFault(op: PersistOp): void {
-  if (!persistFault || persistFault.op !== op) return;
-  const err = persistFault.error;
-  persistFault = null;
+  const idx = persistFaults.findIndex((f) => f.op === op);
+  if (idx < 0) return;
+  const err = persistFaults[idx]!.error;
+  persistFaults.splice(idx, 1);
   throw err;
 }
 
-/** One-shot fault injection for tests. The next matching persist op throws. */
+/** Queued fault injection for tests. Each call fails one later matching persist op. */
 export function failNextPersistForTests(op: PersistOp, error = new Error("persist failed")): void {
-  persistFault = { op, error };
+  persistFaults.push({ op, error });
 }
 
 export function isPersistDegraded(): boolean {
@@ -119,6 +135,10 @@ function asPersistError(err: unknown): Error {
   return Object.assign(new Error(`persist failed: ${msg}`), { statusCode: 500, cause: err });
 }
 
+function clearDegradedIfRecovered(): void {
+  if (failedTaskIds.size === 0 && !logPersistFailed) persistDegraded = null;
+}
+
 function enqueuePersist(job: () => Promise<void>): Promise<void> {
   if (!persistWrites) return Promise.resolve();
   if (persistDepth > 32) {
@@ -129,7 +149,7 @@ function enqueuePersist(job: () => Promise<void>): Promise<void> {
   persistChain = run.then(
     () => {
       persistDepth = Math.max(0, persistDepth - 1);
-      persistDegraded = null;
+      clearDegradedIfRecovered();
     },
     (err) => {
       persistDepth = Math.max(0, persistDepth - 1);
@@ -141,6 +161,12 @@ function enqueuePersist(job: () => Promise<void>): Promise<void> {
   return run;
 }
 
+function kickTaskCoalesce(): void {
+  if (!persistWrites || coalesceQueued || pendingTaskWrites.size === 0) return;
+  const again = pendingTaskWrites.values().next().value;
+  if (again) enqueueTaskCoalesced(again);
+}
+
 function enqueueTaskCoalesced(task: Task): void {
   if (!persistWrites) return;
   pendingTaskWrites.set(task.id, task);
@@ -148,13 +174,29 @@ function enqueueTaskCoalesced(task: Task): void {
   coalesceQueued = true;
   void enqueuePersist(async () => {
     coalesceQueued = false;
-    const batch = [...pendingTaskWrites.values()];
+    const batch = [...pendingTaskWrites.entries()];
     pendingTaskWrites.clear();
-    for (const t of batch) await persistTask(t);
-    if (pendingTaskWrites.size) {
-      const again = pendingTaskWrites.values().next().value;
-      if (again) enqueueTaskCoalesced(again);
+    for (let i = 0; i < batch.length; i++) {
+      const [id, t] = batch[i]!;
+      try {
+        await persistTask(t);
+        failedTaskIds.delete(id);
+      } catch (err) {
+        if (!pendingTaskWrites.has(id)) pendingTaskWrites.set(id, t);
+        for (const [id2, t2] of batch.slice(i + 1)) {
+          if (!pendingTaskWrites.has(id2)) pendingTaskWrites.set(id2, t2);
+          failedTaskIds.add(id2);
+        }
+        failedTaskIds.add(id);
+        if (!taskRetryQueued) {
+          taskRetryQueued = true;
+          kickTaskCoalesce();
+        }
+        throw err;
+      }
     }
+    taskRetryQueued = false;
+    if (pendingTaskWrites.size) kickTaskCoalesce();
   });
 }
 
@@ -174,7 +216,21 @@ function queueLogFlush(): void {
     logBatchQueued = false;
     const rows = logBatch.splice(0, 200);
     if (!rows.length) return;
-    await insertLogRows(rows);
+    try {
+      await insertLogRows(rows);
+      if (!logBatch.length) {
+        logPersistFailed = false;
+        logRetryQueued = false;
+      }
+    } catch (err) {
+      logBatch = [...rows, ...logBatch];
+      logPersistFailed = true;
+      if (!logRetryQueued && logBatch.length) {
+        logRetryQueued = true;
+        queueLogFlush();
+      }
+      throw err;
+    }
     const touched = new Set(rows.map((r) => r.taskId));
     for (const id of touched) await pruneTaskLogsInDb(id);
     if (logBatch.length) queueLogFlush();
@@ -204,11 +260,18 @@ function enqueueLogLine(taskId: string, line: string): void {
 }
 
 export async function flushPersist(): Promise<void> {
-  if (logBatch.length) queueLogFlush();
-  await persistChain;
-  if (logBatch.length) {
-    queueLogFlush();
-    await persistChain;
+  for (let i = 0; i < 100; i++) {
+    if (logBatch.length && !logBatchQueued) queueLogFlush();
+    kickTaskCoalesce();
+    const seen = persistChain;
+    await seen;
+    const idle =
+      seen === persistChain &&
+      logBatch.length === 0 &&
+      !logBatchQueued &&
+      pendingTaskWrites.size === 0 &&
+      !coalesceQueued;
+    if (idle) break;
   }
   if (unreportedFailure) {
     const err = unreportedFailure;
@@ -478,7 +541,7 @@ async function persistDelete(ids: string[]): Promise<void> {
   }
   for (const id of ids) {
     try {
-      const path = `${logsDir}/${id}.jsonl`;
+      const path = `${logsDir()}/${id}.jsonl`;
       if (existsSync(path)) unlinkSync(path);
     } catch (err) {
       console.warn(`[db] could not remove log file for ${id}:`, err);
@@ -489,18 +552,24 @@ async function persistDelete(ids: string[]): Promise<void> {
 /** How often to prune Postgres rows for a task after append (amortize DELETE cost). */
 const LOG_DB_PRUNE_EVERY = 50;
 
-async function pruneTaskLogsInDb(taskId: string, keep = MAX_LOG_LINES_KEPT): Promise<void> {
-  if (keep <= 0) {
+async function pruneTaskLogsInDb(
+  taskId: string,
+  keep = MAX_LOG_LINES_KEPT,
+  maxChars = MAX_LOG_CHARS_KEPT,
+): Promise<void> {
+  if (keep <= 0 || maxChars <= 0) {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [taskId]);
     return;
   }
   const p = getPool();
-  const countRes = await p.query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM task_logs WHERE task_id = $1`,
+  const countRes = await p.query<{ n: string; c: string }>(
+    `SELECT COUNT(*)::text AS n, COALESCE(SUM(char_length(line)), 0)::text AS c
+     FROM task_logs WHERE task_id = $1`,
     [taskId],
   );
   const n = Number(countRes.rows[0]?.n || 0);
-  if (n <= keep) return;
+  const chars = Number(countRes.rows[0]?.c || 0);
+  if (n <= keep && chars <= maxChars) return;
 
   // Bound a legacy backlog before the exact in-memory selection: keep the
   // newest `keep` rows plus older meta-like lines, fixing the old OFFSET off-by-one.
@@ -524,10 +593,14 @@ async function pruneTaskLogsInDb(taskId: string, keep = MAX_LOG_LINES_KEPT): Pro
     `SELECT id, line FROM task_logs WHERE task_id = $1 ORDER BY id ASC`,
     [taskId],
   );
-  if (res.rows.length <= keep) return;
+  if (res.rows.length <= keep && chars <= maxChars) {
+    const total = res.rows.reduce((sum, row) => sum + row.line.length, 0);
+    if (res.rows.length <= keep && total <= maxChars) return;
+  }
   const indices = keptLogIndices(
     res.rows.map((r) => r.line),
     keep,
+    maxChars,
   );
   const keepIds = new Set(indices.map((i) => res.rows[i]!.id));
   const dropIds = res.rows.filter((r) => !keepIds.has(r.id)).map((r) => r.id);
@@ -539,8 +612,12 @@ async function pruneTaskLogsInDb(taskId: string, keep = MAX_LOG_LINES_KEPT): Pro
 }
 
 /** Test hook: run the same prune the append path uses, with an explicit cap. */
-export async function pruneTaskLogsForTests(taskId: string, keep: number): Promise<void> {
-  await pruneTaskLogsInDb(taskId, keep);
+export async function pruneTaskLogsForTests(
+  taskId: string,
+  keep: number,
+  maxChars = MAX_LOG_CHARS_KEPT,
+): Promise<void> {
+  await pruneTaskLogsInDb(taskId, keep, maxChars);
 }
 
 async function insertLogRows(rows: LogRow[]): Promise<void> {
@@ -779,14 +856,17 @@ async function reconcileInterruptedTasks(): Promise<number> {
   const nowIso = new Date().toISOString();
   for (const t of [...tasks.values()]) {
     if (t.status !== "queued" && t.status !== "running" && t.status !== "blocked") continue;
+    const endedAt = t.endedAt || nowIso;
+    const sideJobs = finalizeRunningSideJobs(t.sideJobs, endedAt, "failed") ?? t.sideJobs;
     const next: Task = {
       ...t,
       status: "failed",
       error: t.error || "服务重启，任务已中断（未接管子进程）",
       lastEvent: "interrupted",
       pid: undefined,
-      endedAt: t.endedAt || nowIso,
+      endedAt,
       updatedAt: nowIso,
+      sideJobs,
     };
     tasks.set(t.id, next);
     await persistTask(next);
@@ -796,24 +876,13 @@ async function reconcileInterruptedTasks(): Promise<number> {
 }
 
 function referencedUploadNames(): Set<string> {
-  const names = new Set<string>();
-  const re = /\/uploads\/([A-Za-z0-9_-]+\.[A-Za-z0-9]{1,16})/g;
-  for (const t of tasks.values()) {
-    for (const a of t.attachments || []) names.add(a.name);
-    const texts = [t.prompt, t.output, ...(t.prompts || []).map((p) => p.prompt)];
-    for (const text of texts) {
-      if (!text) continue;
-      for (const m of text.matchAll(re)) {
-        if (m[1]) names.add(m[1]);
-      }
-    }
-  }
-  return names;
+  return collectUploadRefs(tasks.values());
 }
 
 /** Call once before serving HTTP. */
 export async function initStore(): Promise<void> {
   if (ready) return;
+  ensureDataDirs();
   await ensureSchema();
   await ensureDefaultWorkspace();
   await migrateFromJsonIfNeeded();
@@ -925,16 +994,36 @@ export function upsertTask(task: Task): Task {
   return normalized;
 }
 
+/** Test hook: the next saveTaskDurable calls await this promise first. */
+export function setDurableDelayForTests(p: Promise<void> | null): void {
+  durableDelay = p;
+}
+
+export function durableWaiterCountForTests(): number {
+  return durableWaiters;
+}
+
 /** Wait until this snapshot is committed. Rolls memory back if the write fails. */
 export async function saveTaskDurable(task: Task): Promise<Task> {
+  const pendingDelay = durableDelay;
+  if (pendingDelay) {
+    durableWaiters += 1;
+    try {
+      await pendingDelay;
+    } finally {
+      durableWaiters -= 1;
+    }
+  }
   const normalized = normalizeTask(task);
   const prev = tasks.get(normalized.id);
   tasks.set(normalized.id, normalized);
   try {
     await enqueuePersist(() => persistTask(normalized));
   } catch (err) {
-    if (prev) tasks.set(normalized.id, prev);
-    else tasks.delete(normalized.id);
+    if (tasks.get(normalized.id) === normalized) {
+      if (prev) tasks.set(normalized.id, prev);
+      else tasks.delete(normalized.id);
+    }
     throw asPersistError(err);
   }
   return normalized;
@@ -960,7 +1049,7 @@ export async function deleteTasks(ids: string[]): Promise<string[]> {
 
 /** @deprecated file path kept for callers; logs live in Postgres */
 export function logPath(id: string) {
-  return `${logsDir}/${id}.jsonl`;
+  return `${logsDir()}/${id}.jsonl`;
 }
 
 export function appendLog(id: string, line: string): void {
@@ -1001,7 +1090,7 @@ export function removeLog(id: string): void {
   enqueuePersist(async () => {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = $1`, [id]);
     try {
-      const path = `${logsDir}/${id}.jsonl`;
+      const path = `${logsDir()}/${id}.jsonl`;
       if (existsSync(path)) unlinkSync(path);
     } catch (err) {
       console.warn(`[db] could not remove log file for ${id}:`, err);
@@ -1019,7 +1108,7 @@ export function clearTaskLogs(ids: string[]): void {
     await getPool().query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [uniq]);
     for (const id of uniq) {
       try {
-        const path = `${logsDir}/${id}.jsonl`;
+        const path = `${logsDir()}/${id}.jsonl`;
         if (existsSync(path)) unlinkSync(path);
       } catch (err) {
         console.warn(`[db] could not remove log file for ${id}:`, err);
@@ -1040,7 +1129,7 @@ export async function purgeArchivedTaskLogs(): Promise<{ tasks: number; rows: nu
   );
   for (const id of ids) {
     try {
-      const path = `${logsDir}/${id}.jsonl`;
+      const path = `${logsDir()}/${id}.jsonl`;
       if (existsSync(path)) unlinkSync(path);
     } catch (err) {
       console.warn(`[db] could not remove log file for ${id}:`, err);
@@ -1068,12 +1157,13 @@ export async function purgeOrphanLogs(): Promise<{
 
   let jsonlFiles = 0;
   let jsonlBytes = 0;
-  if (existsSync(logsDir)) {
-    for (const f of readdirSync(logsDir)) {
+  const orphanLogsDir = logsDir();
+  if (existsSync(orphanLogsDir)) {
+    for (const f of readdirSync(orphanLogsDir)) {
       if (!f.endsWith(".jsonl")) continue;
       const id = f.replace(/\.jsonl$/, "");
       if (tasks.has(id)) continue;
-      const path = `${logsDir}/${f}`;
+      const path = `${orphanLogsDir}/${f}`;
       try {
         jsonlBytes += statSync(path).size;
         unlinkSync(path);
@@ -1105,7 +1195,15 @@ export function countTasksInWorkspace(workspaceId: string): number {
  */
 export function enableMemoryStoreForTests(): string {
   persistWrites = false;
-  persistFault = null;
+  persistFaults = [];
+  persistDegraded = null;
+  unreportedFailure = null;
+  failedTaskIds.clear();
+  logPersistFailed = false;
+  logRetryQueued = false;
+  taskRetryQueued = false;
+  durableDelay = null;
+  durableWaiters = 0;
   tasks = new Map();
   workspaces = new Map();
   logs = new Map();
@@ -1138,9 +1236,15 @@ export function disableMemoryStoreForTests(): void {
 
 /** Integration tests: wipe PG + memory and re-init (keeps same DATABASE_URL pool). */
 export async function resetStoreForTests(): Promise<void> {
-  persistFault = null;
+  persistFaults = [];
   unreportedFailure = null;
   persistDegraded = null;
+  failedTaskIds.clear();
+  logPersistFailed = false;
+  logRetryQueued = false;
+  taskRetryQueued = false;
+  durableDelay = null;
+  durableWaiters = 0;
   try {
     await flushPersist();
   } catch (err) {

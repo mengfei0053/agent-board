@@ -191,6 +191,71 @@ const CHILD_ENV_ALLOW = [
 
 const CHILD_ENV_DENY = /^(DATABASE_URL|AGENT_BOARD_WEBHOOK_SECRET|POSTGRES_PASSWORD|PGPASSWORD)$/i;
 
+/**
+ * Model auth and endpoint variables each runner needs. Control-plane secrets
+ * stay on the deny list. This is not an OS sandbox.
+ */
+const RUNNER_ENV_ALLOW: Record<CliCommandKey, readonly string[]> = {
+  pi: [
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "GROQ_API_KEY",
+    "XAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "DEEPSEEK_API_KEY",
+    "MISTRAL_API_KEY",
+    "TOGETHER_API_KEY",
+    "PI_CODING_AGENT_DIR",
+  ],
+  claude: [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+  ],
+  agent: ["CURSOR_API_KEY"],
+  devin: ["DEVIN_API_KEY", "DEVIN_TOKEN"],
+  codex: [
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "CODEX_API_KEY",
+    "CODEX_HOME",
+  ],
+};
+
+export function runnerEnvAllowList(kind: CliCommandKey): readonly string[] {
+  return RUNNER_ENV_ALLOW[kind];
+}
+
+/** Redacted settings placeholder. Saving it must not replace a real password. */
+export function isRedactedProxyPlaceholder(value: string): boolean {
+  return /\/\/[^/\s:@]*:\*\*\*@/.test(value);
+}
+
 /** Hide user:password in proxy URLs returned by the settings API. */
 export function redactProxyCredential(value: string): string {
   return value.replace(/\/\/([^/\s:@]+):([^/\s@]+)@/g, "//$1:***@");
@@ -208,6 +273,11 @@ export function childProcessEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of CHILD_ENV_ALLOW) {
+    if (CHILD_ENV_DENY.test(key)) continue;
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  for (const key of RUNNER_ENV_ALLOW[kind]) {
     if (CHILD_ENV_DENY.test(key)) continue;
     const v = process.env[key];
     if (v !== undefined) env[key] = v;
@@ -241,6 +311,10 @@ export type ProxyEnvSetting = {
   effective: string;
   /** True when effective comes from board process.env, not our override. */
   inherited: boolean;
+  /** An override is stored for this key. */
+  configured: boolean;
+  /** The stored override includes URL userinfo. The secret is not returned. */
+  hasCredential: boolean;
 };
 
 export function getProxyEnvSettings(): {
@@ -262,13 +336,22 @@ export function getProxyEnvSettings(): {
       ).trim();
       if (override) {
         const shown = redactProxyCredential(override);
-        row[k] = { override: shown, effective: shown, inherited: false };
+        const hasCredential = override !== shown;
+        row[k] = {
+          override: shown,
+          effective: shown,
+          inherited: false,
+          configured: true,
+          hasCredential,
+        };
       } else {
         const shown = redactProxyCredential(inheritedVal);
         row[k] = {
           override: "",
           effective: shown,
           inherited: Boolean(inheritedVal),
+          configured: false,
+          hasCredential: false,
         };
       }
     }
@@ -296,6 +379,7 @@ export async function setProxyEnvOverrides(
     for (const [rawKey, rawVal] of Object.entries(rawMap)) {
       if (!isProxyKey(rawKey)) continue;
       const v = normalize(rawVal);
+      if (isRedactedProxyPlaceholder(v)) continue;
       if (v) kindNext[rawKey] = v;
       else delete kindNext[rawKey];
     }
@@ -323,6 +407,7 @@ export function planProxyEnvOverrides(
     for (const [rawKey, rawVal] of Object.entries(rawMap)) {
       if (!isProxyKey(rawKey)) continue;
       const v = normalize(rawVal);
+      if (isRedactedProxyPlaceholder(v)) continue;
       if (v) kindNext[rawKey] = v;
       else delete kindNext[rawKey];
     }

@@ -49,6 +49,30 @@ import { resolveAllowedDirectory } from "./paths.js";
 import { BOARD_FIELD_CHARS } from "./limits.js";
 
 const handles = new Map<string, RunnerHandle>();
+/** Serializes start/move/stop/continue for one task across awaits. */
+const taskOpTail = new Map<string, Promise<unknown>>();
+let draining = false;
+
+export function isDraining(): boolean {
+  return draining;
+}
+
+export function beginDraining(): void {
+  draining = true;
+}
+
+function withTaskLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = taskOpTail.get(id) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  taskOpTail.set(
+    id,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
 /** Coalesce rapid output/sideJob patches so stop/SSE stay responsive. */
 type PendingPatch = { runId: number; partial: Partial<Task> };
 const pendingPatch = new Map<string, PendingPatch>();
@@ -266,8 +290,12 @@ function spawnRunner(task: Task): Task {
       writeLog(id, line);
     },
   });
+  if (currentRunId(id) !== runId) {
+    try { handle.stop(); } catch { /* ignore */ }
+    return getTask(id)!;
+  }
   handles.set(id, handle);
-  if (handle.pid) patch(id, { pid: handle.pid });
+  if (handle.pid && currentRunId(id) === runId) patch(id, { pid: handle.pid });
   return getTask(id)!;
 }
 
@@ -333,7 +361,11 @@ export async function createDraft(input: CreateTaskInput): Promise<Task> {
 }
 
 /** Start a draft (or re-queue a terminal task as a fresh run without continue). */
-export async function startTask(id: string): Promise<Task> {
+export function startTask(id: string): Promise<Task> {
+  return withTaskLock(id, () => startTaskBody(id));
+}
+
+async function startTaskBody(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "queued" || t.status === "running") {
@@ -342,6 +374,7 @@ export async function startTask(id: string): Promise<Task> {
   if (t.status === "blocked") {
     throw new Error("task is blocked; stop it before starting again");
   }
+  resolveAllowedDirectory(t.cwd, "cwd");
 
   beginFreshRun(id);
   const existing = handles.get(id);
@@ -354,8 +387,13 @@ export async function startTask(id: string): Promise<Task> {
     handles.delete(id);
   }
 
+  const startedAt = now();
+  const runAtQueue = currentRunId(id);
+  clearTaskLogs([id]);
   await patchDurable(id, {
     status: "queued",
+    iteration: 1,
+    prompts: [{ iteration: 1, prompt: t.prompt, at: startedAt }],
     sessionId: undefined,
     error: undefined,
     exitCode: undefined,
@@ -367,11 +405,19 @@ export async function startTask(id: string): Promise<Task> {
     pid: undefined,
     sideJobs: [],
   });
+  const after = getTask(id);
+  if (!after || after.status !== "queued" || currentRunId(id) !== runAtQueue) {
+    return after ?? t;
+  }
   writeLog(id, JSON.stringify({ type: "start", from: t.status }));
   return spawnRunner(getTask(id)!);
 }
 
-export async function continueTask(id: string, prompt?: string): Promise<Task> {
+export function continueTask(id: string, prompt?: string): Promise<Task> {
+  return withTaskLock(id, () => continueTaskBody(id, prompt));
+}
+
+async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "draft") {
@@ -380,6 +426,7 @@ export async function continueTask(id: string, prompt?: string): Promise<Task> {
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is still running; stop it before continue");
   }
+  resolveAllowedDirectory(t.cwd, "cwd");
 
   beginFreshRun(id);
   const existing = handles.get(id);
@@ -401,6 +448,7 @@ export async function continueTask(id: string, prompt?: string): Promise<Task> {
     at: continuedAt,
   });
 
+  const runAtQueue = currentRunId(id);
   await patchDurable(id, {
     status: "queued",
     iteration: nextIter,
@@ -414,6 +462,10 @@ export async function continueTask(id: string, prompt?: string): Promise<Task> {
     lastEvent: "continue",
     pid: undefined,
   });
+  const after = getTask(id);
+  if (!after || after.status !== "queued" || currentRunId(id) !== runAtQueue) {
+    return after ?? t;
+  }
 
   writeLog(
     id,
@@ -457,26 +509,27 @@ export async function continueTask(id: string, prompt?: string): Promise<Task> {
     },
     { continuePrompt: contPrompt },
   );
+  if (currentRunId(id) !== runId) {
+    try { handle.stop(); } catch { /* ignore */ }
+    return getTask(id)!;
+  }
   handles.set(id, handle);
-  if (handle.pid) patch(id, { pid: handle.pid });
+  if (handle.pid && currentRunId(id) === runId) patch(id, { pid: handle.pid });
   return getTask(id)!;
 }
 
-export async function stopTask(id: string): Promise<Task> {
+export function stopTask(id: string): Promise<Task> {
+  return withTaskLock(id, () => stopTaskBody(id));
+}
+
+async function stopTaskBody(id: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   // Flush first, then read sideJobs so a just-merged job is not dropped.
   flushPendingPatch(id);
   const fresh = getTask(id) ?? t;
-  const endedAt = now();
-  const sideJobs = finalizeRunningSideJobs(fresh.sideJobs, endedAt, "stopped") ?? fresh.sideJobs;
-  const updated = await patchDurable(id, {
-    status: "stopped" satisfies TaskStatus,
-    endedAt,
-    summary: fresh.summary ?? "stopped by user",
-    sideJobs,
-    pid: undefined,
-  });
+  // Invalidate runner callbacks and stop the process before the durable
+  // write, so a slow commit cannot observe a new running status or a new run.
   bumpRun(id);
   cancelPendingPatch(id);
   const h = handles.get(id);
@@ -486,7 +539,31 @@ export async function stopTask(id: string): Promise<Task> {
   } catch (err) {
     console.warn("[stop] kill failed", id, err);
   }
-  return getTask(id) ?? updated;
+  const endedAt = now();
+  const sideJobs = finalizeRunningSideJobs(fresh.sideJobs, endedAt, "stopped") ?? fresh.sideJobs;
+  try {
+    const updated = await patchDurable(id, {
+      status: "stopped" satisfies TaskStatus,
+      endedAt,
+      summary: fresh.summary ?? "stopped by user",
+      sideJobs,
+      pid: undefined,
+    });
+    return getTask(id) ?? updated;
+  } catch (err) {
+    const cur = getTask(id);
+    if (cur && (cur.status === "queued" || cur.status === "running" || cur.status === "blocked")) {
+      upsertTask({
+        ...cur,
+        status: "failed",
+        error: "进程已停止，但状态写入失败",
+        endedAt,
+        pid: undefined,
+        updatedAt: now(),
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -496,7 +573,11 @@ export async function stopTask(id: string): Promise<Task> {
  * * → done: stop if active → stopped; archived → restore prior terminal status
  * * → archived: park as archived (stop if needed)
  */
-export async function moveTask(id: string, lane: BoardLane): Promise<Task> {
+export function moveTask(id: string, lane: BoardLane): Promise<Task> {
+  return withTaskLock(id, () => moveTaskBody(id, lane));
+}
+
+async function moveTaskBody(id: string, lane: BoardLane): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (!["draft", "todo", "running", "done", "archived"].includes(lane)) {
@@ -507,7 +588,7 @@ export async function moveTask(id: string, lane: BoardLane): Promise<Task> {
     if (t.status === "queued" || t.status === "running" || t.status === "blocked") {
       return t; // already in-flight
     }
-    return startTask(id);
+    return startTaskBody(id);
   }
 
   if (lane === "draft") {
@@ -582,7 +663,7 @@ export async function moveTask(id: string, lane: BoardLane): Promise<Task> {
       lastEvent: "move_done",
     });
   }
-  return stopTask(id);
+  return stopTaskBody(id);
 }
 
 type RemoveTasksResult = {
@@ -647,13 +728,27 @@ function clipBoardText(s: string | undefined): string | undefined {
 }
 
 /** List/hello payload: keep card fields, clip long prompt/output bodies. */
-export function presentBoardTask(t: Task): Task {
+export type BoardTaskSummary = Task & {
+  /** List/SSE payload. Must not replace an open detail's full text. */
+  boardSummary: true;
+  outputTruncated?: boolean;
+  promptTruncated?: boolean;
+};
+
+export function presentBoardTask(t: Task): BoardTaskSummary {
+  const outputTruncated = Boolean(t.output && t.output.length > BOARD_FIELD_CHARS)
+    || Boolean(t.outputs?.some((o) => o.text.length > BOARD_FIELD_CHARS));
+  const promptTruncated = Boolean(t.prompt && t.prompt.length > BOARD_FIELD_CHARS)
+    || Boolean(t.prompts?.some((p) => p.prompt.length > BOARD_FIELD_CHARS));
   return {
     ...t,
     prompt: clipBoardText(t.prompt) || t.prompt,
     output: clipBoardText(t.output),
     outputs: t.outputs?.map((o) => ({ ...o, text: clipBoardText(o.text) || "" })),
     prompts: t.prompts?.map((p) => ({ ...p, prompt: clipBoardText(p.prompt) || "" })),
+    boardSummary: true,
+    ...(outputTruncated ? { outputTruncated: true } : {}),
+    ...(promptTruncated ? { promptTruncated: true } : {}),
   };
 }
 
@@ -750,16 +845,29 @@ export async function createAndStart(input: CreateTaskInput): Promise<Task> {
 }
 
 /** Stop runners and flush deferred patches. Used by process shutdown. */
-export function shutdownManager(): void {
+export async function shutdownManager(deadlineMs = 4_000): Promise<void> {
+  beginDraining();
+  const waits: Promise<void>[] = [];
   for (const id of [...handles.keys()]) {
     const h = handles.get(id);
     handles.delete(id);
-    try {
-      h?.stop();
-    } catch {
-      /* ignore */
+    if (h?.stopAndWait) {
+      waits.push(h.stopAndWait(deadlineMs).catch(() => undefined));
+    } else {
+      try {
+        h?.stop();
+      } catch {
+        /* ignore */
+      }
     }
   }
+  await Promise.race([
+    Promise.all(waits),
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, deadlineMs);
+      timer.unref?.();
+    }),
+  ]);
   for (const id of [...patchTimers.keys()]) flushPendingPatch(id);
   pendingPatch.clear();
 }
@@ -786,6 +894,8 @@ export function clearHandlesForTests(): void {
   }
   pendingPatch.clear();
   taskRunIds.clear();
+  taskOpTail.clear();
+  draining = false;
 }
 
 setTasksDeletedListener((ids) => {

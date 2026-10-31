@@ -1,18 +1,31 @@
 import type { Workspace, WorkspaceSettings } from "./types.js";
+import { HttpError } from "./httpError.js";
 
 export function normalizeWorkspaceSettings(
   raw: unknown,
 ): WorkspaceSettings | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  if (raw == null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(400, "settings must be an object");
+  }
   const rec = raw as Record<string, unknown>;
   const out: WorkspaceSettings = {};
 
+  if ("systemPrompt" in rec && rec.systemPrompt != null && typeof rec.systemPrompt !== "string") {
+    throw new HttpError(400, "settings.systemPrompt must be a string");
+  }
   if (typeof rec.systemPrompt === "string") {
     const s = rec.systemPrompt.trim();
     if (s) out.systemPrompt = s;
   }
 
+  if ("skills" in rec && rec.skills != null && !Array.isArray(rec.skills) && typeof rec.skills !== "string") {
+    throw new HttpError(400, "settings.skills must be an array of strings or a newline string");
+  }
   if (Array.isArray(rec.skills)) {
+    if (rec.skills.some((x) => typeof x !== "string")) {
+      throw new HttpError(400, "settings.skills must be an array of strings");
+    }
     const skills = rec.skills
       .filter((x): x is string => typeof x === "string")
       .map((s) => s.trim())
@@ -26,6 +39,9 @@ export function normalizeWorkspaceSettings(
     if (skills.length) out.skills = skills;
   }
 
+  if ("mcp" in rec && rec.mcp != null && typeof rec.mcp !== "string") {
+    throw new HttpError(400, "settings.mcp must be a string");
+  }
   if (typeof rec.mcp === "string") {
     const m = rec.mcp.trim();
     if (m) out.mcp = m;

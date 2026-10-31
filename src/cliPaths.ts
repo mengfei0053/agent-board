@@ -1,6 +1,7 @@
 /** CLI command path overrides (meta.cli_paths). Empty → PATH lookup by default name. */
 import { existsSync } from "node:fs";
 import { getPool } from "./db.js";
+import { HttpError } from "./httpError.js";
 import { spawnCollect } from "./spawnCollect.js";
 
 export const CLI_COMMAND_KEYS = ["pi", "claude", "agent", "devin", "codex"] as const;
@@ -32,8 +33,12 @@ function isKey(k: string): k is CliCommandKey {
   return (CLI_COMMAND_KEYS as readonly string[]).includes(k);
 }
 
-function normalizeOverride(raw: unknown): string {
+function normalizeOverride(raw: unknown, strict = false): string {
   if (typeof raw !== "string") return "";
+  if (raw.includes("\0")) {
+    if (strict) throw new HttpError(400, "cli path must not contain NUL");
+    return "";
+  }
   return raw.trim();
 }
 
@@ -158,7 +163,7 @@ export async function setCliPathOverrides(
   const next: Partial<Record<CliCommandKey, string>> = { ...overrides };
   for (const [rawKey, rawVal] of Object.entries(input)) {
     if (!isKey(rawKey)) continue;
-    const v = normalizeOverride(rawVal);
+    const v = normalizeOverride(rawVal, true);
     if (v) next[rawKey] = v;
     else delete next[rawKey];
   }
@@ -188,7 +193,7 @@ export function planCliPathOverrides(
   const next: Partial<Record<CliCommandKey, string>> = { ...overrides };
   for (const [rawKey, rawVal] of Object.entries(input)) {
     if (!isKey(rawKey)) continue;
-    const v = normalizeOverride(rawVal);
+    const v = normalizeOverride(rawVal, true);
     if (v) next[rawKey] = v;
     else delete next[rawKey];
   }

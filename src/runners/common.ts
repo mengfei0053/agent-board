@@ -117,12 +117,42 @@ export function spawnLogged(
   let endedByWatchdog = false;
   let consecutive429 = 0;
   const env = childProcessEnv(opts.cliKind, { NO_COLOR: "1", FORCE_COLOR: "0" });
-  const child = spawn(cmd, args, {
-    cwd,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-  });
+  const failSync = (err: unknown): RunnerHandle => {
+    const error = err instanceof Error ? err.message : String(err);
+    const settled = Promise.resolve();
+    queueMicrotask(() => {
+      hooks.onLog(JSON.stringify({ type: "spawn_error", error: error.slice(0, 500) }));
+      hooks.onStatus({
+        status: "failed",
+        error,
+        endedAt: new Date().toISOString(),
+        lastEvent: "spawn_error",
+      });
+    });
+    return {
+      stop() {},
+      settled,
+      stopAndWait: async () => settled,
+    };
+  };
+  if (cmd.includes("\0") || args.some((a) => a.includes("\0"))) {
+    return failSync(new Error("spawn arguments must not contain NUL"));
+  }
+  const argvBytes = Buffer.byteLength(cmd) + args.reduce((n, a) => n + Buffer.byteLength(a), 0);
+  if (argvBytes > 1_000_000) {
+    return failSync(new Error(`spawn arguments too large (${argvBytes} bytes)`));
+  }
+  let child;
+  try {
+    child = spawn(cmd, args, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+  } catch (err) {
+    return failSync(err);
+  }
 
   hooks.onStatus({ status: "running", pid: child.pid, startedAt: new Date().toISOString() });
   const previewArg = (arg: string) => {
@@ -282,7 +312,9 @@ export function spawnLogged(
         })
       : line;
     hooks.onLog(stored);
-    opts.classifyLine?.(line, hooks);
+    // Trusted protocol (session id, result text) is stdout only.
+    // stderr is logged and may still trip the 429 watchdog.
+    if (stream === "stdout") opts.classifyLine?.(line, hooks);
     noteLineForRateLimit(line);
   };
 
@@ -362,13 +394,47 @@ export function spawnLogged(
     }
   });
 
+  let resolveSettled: () => void = () => {};
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+  const markSettled = () => resolveSettled();
+  child.on("close", () => markSettled());
+  child.on("error", () => {
+    // close may not follow a sync-looking failure; don't leave shutdown hanging.
+    setTimeout(markSettled, 50);
+  });
+
+  const stop = () => {
+    if (closed || stoppedByUser || endedByWatchdog) return;
+    stoppedByUser = true;
+    // Cut pipes first so exit dumps cannot flood writeLog/SSE on this tick.
+    cutPipesAndKill();
+  };
+
+  const stopAndWait = async (timeoutMs = 3_000) => {
+    stop();
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    if (!closed) {
+      signalGroup("SIGKILL");
+      try {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
   return {
     pid: child.pid,
-    stop: () => {
-      if (closed || stoppedByUser || endedByWatchdog) return;
-      stoppedByUser = true;
-      // Cut pipes first so exit dumps cannot flood writeLog/SSE on this tick.
-      cutPipesAndKill();
-    },
+    stop,
+    settled,
+    stopAndWait,
   };
 }

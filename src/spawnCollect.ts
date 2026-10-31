@@ -19,6 +19,7 @@ export function spawnCollect(
     env?: NodeJS.ProcessEnv;
     timeoutMs: number;
     maxBytes?: number;
+    signal?: AbortSignal;
   },
 ): Promise<SpawnCollectResult> {
   const maxBytes = opts.maxBytes ?? 256_000;
@@ -27,18 +28,43 @@ export function spawnCollect(
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let hard: ReturnType<typeof setTimeout> | undefined;
     const finish = (code: number | null) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (hard) clearTimeout(hard);
+      opts.signal?.removeEventListener("abort", onAbort);
       resolve({ code, stdout, stderr, timedOut });
     };
-    let child;
+    const cut = (child: ReturnType<typeof spawn> | undefined, sig: NodeJS.Signals) => {
+      if (!child) return;
+      try { child.stdout?.destroy(); } catch { /* ignore */ }
+      try { child.stderr?.destroy(); } catch { /* ignore */ }
+      try {
+        if (child.pid) process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        try { child.kill(sig); } catch { /* ignore */ }
+      }
+    };
+    let child: ReturnType<typeof spawn> | undefined;
+    const onAbort = () => {
+      timedOut = true;
+      cut(child, "SIGKILL");
+      finish(null);
+    };
+    if (opts.signal?.aborted) {
+      resolve({ code: null, stdout: "", stderr: "aborted", timedOut: true });
+      return;
+    }
     try {
       child = spawn(cmd, args, {
         cwd: opts.cwd,
         env: opts.env,
         stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
       });
     } catch (err) {
       resolve({
@@ -49,15 +75,20 @@ export function spawnCollect(
       });
       return;
     }
-    const timer = setTimeout(() => {
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
       timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* ignore */
-      }
+      cut(child, "SIGKILL");
     }, opts.timeoutMs);
     timer.unref?.();
+    // Descendants can hold the pipes open after the direct child is killed.
+    // Settle anyway so a probe cannot outlive its deadline.
+    hard = setTimeout(() => {
+      timedOut = true;
+      cut(child, "SIGKILL");
+      finish(null);
+    }, opts.timeoutMs + 500);
+    hard.unref?.();
     const take = (into: "stdout" | "stderr", chunk: Buffer) => {
       const text = chunk.toString("utf8");
       if (into === "stdout") {

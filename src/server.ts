@@ -5,7 +5,7 @@ import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, readSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { subscribe } from "./bus.js";
@@ -17,6 +17,8 @@ import {
   moveTask,
   removeTasks,
   presentBoardTask,
+  beginDraining,
+  isDraining,
   shutdownManager,
   startTask,
   stopTask,
@@ -83,6 +85,7 @@ import {
   MAX_UPLOAD_BYTES,
   mimeForStoredName,
   normalizeAttachmentsInput,
+  openUploadNoFollow,
   saveAttachmentFile,
   saveUploadFile,
   sniffImageMime,
@@ -99,6 +102,7 @@ import {
   MAX_UPLOAD_OVERHEAD_BYTES,
 } from "./limits.js";
 import { resolveAllowedDirectory } from "./paths.js";
+import { withSettingsLock } from "./settingsLock.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -111,9 +115,14 @@ const app = new Hono();
 const MAX_UPLOAD_REQUEST_BYTES = MAX_ATTACHMENT_BYTES + MAX_UPLOAD_OVERHEAD_BYTES;
 
 app.use("*", async (c, next) => {
+  if (isDraining() && c.req.method !== "GET" && c.req.method !== "HEAD" && c.req.method !== "OPTIONS") {
+    return c.json({ error: "shutting down" }, 503);
+  }
   await next();
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "no-referrer");
+  c.header("X-Frame-Options", "SAMEORIGIN");
+  c.header("Content-Security-Policy", "frame-ancestors 'self'");
 });
 
 app.use("*", async (c, next) => {
@@ -385,7 +394,7 @@ app.patch("/api/workspaces/:id", async (c) => {
     if (typeof name === "string") assertTextLimit(name, MAX_TITLE_CHARS, "name");
     const settings =
       "settings" in body
-        ? normalizeWorkspaceSettings(body.settings ?? {})
+        ? normalizeWorkspaceSettings(body.settings)
         : cur.settings;
     assertWorkspaceSettingsSize(settings);
     const ws: Workspace = {
@@ -560,17 +569,24 @@ app.post("/api/tasks/:id/stop", async (c) => {
 app.post("/api/tasks/:id/continue", async (c) => {
   let prompt: string | undefined;
   try {
-    const body = await readJsonObject(c);
-    if (body.prompt != null) {
-      prompt = requireString(body, "prompt", { max: MAX_PROMPT_CHARS });
+    const raw = await c.req.text();
+    if (raw.trim()) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return c.json({ error: "invalid JSON body" }, 400);
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return c.json({ error: "body must be an object" }, 400);
+      }
+      const body = parsed as Record<string, unknown>;
+      if (body.prompt != null) {
+        prompt = requireString(body, "prompt", { max: MAX_PROMPT_CHARS });
+      }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg === "invalid JSON body") {
-      prompt = undefined;
-    } else {
-      return errorJson(c, err);
-    }
+    return errorJson(c, err);
   }
   try {
     const task = await continueTask(c.req.param("id"), prompt);
@@ -589,11 +605,23 @@ app.get("/api/events", (c) => {
     let closed = false;
     let pumping = false;
     let alive: ReturnType<typeof setInterval> | undefined;
-    const cleanup = () => {
-      if (closed) return;
+    let finishWait: (() => void) | undefined;
+    let unsub = () => {};
+    const finish = () => {
+      if (closed) {
+        finishWait?.();
+        return;
+      }
       closed = true;
+      queued.length = 0;
       if (alive) clearInterval(alive);
-      unsub();
+      try { unsub(); } catch { /* ignore */ }
+      finishWait?.();
+      try {
+        stream.abort();
+      } catch {
+        /* already closed */
+      }
     };
     const pump = async () => {
       if (pumping || closed) return;
@@ -604,28 +632,31 @@ app.get("/api/events", (c) => {
           await stream.writeSSE(item);
         }
       } catch {
-        cleanup();
+        finish();
       } finally {
         pumping = false;
         if (queued.length && !closed) void pump();
       }
     };
-    const unsub = subscribe((ev) => {
+    const enqueue = (event: string, data: string) => {
       if (closed) return;
       if (queued.length >= MAX_QUEUED) {
-        cleanup();
+        finish();
         return;
       }
-      queued.push({ event: ev.type, data: JSON.stringify(presentTaskEvent(ev)) });
+      queued.push({ event, data });
       void pump();
+    };
+    unsub = subscribe((ev) => {
+      enqueue(ev.type, JSON.stringify(presentTaskEvent(ev)));
     });
     const signal = c.req.raw.signal;
     if (signal?.aborted) {
-      cleanup();
+      finish();
       return;
     }
-    signal?.addEventListener("abort", cleanup, { once: true });
-    stream.onAbort(cleanup);
+    signal?.addEventListener("abort", finish, { once: true });
+    stream.onAbort(finish);
     try {
       await stream.writeSSE({
         event: "hello",
@@ -638,24 +669,21 @@ app.get("/api/events", (c) => {
       await pump();
       if (closed) return;
       alive = setInterval(() => {
-        if (closed) return;
-        void stream.writeSSE({ event: "ping", data: "{}" }).catch(() => cleanup());
+        enqueue("ping", "{}");
       }, 15000);
       await new Promise<void>((resolve) => {
         if (closed || signal?.aborted) {
-          cleanup();
+          finish();
           resolve();
           return;
         }
-        const done = () => {
-          cleanup();
-          resolve();
-        };
+        finishWait = () => resolve();
+        const done = () => finish();
         signal?.addEventListener("abort", done, { once: true });
         stream.onAbort(done);
       });
     } finally {
-      cleanup();
+      finish();
     }
   });
 });
@@ -688,6 +716,7 @@ app.put("/api/settings", async (c) => {
     return errorJson(c, e);
   }
 
+  return withSettingsLock(async () => {
   if ("clear" in raw && raw.clear != null && typeof raw.clear !== "boolean") {
     return c.json({ error: "clear must be a boolean" }, 400);
   }
@@ -794,6 +823,7 @@ app.put("/api/settings", async (c) => {
   if (codexPlan) applyCodexSandboxMemory(codexPlan.next);
 
   return c.json(await fullSettings());
+  });
 });
 
 app.post("/api/uploads", async (c) => {
@@ -842,24 +872,22 @@ app.get("/uploads/:name", async (c) => {
   const name = c.req.param("name");
   if (!isSafeStoredName(name) && !isSafeUploadName(name)) return c.notFound();
   const abs = absoluteUploadPath(name);
-  if (!abs || !existsSync(abs)) return c.notFound();
-  const st = statSync(abs);
+  const opened = abs ? openUploadNoFollow(abs) : null;
+  if (!opened) return c.notFound();
   const filename = c.req.query("filename")?.trim() || name;
   const safe = filename.replace(/["\r\n]/g, "_");
   const download = c.req.query("download") === "1" || c.req.query("download") === "true";
   let sniffed: string | null = null;
   try {
-    const fd = openSync(abs, "r");
     const head = Buffer.alloc(16);
-    readSync(fd, head, 0, 16, 0);
-    closeSync(fd);
+    readSync(opened.fd, head, 0, 16, 0);
     sniffed = sniffImageMime(head);
   } catch {
     sniffed = null;
   }
   const inlineImage = Boolean(sniffed) && isSafeUploadName(name);
   c.header("X-Content-Type-Options", "nosniff");
-  c.header("Content-Length", String(st.size));
+  c.header("Content-Length", String(opened.size));
   c.header("Content-Security-Policy", "sandbox; default-src 'none'");
   if (inlineImage && !download) {
     c.header("Content-Type", sniffed!);
@@ -874,7 +902,7 @@ app.get("/uploads/:name", async (c) => {
     );
     c.header("Cache-Control", "private, no-store");
   }
-  const nodeStream = createReadStream(abs);
+  const nodeStream = createReadStream(abs!, { fd: opened.fd, autoClose: true, start: 0 });
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
   return c.body(webStream);
 });
@@ -901,7 +929,7 @@ app.use("/*", serveStatic({ root: webRoot }));
 async function main() {
   ensureUploadsDir();
   await initStore();
-  serve({ fetch: app.fetch, port, hostname }, (info) => {
+  const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
     console.log(`agent-board http://${hostname}:${info.port}`);
     console.log(`database ${redactDatabaseUrl()}`);
   });
@@ -909,8 +937,16 @@ async function main() {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    beginDraining();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 2_000);
+      server.close(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
     try {
-      shutdownManager();
+      await shutdownManager();
     } catch (err) {
       console.error("[shutdown] runners:", err);
     }
