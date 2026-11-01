@@ -1,5 +1,7 @@
 # APK multi-board sessions and workspace search — implementation plan
 
+> **Superseded for the list field (2026-11-01).** The phone list’s main search is **task search inside the selected workspace** (title, id, prompt, promptPreview). It is not a workspace-name or path search. D5 below is historical for that field: do not wire `filterWorkspaces` to the list search box. Workspace chips stay the full selector and ignore the task query. Status chip, forget ≠ revoke, and the session model in this plan stay in force. Phone-only correction; `web/` is the ThinkBook board UI and is not an implementation reference for this search. There is no in-repo APK HTML prototype to align.
+
 Status: **plan only**. No Compose, session-store, relay, or board code in this PR.
 
 Design gate: **GO with conditions** (`agent-board-apk-multi-board-ws-search-sol`). D1–D11 and R1–R7 are accepted with the clarifications in that review. Plan gate: **GO with conditions** (`agent-board-apk-multi-board-ws-search-plan-sol`). **Plan-gate S1–S5 are binding.** They are must-fix before the sol code review. M1–M3 and L1–L3 are part of the implementation, not new product choices. The HTML prototype and the Make file (`https://www.figma.com/make/Mjku7xs8YBVvyRERhqUoCb`) are illustrative. `SCREENS.md` navigation that says forget lands on “列表或留在看板页” is closed by R7: forget of the current board returns to the **task list**.
@@ -283,16 +285,20 @@ Manual proof, two boards, same relay, two one-board pair codes:
 
 A build that tracks only the active socket and leaves the other card on the last 已连接 fails this plan even if the UI has a switcher.
 
-## 5. Workspace search (D5, D6, D7, R6)
+## 5. Workspace search (D5, D6, D7, R6) — HISTORICAL, do not implement
 
-Pure function, JVM-tested, no I/O:
+> **HISTORICAL RECORD ONLY. Not the phone list.** Do not use this section as implementation instructions. The list search field searches tasks in the selected workspace (see the supersession note at the top of this file). `filterWorkspaces` is not wired to that field. Picking a workspace clears the task query and keeps the status chip. The paragraphs and table below describe the retired workspace-name/path field. They are not the current contract.
+
+The retired field lived in the workspace selector and filtered that menu. The notes that follow are that old contract, kept so the change is visible.
+
+Pure function, JVM-tested, no I/O, **for the retired workspace-name field only**:
 
 - Trim the query. Empty query keeps every row.
 - Otherwise match when `name` or `path`, lowercased with `Locale.ROOT`, contains the lowercased query.
 - 「未分配」 matches on its label only (no path).
 - No pinyin, no normalization beyond that case fold, no server round trip.
 
-The field lives in the workspace selector. It filters that menu. It does not filter the task list by itself; the task list still uses the selected workspace and the 筛选 chip.
+The retired field lived in the workspace selector. It filtered that menu. It did not filter the task list by itself; the task list still used the selected workspace and the 筛选 chip. This is not how the phone list works now.
 
 | Input | Selector | Chip |
 | --- | --- | --- |

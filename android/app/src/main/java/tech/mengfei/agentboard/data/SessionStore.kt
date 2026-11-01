@@ -21,9 +21,15 @@ import tech.mengfei.agentboard.protocol.reduceDisk
  * Tokens stay in EncryptedSharedPreferences. The plain catalog is a separate commit.
  * A crash between those commits is recovered by [tech.mengfei.agentboard.protocol.recoverLaunch].
  */
-class SessionStore(context: Context) {
-    private val plain = context.applicationContext.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE)
-    private val secret: SharedPreferences? = openSecret(context.applicationContext)
+class SessionStore internal constructor(
+    private val plain: SharedPreferences,
+    private val secret: SharedPreferences?,
+) {
+    constructor(context: Context) : this(
+        context.applicationContext.getSharedPreferences(SETTINGS, Context.MODE_PRIVATE),
+        openSecret(context.applicationContext),
+    )
+
     val secure: Boolean = secret != null
     private var cache: PhoneDisk = load()
 
@@ -139,22 +145,22 @@ class SessionStore(context: Context) {
         }
     }
 
-    private fun openSecret(context: Context): SharedPreferences? {
-        return try {
-            val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
-            EncryptedSharedPreferences.create(
-                SECRET_FILE,
-                masterKey,
-                context,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        } catch (error: Exception) {
-            null
-        }
-    }
-
     private companion object {
+        fun openSecret(context: Context): SharedPreferences? {
+            return try {
+                val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+                EncryptedSharedPreferences.create(
+                    SECRET_FILE,
+                    masterKey,
+                    context,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                )
+            } catch (error: Exception) {
+                null
+            }
+        }
+
         const val SETTINGS = "agent_board_settings"
         const val SECRET_FILE = "agent_board_secrets"
         const val KEY_HTTP = "http_base"

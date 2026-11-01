@@ -510,6 +510,219 @@ class SessionCatalogTest {
     }
 
     @Test
+    fun forgetClearsThatBoardsLocalsAndLeavesTheOtherSession() {
+        val start = sharedDisk().copy(
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sA" to "draft-a", "sB" to "draft-b"),
+            archiveCursors = mapOf("sA" to "cur-a", "sB" to "cur-b"),
+        )
+        val forget = planForget(start, "sA")
+        assertTrue(forget.allowed)
+        val steps = forget.tx!!.steps
+        assertTrue(steps[0] is DiskOp.PutCatalog)
+        assertEquals(DiskOp.ClearLocals("sA"), steps[1])
+        assertTrue(steps.none { it is DiskOp.DeleteCredential })
+        assertTrue(steps.all { it is DiskOp.PutCatalog || it is DiskOp.ClearLocals || it is DiskOp.DeleteCredential })
+        val done = simulate(start, setOf("c1"), forget.tx)
+        assertNull(done.disk.workspaces["sA"])
+        assertEquals("ws_b", done.disk.workspaces["sB"])
+        assertNull(done.disk.drafts["sA"])
+        assertEquals("draft-b", done.disk.drafts["sB"])
+        assertNull(done.disk.archiveCursors["sA"])
+        assertEquals("cur-b", done.disk.archiveCursors["sB"])
+        assertEquals("sB", done.activeSessionId)
+        assertEquals(listOf("sB"), done.disk.catalog!!.order)
+        assertNotNull(done.disk.credentials["c1"])
+        assertEquals(listOf("sA", "sB"), start.catalog!!.order)
+    }
+
+    @Test
+    fun forgetDeletesOnlyAnUnusedCredential() {
+        val start = PhoneDisk(
+            credentials = mapOf(
+                "cA" to secret("cA", "dt_a", listOf("board-a")),
+                "cB" to secret("cB", "dt_b", listOf("board-b")),
+            ),
+            catalog = catalog(
+                listOf(session("sA", "cA", "board-a"), session("sB", "cB", "board-b")),
+                "sA",
+            ),
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sB" to "keep"),
+        )
+        val forget = planForget(start, "sA")
+        assertEquals(DiskOp.DeleteCredential("cA"), forget.tx!!.steps.last())
+        val done = simulate(start, setOf("cA", "cB"), forget.tx)
+        assertNull(done.disk.credentials["cA"])
+        assertNotNull(done.disk.credentials["cB"])
+        assertEquals("ws_b", done.disk.workspaces["sB"])
+        assertNull(done.disk.workspaces["sA"])
+        assertEquals("keep", done.disk.drafts["sB"])
+        assertEquals("sB", done.activeSessionId)
+    }
+
+    @Test
+    fun lastBoardAndTrueZeroBoardDoNotInventASession() {
+        assertFalse(forgetEnabled(0))
+        assertFalse(forgetEnabled(1))
+        val one = planForget(oneBoardDisk(), "sA")
+        assertFalse(one.allowed)
+        assertNull(one.tx)
+        assertEquals(KEEP_ONE_BOARD, one.message)
+        assertEquals(1, oneBoardDisk().catalog!!.sessions.size)
+        val empty = PhoneDisk()
+        val zero = planForget(empty, "sMissing")
+        assertFalse(zero.allowed)
+        assertNull(zero.tx)
+        assertNull(empty.catalog)
+        val launch = recoverLaunch(empty)
+        assertEquals(LaunchPhase.UNPAIRED, launch.phase)
+        assertTrue(launch.sessions.isEmpty())
+    }
+
+    @Test
+    fun clearLocalsFailureIsNotReportedAsAFinishedForget() {
+        val start = sharedDisk().copy(
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sA" to "draft-a", "sB" to "draft-b"),
+            archiveCursors = mapOf("sA" to "cur-a", "sB" to "cur-b"),
+        )
+        val tx = planForget(start, "sA").tx!!
+        val clearAt = tx.steps.indexOfFirst { it is DiskOp.ClearLocals }
+        assertTrue(clearAt > tx.cutoverIndex)
+        val retried = forgetFollowThrough(start, setOf("c1"), tx, failAt = clearAt, retryAlsoFails = false)
+        assertEquals(ForgetReport.Cleaned, retried.report)
+        assertTrue(retried.successToast)
+        assertNull(retried.disk.workspaces["sA"])
+        assertNull(retried.disk.drafts["sA"])
+        assertNull(retried.disk.archiveCursors["sA"])
+        assertEquals("ws_b", retried.disk.workspaces["sB"])
+        assertEquals("draft-b", retried.disk.drafts["sB"])
+        assertEquals("cur-b", retried.disk.archiveCursors["sB"])
+        assertNotNull(retried.disk.credentials["c1"])
+        assertEquals("sB", retried.activeSessionId)
+
+        val stuck = forgetFollowThrough(start, setOf("c1"), tx, failAt = clearAt, retryAlsoFails = true)
+        assertEquals(ForgetReport.CleanupIncomplete, stuck.report)
+        assertFalse(stuck.successToast)
+        assertTrue(stuck.dropMemory)
+        assertEquals(FORGET_CLEANUP_INCOMPLETE, stuck.message)
+        assertEquals("ws_a", stuck.disk.workspaces["sA"])
+        assertEquals("draft-a", stuck.disk.drafts["sA"])
+        assertEquals("ws_b", stuck.disk.workspaces["sB"])
+        assertEquals("draft-b", stuck.disk.drafts["sB"])
+        assertEquals("cur-b", stuck.disk.archiveCursors["sB"])
+        assertFalse(stuck.disk.catalog!!.order.contains("sA"))
+        assertEquals(listOf("sB"), stuck.disk.catalog!!.order)
+        assertNotNull(stuck.disk.credentials["c1"])
+        assertEquals("sB", stuck.activeSessionId)
+
+        val separate = PhoneDisk(
+            credentials = mapOf(
+                "cA" to secret("cA", "dt_a", listOf("board-a")),
+                "cB" to secret("cB", "dt_b", listOf("board-b")),
+            ),
+            catalog = catalog(
+                listOf(session("sA", "cA", "board-a"), session("sB", "cB", "board-b")),
+                "sA",
+            ),
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sB" to "keep"),
+        )
+        val deleteTx = planForget(separate, "sA").tx!!
+        val deleteAt = deleteTx.steps.indexOfFirst { it is DiskOp.DeleteCredential }
+        assertTrue(deleteAt > deleteTx.cutoverIndex)
+        val credentialStuck = forgetFollowThrough(separate, setOf("cA", "cB"), deleteTx, failAt = deleteAt, retryAlsoFails = true)
+        assertEquals(ForgetReport.CleanupIncomplete, credentialStuck.report)
+        assertFalse(credentialStuck.successToast)
+        assertNotNull(credentialStuck.disk.credentials["cA"])
+        assertNotNull(credentialStuck.disk.credentials["cB"])
+        assertEquals("ws_b", credentialStuck.disk.workspaces["sB"])
+        assertEquals("keep", credentialStuck.disk.drafts["sB"])
+        assertEquals("sB", credentialStuck.activeSessionId)
+        assertFalse(credentialStuck.disk.catalog!!.order.contains("sA"))
+    }
+
+    @Test
+    fun sameSessionNotificationDropsDeferredPairBeforeCatalogWrite() {
+        val start = oneBoardDisk()
+        val onAdd = AddPairSnapshot(start, emptySet(), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(onAdd.epoch, onAdd.activeSessionId, onAdd.navToken, onAdd.screen)
+        val opened = openNotificationSameSession(onAdd, "task_9")
+        assertEquals("sA", opened.activeSessionId)
+        assertEquals("detail:task_9", opened.screen)
+        assertEquals(start.catalog, opened.disk.catalog)
+        val proceed = planPair(start, addRequest(listOf("board-new"), ids = listOf("sNew"))) as PairOutcome.Proceed
+        val done = completeDeferredPair(opened, attempt, proceed)
+        assertFalse(done.applied)
+        assertFalse(done.successToast)
+        assertNull(done.snapshot.banner)
+        assertEquals("sA", done.snapshot.activeSessionId)
+        assertEquals("detail:task_9", done.snapshot.screen)
+        assertEquals(listOf("sA"), done.snapshot.disk.catalog!!.order)
+        assertNull(done.snapshot.disk.credentials["c-new"])
+        assertEquals(start.catalog, done.snapshot.disk.catalog)
+    }
+
+    @Test
+    fun backAndBoardSwitchDropDeferredPairBeforeCatalogWrite() {
+        val start = sharedDisk()
+        val onAdd = AddPairSnapshot(start, setOf("c1"), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(1, "sA", 0, "add")
+        val proceed = planPair(start, addRequest(listOf("board-c"), ids = listOf("sC"))) as PairOutcome.Proceed
+        val back = completeDeferredPair(leaveAddScreen(onAdd, "tasks", PairDeparture.Back), attempt, proceed)
+        assertFalse(back.applied)
+        assertFalse(back.successToast)
+        assertNull(back.snapshot.banner)
+        assertEquals("sA", back.snapshot.activeSessionId)
+        assertEquals("tasks", back.snapshot.screen)
+        assertEquals(listOf("sA", "sB"), back.snapshot.disk.catalog!!.order)
+        val switched = leaveAddScreen(onAdd, "tasks", PairDeparture.BoardSwitch).copy(activeSessionId = "sB")
+        val picked = completeDeferredPair(switched, attempt, proceed)
+        assertFalse(picked.applied)
+        assertFalse(picked.successToast)
+        assertNull(picked.snapshot.banner)
+        assertEquals("sB", picked.snapshot.activeSessionId)
+        assertEquals("tasks", picked.snapshot.screen)
+        assertEquals(listOf("sA", "sB"), picked.snapshot.disk.catalog!!.order)
+        assertNull(picked.snapshot.disk.credentials["c-new"])
+    }
+
+    @Test
+    fun pairThatIsStillOnAddWritesTheCatalogAndSuccessToast() {
+        val start = oneBoardDisk()
+        val onAdd = AddPairSnapshot(start, emptySet(), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(1, "sA", 0, "add")
+        val proceed = planPair(start, addRequest(listOf("board-new"), ids = listOf("sNew"))) as PairOutcome.Proceed
+        val done = completeDeferredPair(onAdd, attempt, proceed)
+        assertTrue(done.applied)
+        assertTrue(done.successToast)
+        assertEquals("tasks", done.snapshot.screen)
+        assertEquals(SWITCHED_PREFIX + "Home", done.snapshot.banner)
+        assertEquals(proceed.activeSessionId, done.snapshot.activeSessionId)
+        assertTrue(done.snapshot.disk.catalog!!.order.contains("sNew"))
+        assertNotNull(done.snapshot.disk.credentials["c-new"])
+    }
+
+    @Test
+    fun failedForgetAndFailedAddLeaveTheActiveBoard() {
+        val start = sharedDisk()
+        val forget = planForget(start, "sA")
+        val rolled = applyVerdict(start, setOf("c1"), forget.tx!!, failAt = 0) as ApplyVerdict.RolledBack
+        assertEquals("sA", rolled.activeSessionId)
+        assertTrue(rolled.disk.catalog!!.order.contains("sA"))
+        assertEquals("home", rolled.disk.workspaces["sA"])
+        assertEquals(ForgetDestination.Unchanged, forgetDestination(forget.allowed, forgotActive = true, rolledBack = true))
+        assertEquals(ForgetDestination.TaskList, forgetDestination(true, forgotActive = true, rolledBack = false))
+        assertEquals(ForgetDestination.MyBoards, forgetDestination(true, forgotActive = false, rolledBack = false))
+        val rejected = planPair(oneBoardDisk(), addRequest(listOf("board-a", "board-a"), ids = listOf("n1", "n2"))) as PairOutcome.Reject
+        val kept = simulate(oneBoardDisk(), setOf("c1"), rejected.rollback!!)
+        assertEquals("sA", kept.activeSessionId)
+        assertEquals(1, kept.disk.catalog!!.sessions.size)
+        assertEquals(PairApply.KeepSelection, pairResultApply(1, 1, succeeded = false))
+    }
+
+    @Test
     fun switchCommitsTheActiveSessionWithoutTouchingTheChip() {
         val start = sharedDisk()
         val chip = TaskChip.DONE
