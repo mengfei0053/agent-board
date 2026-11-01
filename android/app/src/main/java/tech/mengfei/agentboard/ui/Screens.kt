@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,6 +33,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -64,15 +67,15 @@ import tech.mengfei.agentboard.protocol.canStopStatus
 import tech.mengfei.agentboard.protocol.continueHint
 import tech.mengfei.agentboard.protocol.deriveWsUrl
 import tech.mengfei.agentboard.protocol.detailError
-import tech.mengfei.agentboard.protocol.filterWorkspaces
+import tech.mengfei.agentboard.protocol.BoardPickPath
 import tech.mengfei.agentboard.protocol.detailPrompt
 import tech.mengfei.agentboard.protocol.detailRounds
 import tech.mengfei.agentboard.protocol.turnHeading
 import tech.mengfei.agentboard.protocol.resumeCommandLabel
 import tech.mengfei.agentboard.protocol.statusLabel
-import tech.mengfei.agentboard.protocol.tasksForChip
-import tech.mengfei.agentboard.protocol.visibleTasks
+import tech.mengfei.agentboard.protocol.tasksAfterChipAndQuery
 import tech.mengfei.agentboard.protocol.workspaceBanner
+import tech.mengfei.agentboard.protocol.workspaceChipsForTaskSearch
 import tech.mengfei.agentboard.protocol.workspaceDisplayName
 import tech.mengfei.agentboard.protocol.workspaceSwitchItems
 import java.text.DateFormat
@@ -116,10 +119,10 @@ fun RootScreen(state: UiState, model: BoardViewModel) {
                     DropdownMenu(expanded = switcher, onDismissRequest = { switcher = false }) {
                         state.sessions.forEach { row ->
                             DropdownMenuItem(
-                                text = { Text(row.displayName) },
+                                text = { Text(row.displayName, maxLines = 2) },
                                 onClick = {
                                     switcher = false
-                                    model.activateSession(row.sessionId)
+                                    model.activateSession(row.sessionId, BoardPickPath.TopSwitcher)
                                 },
                             )
                         }
@@ -222,47 +225,120 @@ private fun ReadingScreen(padding: PaddingValues, state: UiState) {
 @Composable
 private fun MyBoardsScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-        Banner(state.banner)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = model::pop) { Text(stringResource(R.string.back)) }
-            TextButton(onClick = model::openAddBoard) { Text(stringResource(R.string.add_board)) }
+        if (state.sessions.size == 1) {
+            Text(
+                stringResource(R.string.keep_one_board),
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
-        LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
-            items(state.sessions, key = { it.sessionId }) { row ->
-                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Text(row.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1)
-                    Text(row.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(row.pill, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    row.expiresAt?.let {
-                        Text(
-                            stringResource(R.string.sign_in_expires, DateFormat.getDateTimeInstance().format(Date(it))),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Row {
-                        TextButton(onClick = { model.activateSession(row.sessionId) }) { Text(stringResource(R.string.switch_board)) }
-                        TextButton(onClick = { model.openRepair(row.sessionId) }) { Text(stringResource(R.string.repair_board)) }
-                        TextButton(onClick = { model.refreshCredential(row.sessionId) }) { Text(stringResource(R.string.refresh_token)) }
-                        TextButton(onClick = { model.requestForget(row.sessionId) }, enabled = state.forgetEnabled) {
-                            Text(stringResource(R.string.forget_board))
-                        }
-                    }
-                }
-                HorizontalDivider()
+        Banner(state.banner)
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = model::pop, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.back))
+            }
+            Button(onClick = model::openAddBoard, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.add_board))
             }
         }
-        if (!state.forgetEnabled) {
-            Text(stringResource(R.string.keep_one_board), modifier = Modifier.padding(horizontal = 20.dp))
+        if (state.sessions.isEmpty()) {
+            Text(
+                stringResource(R.string.no_paired_board),
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            )
+        }
+        LazyColumn(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(state.sessions, key = { it.sessionId }) { row ->
+                BoardCard(state, model, row)
+            }
         }
         if (state.confirmForgetId != null) {
+            val name = state.sessions.find { it.sessionId == state.confirmForgetId }?.displayName.orEmpty()
             AlertDialog(
                 onDismissRequest = model::cancelForget,
                 title = { Text(stringResource(R.string.forget_board)) },
-                text = { Text(stringResource(R.string.forget_board_body)) },
-                confirmButton = { TextButton(onClick = model::confirmForget) { Text(stringResource(R.string.forget_board)) } },
+                text = { Text(stringResource(R.string.forget_board_body, name)) },
+                confirmButton = { TextButton(onClick = model::confirmForget) { Text(stringResource(R.string.forget_confirm)) } },
                 dismissButton = { TextButton(onClick = model::cancelForget) { Text(stringResource(R.string.cancel)) } },
             )
+        }
+    }
+}
+
+@Composable
+private fun BoardCard(state: UiState, model: BoardViewModel, row: tech.mengfei.agentboard.SessionRow) {
+    val lastBoard = state.sessions.size == 1
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (row.active) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(row.displayName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(row.pill, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+            }
+            Text(row.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (row.relayUrl.isNotBlank()) {
+                Text(
+                    stringResource(R.string.relay_line, row.relayUrl),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(stringResource(R.string.session_saved), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            row.expiresAt?.let {
+                Text(
+                    stringResource(R.string.sign_in_expires, DateFormat.getDateTimeInstance().format(Date(it))),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (row.active) {
+                    Button(
+                        onClick = { model.activateSession(row.sessionId, BoardPickPath.MyBoards) },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.current_board)) }
+                } else {
+                    Button(
+                        onClick = { model.activateSession(row.sessionId, BoardPickPath.MyBoards) },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.switch_to_board)) }
+                }
+                OutlinedButton(
+                    onClick = { model.requestForget(row.sessionId) },
+                    enabled = state.forgetEnabled,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.forget_board),
+                        color = if (state.forgetEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (lastBoard) {
+                Text(
+                    stringResource(R.string.last_board_forget),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { model.openRepair(row.sessionId) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(stringResource(R.string.repair_board))
+                }
+                TextButton(onClick = { model.refreshCredential(row.sessionId) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(stringResource(R.string.refresh_token))
+                }
+            }
         }
     }
 }
@@ -302,7 +378,12 @@ private fun AddBoardScreen(state: UiState, model: BoardViewModel, padding: Paddi
             val pasted = clipboard.getText()?.text ?: return@TextButton
             model.pastePairCode(pasted)
         }) { Text(stringResource(R.string.paste)) }
-        Button(onClick = model::pair, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
+        Text(stringResource(R.string.add_board_note), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(
+            onClick = model::pair,
+            enabled = !state.busy,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) {
             Text(if (state.busy) stringResource(R.string.working) else stringResource(R.string.pair_action))
         }
     }
@@ -318,13 +399,6 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
         Banner(state.commandNote)
         Banner(state.formError)
         state.createdHidden?.let { Text(it, modifier = Modifier.padding(horizontal = 20.dp)) }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = state.chip == TaskChip.ALL, onClick = { model.selectChip(TaskChip.ALL) }, label = { Text(stringResource(R.string.chip_all)) })
-            FilterChip(selected = state.chip == TaskChip.TODO, onClick = { model.selectChip(TaskChip.TODO) }, label = { Text(stringResource(R.string.chip_todo)) })
-            FilterChip(selected = state.chip == TaskChip.RUNNING, onClick = { model.selectChip(TaskChip.RUNNING) }, label = { Text(stringResource(R.string.chip_running)) })
-            FilterChip(selected = state.chip == TaskChip.DONE, onClick = { model.selectChip(TaskChip.DONE) }, label = { Text(stringResource(R.string.chip_done)) })
-            FilterChip(selected = state.chip == TaskChip.ARCHIVE, onClick = { model.selectChip(TaskChip.ARCHIVE) }, label = { Text(stringResource(R.string.chip_archive)) })
-        }
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = model::openWorkspaceSettings, enabled = !state.selectedWorkspaceId.isNullOrEmpty()) { Text(stringResource(R.string.workspace_settings)) }
             TextButton(onClick = model::openBoardSettings) { Text(stringResource(R.string.board_settings)) }
@@ -343,23 +417,16 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
                 }
             }
         }
-        OutlinedTextField(
-            value = state.searchQuery,
-            onValueChange = model::updateSearch,
-            label = { Text(stringResource(R.string.workspace_search)) },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            singleLine = true,
+        val workspaceChips = workspaceChipsForTaskSearch(
+            workspaceSwitchItems(state.tasks, state.workspaces, englishNow()),
+            state.searchQuery,
         )
-        state.workspaceMenuEmpty?.let {
-            Text(it, modifier = Modifier.padding(horizontal = 20.dp))
-        }
-        val chips = filterWorkspaces(state.searchQuery, workspaceSwitchItems(state.tasks, state.workspaces, englishNow()))
-        if (chips.isNotEmpty()) {
+        if (workspaceChips.isNotEmpty()) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                chips.forEach { chip ->
+                workspaceChips.forEach { chip ->
                     FilterChip(
                         selected = chip.id == state.selectedWorkspaceId,
                         onClick = { model.selectWorkspace(chip.id) },
@@ -375,25 +442,48 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = state.chip == TaskChip.ALL, onClick = { model.selectChip(TaskChip.ALL) }, label = { Text(stringResource(R.string.chip_all)) })
+            FilterChip(selected = state.chip == TaskChip.TODO, onClick = { model.selectChip(TaskChip.TODO) }, label = { Text(stringResource(R.string.chip_todo)) })
+            FilterChip(selected = state.chip == TaskChip.RUNNING, onClick = { model.selectChip(TaskChip.RUNNING) }, label = { Text(stringResource(R.string.chip_running)) })
+            FilterChip(selected = state.chip == TaskChip.DONE, onClick = { model.selectChip(TaskChip.DONE) }, label = { Text(stringResource(R.string.chip_done)) })
+            FilterChip(selected = state.chip == TaskChip.ARCHIVE, onClick = { model.selectChip(TaskChip.ARCHIVE) }, label = { Text(stringResource(R.string.chip_archive)) })
+        }
+        OutlinedTextField(
+            value = state.searchQuery,
+            onValueChange = model::updateSearch,
+            label = { Text(stringResource(R.string.task_search)) },
+            trailingIcon = {
+                if (state.searchQuery.isNotEmpty()) {
+                    TextButton(onClick = { model.updateSearch("") }) { Text(stringResource(R.string.clear_search)) }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            singleLine = true,
+        )
         if (state.chip == TaskChip.ARCHIVE) {
             ArchiveList(state, model)
         } else {
-        val visible = tasksForChip(visibleTasks(state.tasks, state.workspaces, state.selectedWorkspaceId), state.chip)
-        if (!state.sawSnapshot) {
-            Text(stringResource(R.string.loading_tasks), modifier = Modifier.padding(horizontal = 20.dp))
-        } else if (visible.isEmpty()) {
-            Text(
-                state.filterEmpty ?: if (state.selectedWorkspaceId == null) stringResource(R.string.no_workspace) else stringResource(R.string.no_tasks),
-                modifier = Modifier.padding(horizontal = 20.dp),
+            val visible = tasksAfterChipAndQuery(
+                state.tasks,
+                state.workspaces,
+                state.selectedWorkspaceId,
+                state.chip,
+                state.searchQuery,
             )
-        } else {
-            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                items(visible, key = { it.id }) { task ->
-                    TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces, englishNow()), englishNow()) { model.openTask(task.id) }
-                    HorizontalDivider()
+            if (visible.isEmpty()) {
+                Text(
+                    state.filterEmpty ?: stringResource(R.string.no_tasks),
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                )
+            } else {
+                LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
+                    items(visible, key = { it.id }) { task ->
+                        TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces, englishNow()), englishNow()) { model.openTask(task.id) }
+                        HorizontalDivider()
+                    }
                 }
             }
-        }
         }
         if (state.confirmDeleteWorkspace) {
             val name = state.workspaces.find { it.id == state.selectedWorkspaceId }?.name ?: ""
@@ -417,37 +507,34 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
 
 @Composable
 private fun ColumnScope.ArchiveList(state: UiState, model: BoardViewModel) {
-    when {
-        !state.archiveSupported -> Text(
-            state.archiveError ?: stringResource(R.string.archive_unavailable),
-            modifier = Modifier.padding(horizontal = 20.dp),
-        )
-        state.archiveBusy && state.archiveTasks.isEmpty() -> Text(
-            stringResource(R.string.loading_archive),
-            modifier = Modifier.padding(horizontal = 20.dp),
-        )
-        state.archiveTasks.isEmpty() -> Text(
-            state.archiveError ?: stringResource(R.string.no_archived),
-            modifier = Modifier.padding(horizontal = 20.dp),
-        )
-        else -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-            items(state.archiveTasks, key = { it.id }) { task ->
+    if (state.archiveVisible.isNotEmpty()) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
+            items(state.archiveVisible, key = { it.id }) { task ->
                 TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces, englishNow()), englishNow()) {
                     model.openArchiveTask(task.id)
                 }
                 HorizontalDivider()
             }
-            item {
-                state.archiveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (state.archiveStale) {
-                    Text(stringResource(R.string.archive_stale))
-                }
-                if (state.archiveNextCursor != null) {
-                    TextButton(onClick = model::loadMoreArchive, enabled = !state.archiveBusy) {
-                        Text(if (state.archiveBusy) stringResource(R.string.loading) else stringResource(R.string.load_more))
-                    }
-                }
-            }
+            item { ArchiveFooter(state, model) }
+        }
+    } else {
+        Text(
+            state.filterEmpty ?: stringResource(R.string.no_archived),
+            modifier = Modifier.padding(horizontal = 20.dp),
+        )
+        if (state.archiveInScope) ArchiveFooter(state, model)
+    }
+}
+
+@Composable
+private fun ArchiveFooter(state: UiState, model: BoardViewModel) {
+    state.archiveError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 20.dp)) }
+    if (state.archiveStale) {
+        Text(stringResource(R.string.archive_stale), modifier = Modifier.padding(horizontal = 20.dp))
+    }
+    if (state.archiveInScope && state.archiveNextCursor != null) {
+        TextButton(onClick = model::loadMoreArchive, enabled = !state.archiveBusy, modifier = Modifier.padding(horizontal = 12.dp)) {
+            Text(if (state.archiveBusy) stringResource(R.string.loading) else stringResource(R.string.load_more))
         }
     }
 }

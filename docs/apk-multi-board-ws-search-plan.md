@@ -1,5 +1,7 @@
 # APK multi-board sessions and workspace search — implementation plan
 
+> **Superseded for the list field (2026-11-01).** The phone list’s main search is **task search inside the selected workspace** (title, id, prompt, promptPreview). It is not a workspace-name or path search. D5 below is historical for that field: do not wire `filterWorkspaces` to the list search box. Workspace chips stay the full selector and ignore the task query. Status chip, forget ≠ revoke, and the session model in this plan stay in force. Phone-only correction; `web/` is the ThinkBook board UI and is not an implementation reference for this search. There is no in-repo APK HTML prototype to align.
+
 Status: **plan only**. No Compose, session-store, relay, or board code in this PR.
 
 Design gate: **GO with conditions** (`agent-board-apk-multi-board-ws-search-sol`). D1–D11 and R1–R7 are accepted with the clarifications in that review. Plan gate: **GO with conditions** (`agent-board-apk-multi-board-ws-search-plan-sol`). **Plan-gate S1–S5 are binding.** They are must-fix before the sol code review. M1–M3 and L1–L3 are part of the implementation, not new product choices. The HTML prototype and the Make file (`https://www.figma.com/make/Mjku7xs8YBVvyRERhqUoCb`) are illustrative. `SCREENS.md` navigation that says forget lands on “列表或留在看板页” is closed by R7: forget of the current board returns to the **task list**.
@@ -284,6 +286,8 @@ Manual proof, two boards, same relay, two one-board pair codes:
 A build that tracks only the active socket and leaves the other card on the last 已连接 fails this plan even if the UI has a switcher.
 
 ## 5. Workspace search (D5, D6, D7, R6)
+
+**Not the list field.** D5 described a workspace-name/path query inside the workspace selector. That list behavior is superseded by task search (see the note at the top of this file). `filterWorkspaces` may remain as a helper; the task-list search box must not call it. Picking a workspace clears the task query and keeps the status chip.
 
 Pure function, JVM-tested, no I/O:
 

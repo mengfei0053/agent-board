@@ -22,7 +22,6 @@ import tech.mengfei.agentboard.protocol.ArchiveQuery
 import tech.mengfei.agentboard.protocol.EpochSlot
 import tech.mengfei.agentboard.protocol.PROMPTS_SAVED_COPY
 import tech.mengfei.agentboard.protocol.SAVED_COPY
-import tech.mengfei.agentboard.protocol.archivePageHonorsScope
 import tech.mengfei.agentboard.protocol.archiveQuery
 import tech.mengfei.agentboard.protocol.failedStepKeepsCatalog
 import tech.mengfei.agentboard.protocol.invalidateSnapshotForNewEpoch
@@ -86,7 +85,6 @@ import tech.mengfei.agentboard.protocol.archivedDetailTask
 import tech.mengfei.agentboard.protocol.boardListEnvelope
 import tech.mengfei.agentboard.protocol.canContinueStatus
 import tech.mengfei.agentboard.protocol.cardSubtitle
-import tech.mengfei.agentboard.protocol.chipEmptyCopy
 import tech.mengfei.agentboard.protocol.completionForSession
 import tech.mengfei.agentboard.protocol.createHiddenBanner
 import tech.mengfei.agentboard.protocol.cwdForNewTask
@@ -149,7 +147,26 @@ import tech.mengfei.agentboard.protocol.settingsPutPromptsEnvelope
 import tech.mengfei.agentboard.protocol.shouldSendLogSubscribe
 import tech.mengfei.agentboard.protocol.subLogsEnvelope
 import tech.mengfei.agentboard.protocol.subTasksEnvelope
-import tech.mengfei.agentboard.protocol.switchedToast
+import tech.mengfei.agentboard.protocol.ArchiveLoadScope
+import tech.mengfei.agentboard.protocol.BoardPickPath
+import tech.mengfei.agentboard.protocol.ForgetDestination
+import tech.mengfei.agentboard.protocol.ForgetMemory
+import tech.mengfei.agentboard.protocol.ListChrome
+import tech.mengfei.agentboard.protocol.LiveLog
+import tech.mengfei.agentboard.protocol.PairApply
+import tech.mengfei.agentboard.protocol.TaskListQuery
+import tech.mengfei.agentboard.protocol.acceptArchivePage
+import tech.mengfei.agentboard.protocol.archiveReplyMatches
+import tech.mengfei.agentboard.protocol.archiveRowsForQuery
+import tech.mengfei.agentboard.protocol.confirmedArchiveTasks
+import tech.mengfei.agentboard.protocol.forgetDestination
+import tech.mengfei.agentboard.protocol.forgetMemoryEffect
+import tech.mengfei.agentboard.protocol.pairResultApply
+import tech.mengfei.agentboard.protocol.pickBoard
+import tech.mengfei.agentboard.protocol.selectWorkspaceChrome
+import tech.mengfei.agentboard.protocol.taskListEmpty
+import tech.mengfei.agentboard.protocol.taskListEmptyCopy
+import tech.mengfei.agentboard.protocol.tasksAfterChipAndQuery
 import tech.mengfei.agentboard.protocol.tasksAfterSessionSwitch
 import tech.mengfei.agentboard.protocol.tasksForChip
 import tech.mengfei.agentboard.protocol.text
@@ -171,7 +188,6 @@ import tech.mengfei.agentboard.protocol.withoutWorkspace
 import tech.mengfei.agentboard.protocol.workspaceGetEnvelope
 import tech.mengfei.agentboard.protocol.workspaceIdForCreate
 import tech.mengfei.agentboard.protocol.workspaceListKey
-import tech.mengfei.agentboard.protocol.workspaceMenu
 import tech.mengfei.agentboard.protocol.workspaceUpdateEnvelope
 import tech.mengfei.agentboard.protocol.worktreeAllowedFresh
 import tech.mengfei.agentboard.ui.localize
@@ -196,6 +212,7 @@ data class SessionRow(
     val sessionId: String,
     val displayName: String,
     val subtitle: String,
+    val relayUrl: String = "",
     val pill: String,
     val expiresAt: Long?,
     val active: Boolean,
@@ -236,7 +253,6 @@ data class UiState(
     val worktreeEnabled: Boolean = false,
     val workspaces: List<ThinWorkspace> = emptyList(),
     val selectedWorkspaceId: String? = null,
-    val workspaceMenuEmpty: String? = null,
     val draftWorkspaceName: String = "",
     val draftWorkspacePath: String = "",
     val workspaceCreateMode: String = "send",
@@ -253,6 +269,8 @@ data class UiState(
     val searchQuery: String = "",
     val filterEmpty: String? = null,
     val archiveTasks: List<RelayTask> = emptyList(),
+    val archiveVisible: List<RelayTask> = emptyList(),
+    val archiveInScope: Boolean = false,
     val archiveNextCursor: String? = null,
     val archiveLoaded: Boolean = false,
     val archiveStale: Boolean = false,
@@ -287,6 +305,7 @@ class BoardViewModel(
     private var activeId: String? = null
     private var chip: TaskChip = TaskChip.ALL
     private var searchQuery: String = ""
+    private var pairEpoch: Int = 0
     private var banner: String? = null
     private var commandNote: String? = null
     private var formError: String? = null
@@ -375,6 +394,7 @@ class BoardViewModel(
 
     fun confirmForget() {
         val sessionId = _state.value.confirmForgetId ?: return
+        val forgotten = session(sessionId)
         _state.updateCopy { copy(confirmForgetId = null) }
         val outcome = planForget(disk, sessionId)
         val tx = outcome.tx
@@ -389,16 +409,20 @@ class BoardViewModel(
                 render()
             }
             is ApplyVerdict.InForce -> {
-                dropSessionMemory(sessionId)
+                dropSessionMemory(sessionId, forgotten?.credentialId, forgotten?.boardId)
                 val next = applied.activeSessionId
-                if (sessionId == activeId && next != null) landOn(next, toast = true) else render()
+                when (forgetDestination(allowed = true, forgotActive = sessionId == activeId, rolledBack = false)) {
+                    ForgetDestination.TaskList -> if (next != null) landOn(next, toast = true) else render()
+                    ForgetDestination.MyBoards, ForgetDestination.Unchanged -> render()
+                }
             }
         }
     }
 
-    fun activateSession(sessionId: String) {
+    fun activateSession(sessionId: String, path: BoardPickPath = BoardPickPath.TopSwitcher) {
         if (session(sessionId) == null) return
         if (sessionId == activeId) {
+            searchQuery = ""
             screen = Screen.Tasks
             backStack.clear()
             render()
@@ -407,7 +431,7 @@ class BoardViewModel(
         val previous = activeId
         if (!persistActive(sessionId)) return
         discardSettings(previous)
-        landOn(sessionId, toast = true)
+        landOn(sessionId, toast = true, path = path)
     }
 
     fun openNotification(sessionId: String?, taskId: String?) {
@@ -480,9 +504,12 @@ class BoardViewModel(
         val sessionId = activeId ?: return
         val view = slot(sessionId)?.view ?: return
         if (id.isNotEmpty() && view.workspaces.none { it.id == id }) return
+        val cleared = selectWorkspaceChrome(ListChrome(sessionId, chip, searchQuery, null, "", false, "tasks", null))
+        searchQuery = cleared.search
+        chip = cleared.chip
         store.apply(DiskOp.PutWorkspace(sessionId, id))
         disk = store.readDisk()
-        if (chip == TaskChip.ARCHIVE) loadArchive(reset = true) else render()
+        if (chip == TaskChip.ARCHIVE) loadArchive(reset = true, workspaceId = id) else render()
     }
 
     fun requestDeleteWorkspace() {
@@ -618,6 +645,7 @@ class BoardViewModel(
     fun resendContinue() = resend("cmd.continue")
 
     fun pair() {
+        if (busy) return
         if (!store.secure) {
             banner = say(SECURE_STORAGE_BANNER)
             render()
@@ -647,15 +675,17 @@ class BoardViewModel(
         }
         val code = trimOuter(_state.value.pairCode)
         val phoneName = _state.value.deviceName.trim().ifBlank { "Android phone" }
+        val epoch = ++pairEpoch
+        busy = true
+        banner = null
+        render()
         viewModelScope.launch {
-            busy = true
-            banner = null
-            render()
             try {
                 val base = normalizeHttpBase(if (repair != null) disk.credentials[repair.credentialId]?.httpBase ?: _state.value.httpBase else _state.value.httpBase)
                 store.saveIdentity(base, phoneName)
                 disk = store.readDisk()
                 val result = relay.request("POST", "$base/auth/pair", encodePairBody(code, phoneName))
+                if (epoch != pairEpoch) return@launch
                 if (result.code !in 200..299) {
                     busy = false
                     banner = pairHttpFailure(result.code, result.body, englishUi)
@@ -698,6 +728,7 @@ class BoardViewModel(
                             return@launch
                         }
                         is ApplyVerdict.InForce -> {
+                            if (pairResultApply(epoch, pairEpoch, succeeded = true) != PairApply.Land) return@launch
                             _state.updateCopy { copy(pairCode = "", displayName = "") }
                             backStack.clear()
                             landOn(applied.activeSessionId ?: outcome.activeSessionId, toast = true)
@@ -813,17 +844,43 @@ class BoardViewModel(
         render()
     }
 
-    private fun landOn(sessionId: String, toast: Boolean) {
+    private fun landOn(sessionId: String, toast: Boolean, path: BoardPickPath = BoardPickPath.TopSwitcher) {
+        val target = session(sessionId) ?: return
         val previous = activeId
         if (previous != null && previous != sessionId) clearLogBinding(previous)
-        activeId = sessionId
-        searchQuery = ""
+        val holder = slot(sessionId)
+        val picked = pickBoard(
+            path,
+            ListChrome(
+                sessionId,
+                chip,
+                searchQuery,
+                (screen as? Screen.Detail)?.taskId,
+                holder.continuePrompt,
+                holder.continueOpen,
+                "tasks",
+                null,
+            ),
+            target,
+            disk.workspaces[sessionId],
+            holder.view.workspaces,
+            holder.view.tasks,
+            holder.view.sawSnapshot,
+        )
+        activeId = picked.chrome.sessionId ?: sessionId
+        searchQuery = picked.chrome.search
+        chip = picked.chrome.chip
+        holder.pendingDetail = null
+        holder.continuePrompt = picked.chrome.continuePrompt
+        holder.continueOpen = picked.chrome.continueOpen
+        holder.detailArchived = false
+        holder.archiveDetail = null
+        clearLogBinding(sessionId)
         screen = Screen.Tasks
         backStack.clear()
-        slot(sessionId)?.pendingDetail = null
-        clearLogBinding(sessionId)
-        if (toast) banner = session(sessionId)?.let { switchedToast(it.displayName) }
+        if (toast) banner = picked.chrome.toast
         render()
+        if (chip == TaskChip.ARCHIVE) loadArchive(reset = true, workspaceId = _state.value.selectedWorkspaceId)
     }
 
     private fun persistActive(sessionId: String): Boolean {
@@ -1082,6 +1139,7 @@ class BoardViewModel(
     private fun onArchive(sessionId: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         val holder = slot(sessionId)
         val request = holder.pendingArchive ?: return
+        if (!archiveReplyMatches(request.requestId, message.text("ref"))) return
         if (!archiveReplySettled(message)) return
         holder.pendingArchive = null
         holder.archiveBusy = false
@@ -1090,15 +1148,15 @@ class BoardViewModel(
         } else if (message.text("stage") == "executed") {
             val page = readArchivePage(message.payload)
             if (page == null) holder.archiveError = say("Could not read the archive page.")
-            else if (!archivePageHonorsScope(page.tasks, request.workspaceId)) {
-                holder.archiveTasks = emptyList()
-                holder.archiveCursor = null
-                holder.archiveLoaded = false
+            else if (!acceptArchivePage(request.requestId, message.text("ref"), page.tasks, request.workspaceId)) {
+                clearArchivePresentation(holder)
                 holder.archiveError = ARCHIVE_SCOPE_UNSUPPORTED
             } else {
                 holder.archiveTasks = applyArchivePage(holder.archiveTasks, page, request.reset)
                 holder.archiveCursor = page.nextCursor
                 holder.archiveLoaded = true
+                holder.archiveScopeSession = sessionId
+                holder.archiveScopeWorkspace = request.workspaceId
                 holder.archiveStale = false
                 holder.archiveError = null
             }
@@ -1355,20 +1413,20 @@ class BoardViewModel(
         sendRaw(session, "cmd.settings.get", null, key, settingsGetEnvelope(ids(), clock(), session.boardId, key))
     }
 
-    private fun loadArchive(reset: Boolean) {
+    private fun loadArchive(reset: Boolean, workspaceId: String? = null) {
         val session = session(activeId) ?: return
         val holder = slot(session.sessionId)
+        val selected = workspaceId ?: _state.value.selectedWorkspaceId
         if (ARCHIVE_CAPABILITY !in holder.capabilities) {
             holder.archiveError = say("This board cannot list archived tasks yet.")
-            holder.archiveTasks = emptyList()
+            clearArchivePresentation(holder)
+            holder.archiveBusy = false
             render()
             return
         }
-        when (val query = archiveQuery(_state.value.selectedWorkspaceId)) {
+        when (val query = archiveQuery(selected)) {
             is ArchiveQuery.Unsupported -> {
-                holder.archiveTasks = emptyList()
-                holder.archiveCursor = null
-                holder.archiveLoaded = false
+                clearArchivePresentation(holder)
                 holder.archiveBusy = false
                 holder.archiveError = query.message
                 render()
@@ -1376,7 +1434,8 @@ class BoardViewModel(
             }
             is ArchiveQuery.Scoped -> Unit
         }
-        val scoped = (archiveQuery(_state.value.selectedWorkspaceId) as ArchiveQuery.Scoped).workspaceId
+        val scoped = (archiveQuery(selected) as ArchiveQuery.Scoped).workspaceId
+        if (reset) clearArchivePresentation(holder)
         val cursor = if (reset) null else holder.archiveCursor
         val requestId = ids()
         val built = validateArchiveList(requestId, clock(), session.boardId, keys(), cursor, 20, scoped)
@@ -1395,7 +1454,10 @@ class BoardViewModel(
         chip = TaskChip.ARCHIVE
         val session = session(activeId)
         if (session == null || ARCHIVE_CAPABILITY !in capabilities(session)) {
-            slot(activeId)?.archiveError = say("This board cannot list archived tasks yet.")
+            val holder = slot(activeId)
+            holder.archiveError = say("This board cannot list archived tasks yet.")
+            clearArchivePresentation(holder)
+            holder.archiveBusy = false
             render()
             return
         }
@@ -1479,9 +1541,30 @@ class BoardViewModel(
         }
     }
 
-    private fun dropSessionMemory(sessionId: String) {
-        slots.remove(sessionId)
-        refs.entries.removeAll { it.value.sessionId == sessionId }
+    private fun dropSessionMemory(sessionId: String, credentialId: String?, boardId: String?) {
+        val before = ForgetMemory(
+            slotSessionIds = slots.keys.toSet(),
+            refSessionIds = refs.values.map { it.sessionId }.toSet(),
+            logs = lives.mapNotNull { (id, live) -> live.log?.let { LiveLog(id, it.boardId) } },
+        )
+        val after = forgetMemoryEffect(before, sessionId, credentialId, boardId)
+        slots.keys.toList().filter { it !in after.slotSessionIds }.forEach { slots.remove(it) }
+        refs.entries.removeAll { it.value.sessionId !in after.refSessionIds }
+        val keptLogs = after.logs.map { it.credentialId to it.boardId }.toSet()
+        lives.forEach { (id, live) ->
+            val bound = live.log?.boardId
+            if (bound != null && (id to bound) !in keptLogs) live.log = null
+        }
+        proofJobs.remove(sessionId)?.cancel()
+    }
+
+    private fun clearArchivePresentation(holder: Slot) {
+        holder.archiveTasks = emptyList()
+        holder.archiveCursor = null
+        holder.archiveLoaded = false
+        holder.archiveScopeSession = null
+        holder.archiveScopeWorkspace = null
+        holder.archiveStale = false
     }
 
     private fun discardSettings(sessionId: String?) {
@@ -1528,9 +1611,48 @@ class BoardViewModel(
             store.apply(DiskOp.PutWorkspace(session.sessionId, selection.selectedId))
             disk = store.readDisk()
         }
-        val menu = workspaceMenu(searchQuery, view?.workspaces.orEmpty(), rows, saw, englishUi)
-        val hot = tasksForChip(visibleTasks(rows, view?.workspaces.orEmpty(), selection?.selectedId), chip)
-        val filterEmpty = if (saw && chip != TaskChip.ARCHIVE && hot.isEmpty() && menu.emptyCopy == null) chipEmptyCopy(chip, englishUi) else null
+        val workspaces = view?.workspaces.orEmpty()
+        val base = visibleTasks(rows, workspaces, selection?.selectedId)
+        val byChip = tasksForChip(base, chip)
+        val hot = tasksAfterChipAndQuery(rows, workspaces, selection?.selectedId, chip, searchQuery)
+        val confirmed = confirmedArchiveTasks(
+            ArchiveLoadScope(
+                tasks = holder?.archiveTasks.orEmpty(),
+                loaded = holder?.archiveLoaded == true,
+                sessionId = holder?.archiveScopeSession,
+                workspaceId = holder?.archiveScopeWorkspace,
+                activeSessionId = activeId,
+                selectedWorkspaceId = selection?.selectedId,
+            ),
+        )
+        val visibleArchive = archiveRowsForQuery(confirmed, searchQuery)
+        val archiveSupportedNow = session != null && ARCHIVE_CAPABILITY in capabilities(session)
+        val selectedId = selection?.selectedId
+        val scopeUnsupported = archiveSupportedNow &&
+            selectedId != null &&
+            archiveQuery(selectedId) is ArchiveQuery.Unsupported
+        val filterEmpty = taskListEmptyCopy(
+            taskListEmpty(
+                TaskListQuery(
+                    sawSnapshot = saw,
+                    selectedWorkspaceId = selection?.selectedId,
+                    workspaceCount = workspaces.size,
+                    tasksInWorkspace = base.size,
+                    chip = chip,
+                    chipCount = byChip.size,
+                    query = searchQuery,
+                    matchedCount = if (chip == TaskChip.ARCHIVE) visibleArchive.size else hot.size,
+                    archiveSupported = archiveSupportedNow,
+                    archiveScopeUnsupported = scopeUnsupported,
+                    archiveBusy = holder?.archiveBusy == true,
+                    archiveLoadedInScope = confirmed != null,
+                    archiveLoadedCount = confirmed?.size ?: 0,
+                    archiveError = holder?.archiveError,
+                ),
+            ),
+            englishUi,
+            holder?.archiveError,
+        )
         val sessions = sessions().map { item ->
             val itemPill = pillCopy(pillFor(item), slot(item.sessionId).snapshotAt, englishUi).primary
             val secret = disk.credentials[item.credentialId]
@@ -1538,6 +1660,7 @@ class BoardViewModel(
                 sessionId = item.sessionId,
                 displayName = item.displayName,
                 subtitle = secret?.let { cardSubtitle(it.httpBase, item.boardId) } ?: item.boardId,
+                relayUrl = secret?.wsUrl.orEmpty(),
                 pill = itemPill,
                 expiresAt = secret?.expiresAt,
                 active = item.sessionId == activeId,
@@ -1570,7 +1693,6 @@ class BoardViewModel(
             continueResend = explicitResendAllowed("cmd.continue", settled(session, "cmd.continue", taskId)),
             workspaces = view?.workspaces.orEmpty(),
             selectedWorkspaceId = selection?.selectedId,
-            workspaceMenuEmpty = menu.emptyCopy,
             workspaceCreateMode = modeFor(session, "cmd.workspace.create", null),
             workspaceDeleteMode = modeFor(session, "cmd.workspace.delete", selection?.selectedId),
             worktreeEnabled = freshWorktree(_state.value.draftCwd, view?.workspaces.orEmpty(), holder?.view?.needsResync == true),
@@ -1583,13 +1705,15 @@ class BoardViewModel(
             chip = chip,
             searchQuery = searchQuery,
             filterEmpty = filterEmpty,
-            archiveTasks = holder?.archiveTasks.orEmpty(),
+            archiveTasks = confirmed.orEmpty(),
+            archiveVisible = visibleArchive,
+            archiveInScope = confirmed != null,
             archiveNextCursor = holder?.archiveCursor,
             archiveLoaded = holder?.archiveLoaded == true,
             archiveStale = holder?.archiveStale == true,
             archiveBusy = holder?.archiveBusy == true,
             archiveError = holder?.archiveError,
-            archiveSupported = session != null && ARCHIVE_CAPABILITY in capabilities(session),
+            archiveSupported = archiveSupportedNow,
             archiveWrite = session != null && CAP_ARCHIVE_WRITE in capabilities(session),
             detailArchived = holder?.detailArchived == true,
             archiveDetail = holder?.archiveDetail,
@@ -1762,6 +1886,8 @@ class BoardViewModel(
         var archiveTasks: List<RelayTask> = emptyList()
         var archiveCursor: String? = null
         var archiveLoaded = false
+        var archiveScopeSession: String? = null
+        var archiveScopeWorkspace: String? = null
         var archiveStale = false
         var archiveBusy = false
         var archiveError: String? = null

@@ -1,0 +1,251 @@
+package tech.mengfei.agentboard.protocol
+
+import java.util.Locale
+
+const val NO_TASK_MATCH_COPY = "无匹配任务"
+const val NO_TASKS_COPY = "当前工作区暂无任务"
+const val NO_WORKSPACE_SELECTED_COPY = "当前没有工作区。"
+const val ARCHIVE_LOADING_COPY = "正在加载归档…"
+const val ARCHIVE_EMPTY_COPY = "没有归档任务"
+const val ARCHIVE_UNAVAILABLE_COPY = "此看板暂不支持归档浏览。需要更新后的中继和看板连接。"
+const val ARCHIVE_FAILED_COPY = "归档没有加载成功。"
+const val ARCHIVE_UNLOADED_COPY = "没有归档任务"
+const val ARCHIVE_NO_MATCH_COPY = "已加载的归档中无匹配任务"
+const val SESSION_SAVED_COPY = "本机会话已保存"
+
+/**
+ * Local task search. Matches whatever title, id, prompt, or promptPreview is already on the row.
+ * Does not fetch detail. Empty or whitespace query keeps the list as given.
+ */
+fun filterTasks(query: String, tasks: List<RelayTask>): List<RelayTask> {
+    val needle = query.trim().lowercase(Locale.ROOT)
+    if (needle.isEmpty()) return tasks
+    return tasks.filter { task -> taskMatches(task, needle) }
+}
+
+private fun taskMatches(task: RelayTask, needle: String): Boolean {
+    if (task.title.lowercase(Locale.ROOT).contains(needle)) return true
+    if (task.id.lowercase(Locale.ROOT).contains(needle)) return true
+    val prompt = task.prompt
+    if (prompt != null && prompt.lowercase(Locale.ROOT).contains(needle)) return true
+    val preview = task.promptPreview
+    return preview != null && preview.lowercase(Locale.ROOT).contains(needle)
+}
+
+/** Workspace chips on the task list ignore the task query. */
+fun workspaceChipsForTaskSearch(items: List<WorkspaceSwitchItem>, taskQuery: String): List<WorkspaceSwitchItem> = items
+
+/**
+ * Hot list pipeline: selected workspace, then status chip, then task query.
+ * The archive chip is not this list.
+ */
+fun tasksAfterChipAndQuery(
+    tasks: List<RelayTask>,
+    workspaces: List<ThinWorkspace>,
+    selectedWorkspaceId: String?,
+    chip: TaskChip,
+    query: String,
+): List<RelayTask> {
+    if (chip == TaskChip.ARCHIVE) return emptyList()
+    val inWorkspace = visibleTasks(tasks, workspaces, selectedWorkspaceId)
+    return filterTasks(query, tasksForChip(inWorkspace, chip))
+}
+
+/**
+ * Rows the archive loader has already accepted for one session and one workspace.
+ * A null result is not a searched archive: the caller must not say 「无匹配任务」.
+ */
+data class ArchiveLoadScope(
+    val tasks: List<RelayTask>,
+    val loaded: Boolean,
+    val sessionId: String?,
+    val workspaceId: String?,
+    val activeSessionId: String?,
+    val selectedWorkspaceId: String?,
+)
+
+fun confirmedArchiveTasks(scope: ArchiveLoadScope): List<RelayTask>? {
+    if (!scope.loaded) return null
+    val sessionId = scope.sessionId
+    if (sessionId.isNullOrEmpty() || sessionId != scope.activeSessionId) return null
+    val workspaceId = scope.workspaceId
+    val selected = scope.selectedWorkspaceId
+    if (workspaceId.isNullOrEmpty() || selected.isNullOrEmpty() || workspaceId != selected) return null
+    if (!archivePageHonorsScope(scope.tasks, workspaceId)) return null
+    return scope.tasks
+}
+
+fun archiveRowsForQuery(confirmed: List<RelayTask>?, query: String): List<RelayTask> {
+    if (confirmed == null) return emptyList()
+    return filterTasks(query, confirmed)
+}
+
+enum class TaskListEmpty {
+    None,
+    Loading,
+    NoWorkspace,
+    NoWorkspaceBoard,
+    NoTasks,
+    ChipEmpty,
+    NoMatch,
+    ArchiveUnsupported,
+    ArchiveLoading,
+    ArchiveFailed,
+    ArchiveUnloaded,
+    ArchiveEmpty,
+    ArchiveNoMatch,
+}
+
+data class TaskListQuery(
+    val sawSnapshot: Boolean,
+    val selectedWorkspaceId: String?,
+    val workspaceCount: Int,
+    val tasksInWorkspace: Int,
+    val chip: TaskChip,
+    val chipCount: Int,
+    val query: String,
+    val matchedCount: Int,
+    val archiveSupported: Boolean = true,
+    val archiveScopeUnsupported: Boolean = false,
+    val archiveBusy: Boolean = false,
+    val archiveLoadedInScope: Boolean = false,
+    val archiveLoadedCount: Int = 0,
+    val archiveError: String? = null,
+)
+
+/**
+ * C5 priority. No workspace wins even when task rows were passed in.
+ * A status chip with zero rows is not 「无匹配任务」 just because a query is set.
+ * Archive unsupported, loading, failed, and unloaded keep their own copy.
+ */
+fun taskListEmpty(input: TaskListQuery): TaskListEmpty {
+    if (input.chip == TaskChip.ARCHIVE) return archiveEmpty(input)
+    if (!input.sawSnapshot) return TaskListEmpty.Loading
+    if (input.selectedWorkspaceId == null) return noWorkspace(input.workspaceCount)
+    if (input.tasksInWorkspace == 0) return TaskListEmpty.NoTasks
+    if (input.chipCount == 0) return TaskListEmpty.ChipEmpty
+    if (input.query.trim().isNotEmpty() && input.matchedCount == 0) return TaskListEmpty.NoMatch
+    if (input.matchedCount == 0) return TaskListEmpty.ChipEmpty
+    return TaskListEmpty.None
+}
+
+private fun archiveEmpty(input: TaskListQuery): TaskListEmpty {
+    if (!input.sawSnapshot && input.selectedWorkspaceId == null) return TaskListEmpty.Loading
+    if (input.selectedWorkspaceId == null) return noWorkspace(input.workspaceCount)
+    if (!input.archiveSupported || input.archiveScopeUnsupported) return TaskListEmpty.ArchiveUnsupported
+    if (!input.archiveLoadedInScope) {
+        if (input.archiveBusy) return TaskListEmpty.ArchiveLoading
+        if (!input.archiveError.isNullOrBlank()) return TaskListEmpty.ArchiveFailed
+        return TaskListEmpty.ArchiveUnloaded
+    }
+    if (input.archiveLoadedCount == 0) return TaskListEmpty.ArchiveEmpty
+    if (input.query.trim().isNotEmpty() && input.matchedCount == 0) return TaskListEmpty.ArchiveNoMatch
+    if (input.matchedCount == 0) return TaskListEmpty.ArchiveEmpty
+    return TaskListEmpty.None
+}
+
+private fun noWorkspace(workspaceCount: Int): TaskListEmpty {
+    return if (workspaceCount == 0) TaskListEmpty.NoWorkspaceBoard else TaskListEmpty.NoWorkspace
+}
+
+fun taskListEmptyCopy(kind: TaskListEmpty, english: Boolean = false, archiveError: String? = null): String? = when (kind) {
+    TaskListEmpty.None -> null
+    TaskListEmpty.Loading -> if (english) "Loading tasks…" else "正在加载任务…"
+    TaskListEmpty.NoWorkspace -> if (english) "No workspace yet." else NO_WORKSPACE_SELECTED_COPY
+    TaskListEmpty.NoWorkspaceBoard -> if (english) "This board has no workspaces yet." else NO_WORKSPACE_COPY
+    TaskListEmpty.NoTasks -> if (english) "No tasks in this workspace" else NO_TASKS_COPY
+    TaskListEmpty.ChipEmpty -> chipEmptyCopy(TaskChip.DONE, english)
+    TaskListEmpty.NoMatch -> if (english) "No matching tasks" else NO_TASK_MATCH_COPY
+    TaskListEmpty.ArchiveUnsupported -> archiveError?.takeIf { it.isNotBlank() }
+        ?: if (english) "This board cannot list archived tasks yet." else ARCHIVE_UNAVAILABLE_COPY
+    TaskListEmpty.ArchiveLoading -> if (english) "Loading archive…" else ARCHIVE_LOADING_COPY
+    TaskListEmpty.ArchiveFailed -> archiveError?.takeIf { it.isNotBlank() }
+        ?: if (english) "Could not load the archive." else ARCHIVE_FAILED_COPY
+    TaskListEmpty.ArchiveUnloaded -> if (english) "No archived tasks" else ARCHIVE_UNLOADED_COPY
+    TaskListEmpty.ArchiveEmpty -> if (english) "No archived tasks" else ARCHIVE_EMPTY_COPY
+    TaskListEmpty.ArchiveNoMatch -> if (english) "No matches in the loaded archive" else ARCHIVE_NO_MATCH_COPY
+}
+
+fun withTaskQuery(chrome: ListChrome, query: String): ListChrome = chrome.copy(search = query)
+
+fun selectWorkspaceChrome(chrome: ListChrome): ListChrome = chrome.copy(search = "")
+
+enum class BoardPickPath { TopSwitcher, MyBoards }
+
+data class PickedBoard(val path: BoardPickPath, val chrome: ListChrome, val workspaceId: String?)
+
+/** Top switcher and 我的看板 share one selection result. */
+fun pickBoard(
+    path: BoardPickPath,
+    chrome: ListChrome,
+    target: PhoneSession,
+    rememberedWorkspace: String?,
+    workspaces: List<ThinWorkspace>,
+    tasks: List<RelayTask>,
+    sawSnapshot: Boolean,
+): PickedBoard {
+    val next = activateChrome(chrome, target, toast = true)
+    val workspaceId = workspaceAfterSwitch(rememberedWorkspace, workspaces, tasks, sawSnapshot)
+    return PickedBoard(path, next, workspaceId)
+}
+
+enum class ForgetDestination { TaskList, MyBoards, Unchanged }
+
+fun forgetDestination(allowed: Boolean, forgotActive: Boolean, rolledBack: Boolean): ForgetDestination {
+    if (!allowed || rolledBack) return ForgetDestination.Unchanged
+    return if (forgotActive) ForgetDestination.TaskList else ForgetDestination.MyBoards
+}
+
+enum class PairApply { Land, KeepSelection }
+
+/** A failed or superseded pair must not move the active board. */
+fun pairResultApply(requestEpoch: Int, currentEpoch: Int, succeeded: Boolean): PairApply {
+    if (!succeeded || requestEpoch != currentEpoch) return PairApply.KeepSelection
+    return PairApply.Land
+}
+
+fun archiveReplyMatches(pendingRequestId: String?, messageRef: String?): Boolean {
+    return !pendingRequestId.isNullOrEmpty() && messageRef == pendingRequestId
+}
+
+/**
+ * Store an archive page only for the request that is still pending, and only when every row
+ * belongs to that request's workspace. A late ref must not clear or replace the new request.
+ */
+fun acceptArchivePage(
+    pendingRequestId: String?,
+    messageRef: String?,
+    tasks: List<RelayTask>,
+    requestWorkspaceId: String,
+): Boolean {
+    if (!archiveReplyMatches(pendingRequestId, messageRef)) return false
+    return archivePageHonorsScope(tasks, requestWorkspaceId)
+}
+
+data class LiveLog(val credentialId: String, val boardId: String)
+
+data class ForgetMemory(
+    val slotSessionIds: Set<String>,
+    val refSessionIds: Set<String>,
+    val logs: List<LiveLog>,
+)
+
+/** In-memory companion to [planForget]'s ClearLocals. Other sessions' slots, refs, and logs stay. */
+fun forgetMemoryEffect(
+    before: ForgetMemory,
+    forgottenSessionId: String,
+    forgottenCredentialId: String?,
+    forgottenBoardId: String?,
+): ForgetMemory {
+    val logs = before.logs.filterNot { log ->
+        forgottenCredentialId != null &&
+            forgottenBoardId != null &&
+            log.credentialId == forgottenCredentialId &&
+            log.boardId == forgottenBoardId
+    }
+    return ForgetMemory(
+        slotSessionIds = before.slotSessionIds - forgottenSessionId,
+        refSessionIds = before.refSessionIds - forgottenSessionId,
+        logs = logs,
+    )
+}
