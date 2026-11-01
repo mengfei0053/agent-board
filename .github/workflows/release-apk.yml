@@ -28,6 +28,10 @@ jobs:
       - name: Install Android SDK 35
         run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
+      # signingConfigs.debug in android/app/build.gradle.kts points at the
+      # checked-in android/keystore/debug.keystore (passwords in
+      # android/gradle.properties). Do not create or use ~/.android/debug.keystore;
+      # a runner-local debug cert changes every job and blocks in-place updates.
       - name: Assemble debug-signed APK
         working-directory: android
         run: chmod +x ./gradlew && ./gradlew :app:assembleDebug --stacktrace
@@ -48,9 +52,9 @@ jobs:
           fi
           cp "$src" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
-          echo "Built $dest from $src (debug-signed with the Gradle debug keystore; no keystore secrets are used)."
+          echo "Built $dest from $src (debug-signed with android/keystore/debug.keystore)."
 
-      - name: Verify APK signature block
+      - name: Verify APK signature block matches the checked-in debug cert
         run: |
           set -euo pipefail
           apk="${{ steps.apk.outputs.path }}"
@@ -58,6 +62,40 @@ jobs:
           test -n "$apksigner"
           # API 30+ rejects APKs that lack a v2/v3 signature block (Samsung: 软件包似乎无效).
           "$apksigner" verify --verbose --print-certs --min-sdk-version 30 "$apk"
+
+          # The APK certificate must be android/keystore/debug.keystore.
+          # Capture each tool's full output before parsing. A `head` in a
+          # `pipefail` pipeline exits 141 (SIGPIPE) and fails the step even
+          # when the fingerprints match. apksigner prints either
+          # "Signer #1 certificate SHA-256 digest" or "V2 Signer: certificate SHA-256 digest".
+          normalize() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]:'; }
+          first_field() {
+            local text=$1 marker=$2 line
+            while IFS= read -r line; do
+              case "$line" in
+                *"$marker"*)
+                  printf '%s' "${line#*"$marker"}"
+                  return 0
+                  ;;
+              esac
+            done <<< "$text"
+            return 1
+          }
+          storepass=$(sed -n 's/^DEBUG_STORE_PASSWORD=//p' android/gradle.properties)
+          test -n "$storepass"
+          keytool_out=$(keytool -list -v \
+            -keystore android/keystore/debug.keystore \
+            -storepass "$storepass")
+          cert_out=$("$apksigner" verify --print-certs "$apk")
+          expected=$(normalize "$(first_field "$keytool_out" "SHA256:")")
+          actual=$(normalize "$(first_field "$cert_out" "SHA-256 digest:")")
+          if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
+            echo "APK signer SHA-256 does not match android/keystore/debug.keystore" >&2
+            echo "keystore: ${expected:-<missing>}" >&2
+            echo "apk:      ${actual:-<missing>}" >&2
+            exit 1
+          fi
+          echo "Debug cert SHA-256 matches checked-in keystore: $actual"
 
       - name: Keep the APK as a workflow artifact
         uses: actions/upload-artifact@v4

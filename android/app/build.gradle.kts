@@ -4,6 +4,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Checked-in debug keystore (android/gradle.properties). Not a release secret.
+// Local assembleDebug and CI must share this cert so sideload updates install
+// in place. Never fall back to ~/.android/debug.keystore: that file is a new
+// certificate on every GitHub-hosted runner and on each developer machine.
+val debugKeystoreFile = rootProject.file(
+    (findProperty("DEBUG_STORE_FILE") as String?)
+        ?: error("Set DEBUG_STORE_FILE in android/gradle.properties")
+)
+val debugStorePassword = (findProperty("DEBUG_STORE_PASSWORD") as String?)
+    ?: error("Set DEBUG_STORE_PASSWORD in android/gradle.properties")
+val debugKeyAlias = (findProperty("DEBUG_KEY_ALIAS") as String?)
+    ?: error("Set DEBUG_KEY_ALIAS in android/gradle.properties")
+val debugKeyPassword = (findProperty("DEBUG_KEY_PASSWORD") as String?)
+    ?: error("Set DEBUG_KEY_PASSWORD in android/gradle.properties")
+check(debugKeystoreFile.isFile) {
+    "Debug keystore missing at $debugKeystoreFile. " +
+        "Commit android/keystore/debug.keystore and do not use ~/.android/debug.keystore."
+}
+
 android {
     namespace = "tech.mengfei.agentboard"
     compileSdk = 35
@@ -16,7 +35,19 @@ android {
         versionName = "0.2.0"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            storeFile = debugKeystoreFile
+            storePassword = debugStorePassword
+            keyAlias = debugKeyAlias
+            keyPassword = debugKeyPassword
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }
