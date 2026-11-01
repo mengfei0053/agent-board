@@ -143,6 +143,9 @@ import tech.mengfei.agentboard.protocol.sessionRejected
 import tech.mengfei.agentboard.protocol.settingsAckEffect
 import tech.mengfei.agentboard.protocol.settingsEntry
 import tech.mengfei.agentboard.protocol.settingsGetEnvelope
+import tech.mengfei.agentboard.protocol.BoardSettingsForm
+import tech.mengfei.agentboard.protocol.readBoardSettingsForm
+import tech.mengfei.agentboard.protocol.settingsPutFormEnvelope
 import tech.mengfei.agentboard.protocol.settingsPutPromptsEnvelope
 import tech.mengfei.agentboard.protocol.shouldSendLogSubscribe
 import tech.mengfei.agentboard.protocol.subLogsEnvelope
@@ -270,6 +273,7 @@ data class UiState(
     val continueOpen: Boolean = false,
     val quickPrompts: List<QuickPromptChip> = emptyList(),
     val settingsLoaded: Boolean = false,
+    val boardForm: BoardSettingsForm? = null,
     val canPop: Boolean = false,
     val englishUi: Boolean = false,
     val sawSnapshot: Boolean = false,
@@ -508,6 +512,9 @@ class BoardViewModel(
         val nextCwd = cwdForNewTask(current.draftCwd, selectedPath, current.workspaces.map { it.path })
         _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd) }
         push(Screen.Create(session.sessionId))
+        if (CAP_BOARD_SETTINGS in capabilities(session) && slot(session.sessionId)?.settingsLoaded != true) {
+            requestBoardSettings(session)
+        }
     }
 
     fun openWorkspaceCreate() {
@@ -521,6 +528,10 @@ class BoardViewModel(
         if (!canContinueStatus(task.status)) return
         slot(activeId)?.continueOpen = true
         render()
+        val session = session(activeId) ?: return
+        if (CAP_BOARD_SETTINGS in capabilities(session) && slot(session.sessionId)?.settingsLoaded != true) {
+            requestBoardSettings(session)
+        }
     }
 
     fun selectWorkspace(id: String) {
@@ -558,6 +569,7 @@ class BoardViewModel(
 
     fun pop() {
         val previous = backStack.removeLastOrNull() ?: return
+        if (screen == Screen.WorkspaceSettings || screen == Screen.BoardSettings) discardSettings(activeId)
         show(previous)
         if (screen !is Screen.Detail) clearLogBinding(activeId)
         render()
@@ -648,6 +660,33 @@ class BoardViewModel(
         render()
     }
 
+    fun updateQuickPrompt(id: String, label: String? = null, content: String? = null) {
+        val holder = activeId?.let { slots[it] } ?: return
+        holder.quickPrompts = holder.quickPrompts.map {
+            if (it.id == id) it.copy(label = label?.take(40) ?: it.label, content = content ?: it.content) else it
+        }
+        render()
+    }
+
+    fun updateAgentSettings(key: String, cliPath: String? = null, proxyKey: String? = null, proxyValue: String? = null) {
+        val holder = activeId?.let { slots[it] } ?: return
+        val form = holder.boardForm ?: return
+        val agent = form.agents[key] ?: return
+        if (proxyKey != null && proxyKey !in agent.proxies) return
+        val updated = agent.copy(
+            cliPath = cliPath ?: agent.cliPath,
+            proxies = if (proxyKey != null && proxyValue != null) agent.proxies + (proxyKey to proxyValue) else agent.proxies,
+        )
+        holder.boardForm = form.copy(agents = form.agents + (key to updated))
+        render()
+    }
+
+    fun updateCodexSandbox(enabled: Boolean) {
+        val holder = activeId?.let { slots[it] } ?: return
+        holder.boardForm = holder.boardForm?.copy(codexSandbox = enabled)
+        render()
+    }
+
     fun saveBoardSettings() {
         val session = session(activeId) ?: return
         val prompts = slot(session.sessionId)?.quickPrompts ?: return
@@ -658,7 +697,10 @@ class BoardViewModel(
             return
         }
         val key = keys()
-        sendRaw(session, "cmd.settings.put", null, key, settingsPutPromptsEnvelope(ids(), clock(), session.boardId, prompts, key))
+        val form = slot(session.sessionId)?.boardForm
+        val envelope = if (form == null) settingsPutPromptsEnvelope(ids(), clock(), session.boardId, prompts, key)
+            else settingsPutFormEnvelope(ids(), clock(), session.boardId, prompts, form, key)
+        sendRaw(session, "cmd.settings.put", null, key, envelope)
     }
 
     fun startDifferentCreate() = clearSettled("cmd.create", null)
@@ -1302,13 +1344,18 @@ class BoardViewModel(
             }
             "cmd.settings.get", "cmd.settings.put" -> {
                 val prompts = readQuickPrompts(message.payload)
-                if (prompts != null && effect.fillForm) holder.quickPrompts = prompts
+                if (prompts != null && effect.fillForm) {
+                    holder.quickPrompts = prompts
+                    holder.loadedQuickPrompts = prompts
+                    holder.loadedBoard = readBoardSettingsForm(message.payload)
+                    holder.boardForm = holder.loadedBoard
+                }
                 holder.settingsLoaded = effect.markLoaded
             }
         }
         if (effect.toastSaved) {
             banner = when (effect.toast) {
-                PROMPTS_SAVED_COPY -> zh(PROMPTS_SAVED_COPY, "Shortcuts saved")
+                PROMPTS_SAVED_COPY -> if (holder.boardForm != null) zh("设置已保存", "Settings saved") else zh(PROMPTS_SAVED_COPY, "Shortcuts saved")
                 SAVED_COPY -> zh(SAVED_COPY, "Saved")
                 else -> null
             }
@@ -1679,6 +1726,8 @@ class BoardViewModel(
     private fun discardSettings(sessionId: String?) {
         val holder = sessionId?.let { slots[it] } ?: return
         holder.workspaceForm = holder.loadedWorkspace
+        holder.boardForm = holder.loadedBoard
+        holder.quickPrompts = holder.loadedQuickPrompts
         holder.workspaceDirty = false
     }
 
@@ -1810,6 +1859,7 @@ class BoardViewModel(
             continueOpen = holder?.continueOpen == true,
             quickPrompts = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.quickPrompts.orEmpty() else emptyList(),
             settingsLoaded = holder?.settingsLoaded == true,
+            boardForm = holder?.boardForm,
             canPop = backStack.isNotEmpty(),
             sawSnapshot = saw,
             chip = chip,
@@ -2011,6 +2061,9 @@ class BoardViewModel(
         var loadedWorkspace: WorkspaceSettingsForm? = null
         var workspaceDirty: Boolean = false
         var quickPrompts: List<QuickPromptChip> = emptyList()
+        var loadedQuickPrompts: List<QuickPromptChip> = emptyList()
+        var boardForm: BoardSettingsForm? = null
+        var loadedBoard: BoardSettingsForm? = null
         var settingsLoaded: Boolean = false
         var settingsBlocked: String? = null
         val resync = ResyncScheduler()

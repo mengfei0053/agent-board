@@ -9,13 +9,67 @@ import kotlinx.serialization.json.put
 
 data class QuickPromptChip(val id: String, val label: String, val content: String)
 
+val BOARD_AGENT_KEYS = listOf("codex", "agent", "pi", "claude", "devin")
+val BOARD_PROXY_KEYS = listOf("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
+
+data class AgentSettingsForm(
+    val cliPath: String,
+    val defaultPath: String,
+    val resolved: String?,
+    val proxies: Map<String, String>,
+)
+
+data class BoardSettingsForm(val agents: Map<String, AgentSettingsForm>, val codexSandbox: Boolean)
+
+/** Only use a complete document so saving a partial response cannot clear overrides. */
+fun readBoardSettingsForm(payload: JsonObject): BoardSettingsForm? {
+    val settings = payload.obj("settings") ?: return null
+    val cliPaths = settings.obj("cliPaths") ?: return null
+    val proxyEnv = settings.obj("proxyEnv") ?: return null
+    val sandbox = settings.bool("codexSandbox") ?: return null
+    val agents = linkedMapOf<String, AgentSettingsForm>()
+    for (key in BOARD_AGENT_KEYS) {
+        val cli = cliPaths.obj(key) ?: return null
+        val proxies = proxyEnv.obj(key) ?: return null
+        val overrides = linkedMapOf<String, String>()
+        for (proxyKey in BOARD_PROXY_KEYS) {
+            val proxy = proxies.obj(proxyKey) ?: return null
+            overrides[proxyKey] = proxy.text("override") ?: return null
+        }
+        agents[key] = AgentSettingsForm(cli.text("override") ?: return null, cli.text("default") ?: return null,
+            cli.text("resolved"), overrides)
+    }
+    return BoardSettingsForm(agents, sandbox)
+}
+
+fun settingsPutFormEnvelope(
+    id: String, ts: Long, boardId: String, prompts: List<QuickPromptChip>,
+    form: BoardSettingsForm, idempotencyKey: String,
+): Envelope {
+    val base = settingsPutPromptsEnvelope(id, ts, boardId, prompts, idempotencyKey)
+    return base.copy(payload = JsonObject(base.payload + buildJsonObject {
+        put("cliPaths", buildJsonObject {
+            BOARD_AGENT_KEYS.forEach { key -> put(key, form.agents.getValue(key).cliPath) }
+        })
+        put("proxyEnv", buildJsonObject {
+            BOARD_AGENT_KEYS.forEach { key -> put(key, buildJsonObject {
+                BOARD_PROXY_KEYS.forEach { proxy -> put(proxy, form.agents.getValue(key).proxies.getValue(proxy)) }
+            }) }
+        })
+        put("codexSandbox", form.codexSandbox)
+    }))
+}
+
 data class WorkspaceSettingsForm(
     val name: String,
     val path: String,
     val systemPrompt: String,
     val skills: String,
     val mcp: String,
+    val git: WorkspaceGitSummary? = null,
 )
+
+data class WorkspaceGitSummary(val branch: String?, val dirty: Boolean, val repoCount: Int, val error: String?)
 
 fun workspaceGetEnvelope(id: String, ts: Long, boardId: String, workspaceId: String, idempotencyKey: String): Validated<Envelope> {
     if (!isWorkspaceId(workspaceId)) return Validated.Invalid("workspaceId is invalid")
@@ -107,7 +161,12 @@ fun readWorkspaceSettingsForm(payload: JsonObject): WorkspaceSettingsForm? {
         if (!primitive.isString) return null
         lines.add(primitive.content)
     }
-    return WorkspaceSettingsForm(name, path, systemPrompt, lines.joinToString("\n"), mcp)
+    val git = workspace.obj("git")?.let {
+        val dirty = it.bool("dirty") ?: return@let null
+        val repoCount = it.intValue("repoCount")?.takeIf { count -> count >= 0 } ?: return@let null
+        WorkspaceGitSummary(it.text("branch"), dirty, repoCount, it.text("error"))
+    }
+    return WorkspaceSettingsForm(name, path, systemPrompt, lines.joinToString("\n"), mcp, git)
 }
 
 fun readQuickPrompts(payload: JsonObject): List<QuickPromptChip>? {
