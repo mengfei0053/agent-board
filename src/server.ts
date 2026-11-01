@@ -84,6 +84,7 @@ import {
 } from "./limits.js";
 import { resolveAllowedDirectory } from "./paths.js";
 import { maybeStartEmbeddedRelay, type EmbeddedRelay } from "./relay/index.js";
+import { createBoardPairCode } from "./relay/pairCode.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -698,6 +699,17 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 
 
 app.get("/api/settings", async (c) => c.json(await readSettingsDocument()));
+
+app.post("/api/settings/pair-code", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try {
+    const body = await readJsonObject(c);
+    if (typeof body.adminToken !== "string") throw new HttpError(400, "请输入中继管理员令牌。");
+    return c.json(await createBoardPairCode(body.adminToken));
+  } catch (e) {
+    return errorJson(c, e);
+  }
+});
 
 app.put("/api/settings", async (c) => {
   let raw: Record<string, unknown>;

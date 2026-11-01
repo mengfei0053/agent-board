@@ -5,6 +5,49 @@ const statusEl = document.getElementById("settings-status");
 const btnClear = document.getElementById("btn-clear-settings");
 const quickListEl = document.getElementById("quick-prompts-list");
 const btnAddQuick = document.getElementById("btn-add-quick-prompt");
+const pairToken = document.getElementById("pair-admin-token");
+const pairButton = document.getElementById("btn-create-pair-code");
+const pairStatus = document.getElementById("pair-code-status");
+const pairResult = document.getElementById("pair-code-result");
+const pairValue = document.getElementById("pair-code-value");
+
+pairButton.addEventListener("click", async () => {
+  const adminToken = pairToken.value;
+  pairToken.value = "";
+  pairResult.hidden = true;
+  pairValue.value = "";
+  pairButton.disabled = true;
+  pairStatus.textContent = "正在生成…";
+  try {
+    const response = await fetch("/api/settings/pair-code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ adminToken }),
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 404) throw new Error("看板服务尚未加载配对功能，请在任务结束后重启看板服务。");
+    if (!response.ok) throw new Error(data.error || "生成失败，请重试。");
+    pairValue.value = data.pairCode;
+    document.getElementById("pair-code-expiry").textContent = `看板：${data.boardId}；有效期至 ${new Date(data.expiresAt).toLocaleString()}。成功配对后失效。`;
+    pairResult.hidden = false;
+    pairStatus.textContent = "配对码已生成。";
+  } catch (err) {
+    pairStatus.textContent = err instanceof Error ? err.message : "生成失败，请重试。";
+  } finally {
+    pairButton.disabled = false;
+  }
+});
+
+document.getElementById("btn-copy-pair-code").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(pairValue.value);
+    pairStatus.textContent = "配对码已复制。";
+  } catch {
+    pairValue.select();
+    pairStatus.textContent = "无法自动复制，请手动复制选中的配对码。";
+  }
+});
 
 const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex"];
 const PROXY_ORDER = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];

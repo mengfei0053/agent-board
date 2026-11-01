@@ -124,6 +124,8 @@ pnpm dev
 
 浏览器打开 http://127.0.0.1:8791
 
+在 Linux 上，已配置 `.env.relay` 时，可执行 `./scripts/board.sh` 一键启动或重启。也可以用 `./scripts/board.sh start` 仅启动，或 `./scripts/board.sh restart` 启动或重启。脚本发现运行中的任务时会停止操作，等任务结束后再执行；日志默认写入 `/tmp/agent-board-server.log`。需要自定义数据库连接时，在运行脚本前设置 `DATABASE_URL`。
+
 首次启动若存在 `data/db.json`，会自动迁移到 Postgres，并将 JSON 改名为 `db.json.migrated-*`。
 
 ## Android、中继、connector
@@ -144,6 +146,8 @@ pnpm dev
 看板进程可以自己拨出公网中继，手机 APK 不再需要 ThinkBook 上另起一个 connector 进程。**默认关闭**。未设置中继环境变量时，看板仍只提供本机 HTTP/SSE。
 
 三个变量都有效才拨号。缺任何一个、URL 不合法，或 `RELAY_ENABLED=0|false|off`，都只记一条日志并跳过，**不会让进程退出**。
+
+配置好中继后，可在看板「设置 → 手机配对」输入中继的 `ADMIN_TOKEN`，生成绑定当前 `BOARD_ID` 的一次性配对码。管理员令牌只用于本次请求，不会保存；配对码的有效期由中继设置，默认 5 分钟。
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |

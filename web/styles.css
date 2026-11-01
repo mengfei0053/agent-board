@@ -2211,7 +2211,8 @@ button.topbar-brand[aria-expanded="true"] {
 .settings-label strong { font-weight: 600; }
 .settings-default { font-size: 12px; }
 
-.settings-row input[type="text"] {
+.settings-row input[type="text"],
+.settings-row input[type="password"] {
   font-family: var(--mono);
   font-size: 13px;
   padding: 10px 12px;
@@ -2224,11 +2225,16 @@ button.topbar-brand[aria-expanded="true"] {
   line-height: 1.4;
 }
 .settings-row input[type="text"]::placeholder { color: var(--faint); }
-.settings-row input[type="text"]:focus {
+.settings-row input[type="text"]:focus,
+.settings-row input[type="password"]:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
+.settings-pair-card { margin-bottom: 16px; gap: 14px; }
+.settings-pair-card button { align-self: flex-start; }
+.settings-pair-card [hidden] { display: none; }
+.settings-pair-card #pair-code-result:not([hidden]) { display: flex; flex-direction: column; gap: 12px; }
 
 .settings-resolved-line {
   display: flex;

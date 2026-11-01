@@ -40,6 +40,23 @@
     </header>
 
     <main class="docs-main settings-main">
+      <section class="settings-card settings-pair-card" aria-labelledby="pair-code-title">
+        <header class="settings-block-head">
+          <h2 id="pair-code-title">手机配对</h2>
+          <p class="settings-block-desc">为当前看板生成一次性配对码。管理员令牌仅用于本次请求，不会保存。</p>
+        </header>
+        <div class="settings-row">
+          <label for="pair-admin-token">中继管理员令牌</label>
+          <input id="pair-admin-token" type="password" autocomplete="off" />
+        </div>
+        <button type="button" id="btn-create-pair-code">生成配对码</button>
+        <p id="pair-code-status" class="settings-status muted" role="status"></p>
+        <div id="pair-code-result" hidden>
+          <div class="settings-row"><label for="pair-code-value">配对码</label><input id="pair-code-value" type="text" readonly /></div>
+          <button type="button" class="secondary" id="btn-copy-pair-code">复制配对码</button>
+          <p id="pair-code-expiry" class="settings-block-desc"></p>
+        </div>
+      </section>
       <form id="settings-form" class="settings-form" autocomplete="off">
         <section class="settings-card settings-quick-card" aria-labelledby="quick-prompts-title">
           <header class="settings-block-head">
