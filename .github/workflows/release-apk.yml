@@ -63,31 +63,36 @@ jobs:
           # API 30+ rejects APKs that lack a v2/v3 signature block (Samsung: 软件包似乎无效).
           "$apksigner" verify --verbose --print-certs --min-sdk-version 30 "$apk"
 
-          # The APK certificate must be android/keystore/debug.keystore, not a
-          # keystore Gradle would otherwise create under ~/.android.
-          normalize() { tr '[:lower:]' '[:upper:]' | tr -d '[:space:]:'; }
+          # The APK certificate must be android/keystore/debug.keystore.
+          # Capture each tool's full output before parsing. A `head` in a
+          # `pipefail` pipeline exits 141 (SIGPIPE) and fails the step even
+          # when the fingerprints match. apksigner prints either
+          # "Signer #1 certificate SHA-256 digest" or "V2 Signer: certificate SHA-256 digest".
+          normalize() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]:'; }
+          first_field() {
+            local text=$1 marker=$2 line
+            while IFS= read -r line; do
+              case "$line" in
+                *"$marker"*)
+                  printf '%s' "${line#*"$marker"}"
+                  return 0
+                  ;;
+              esac
+            done <<< "$text"
+            return 1
+          }
           storepass=$(sed -n 's/^DEBUG_STORE_PASSWORD=//p' android/gradle.properties)
           test -n "$storepass"
-          expected=$(
-            keytool -list -v \
-              -keystore android/keystore/debug.keystore \
-              -storepass "$storepass" \
-              | sed -n 's/^[[:space:]]*SHA256: //p' \
-              | head -n 1 \
-              | normalize
-          )
-          actual=$(
-            "$apksigner" verify --print-certs "$apk" \
-              | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' \
-              | head -n 1 \
-              | normalize
-          )
-          test -n "$expected"
-          test -n "$actual"
-          if [[ "$expected" != "$actual" ]]; then
+          keytool_out=$(keytool -list -v \
+            -keystore android/keystore/debug.keystore \
+            -storepass "$storepass")
+          cert_out=$("$apksigner" verify --print-certs "$apk")
+          expected=$(normalize "$(first_field "$keytool_out" "SHA256:")")
+          actual=$(normalize "$(first_field "$cert_out" "SHA-256 digest:")")
+          if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
             echo "APK signer SHA-256 does not match android/keystore/debug.keystore" >&2
-            echo "keystore: $expected" >&2
-            echo "apk:      $actual" >&2
+            echo "keystore: ${expected:-<missing>}" >&2
+            echo "apk:      ${actual:-<missing>}" >&2
             exit 1
           fi
           echo "Debug cert SHA-256 matches checked-in keystore: $actual"
