@@ -132,12 +132,12 @@ pnpm dev
 
 | 目录 | 作用 |
 | --- | --- |
-| `android/` | Kotlin Compose APK，`tech.mengfei.agentboard`，来自 Origin `754e635`。本地与发布都用 debug 签名的 `./gradlew :app:assembleDebug` |
+| `android/` | Kotlin Compose APK，`tech.mengfei.agentboard`，来自 Origin `754e635`。本地与发布都用已入库的 `android/keystore/debug.keystore` 签 `./gradlew :app:assembleDebug`，以便同一证书覆盖安装 |
 | `relay/` | Node 中继（HTTP 配对 + WebSocket），Origin `754e635`。凭证是 `ADMIN_TOKEN` 与 `BOARD_TOKEN`（Bitwarden `agent-board-relay 101`，线上 `https://relay.mengfei.tech`）。不调用看板、不 spawn CLI |
 | `connector/` | ThinkBook 上的独立进程。用 `BOARD_TOKEN` 注册，把命令译成本机 `127.0.0.1:8791` |
 | [PROTOCOL.md](./PROTOCOL.md) | 信封、`ADMIN_TOKEN` 配对、幂等与 `useGitWorktree`。部署见 [relay/docs/deploy.md](./relay/docs/deploy.md) |
 
-发布 APK：在 GitHub 上 **Publish a release**。`.github/workflows/release-apk.yml` 会用 JDK 17 和 Android SDK 35 跑 `./gradlew :app:assembleDebug`（Gradle debug keystore，带 APK Signature Block，可侧载），并把 `agent-board-<tag>-<sha>-debug.apk` 挂到该 Release。不需要签名密钥。说明见 [android/README.md](./android/README.md)。
+发布 APK：在 GitHub 上 **Publish a release**。`.github/workflows/release-apk.yml` 会用 JDK 17 和 Android SDK 35 跑 `./gradlew :app:assembleDebug`（签 `android/keystore/debug.keystore`，带 APK Signature Block，可侧载，后续包可覆盖安装），并把 `agent-board-<tag>-<sha>-debug.apk` 挂到该 Release。手机上若已装着旧的、证书不同的 debug 包，需要先卸载一次。说明见 [android/README.md](./android/README.md)。
 
 ## 手机遥控 / Relay
 

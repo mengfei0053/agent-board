@@ -52,7 +52,32 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 `local.properties` is machine-specific and is not committed. This tree does not publish to a store.
 
-Release builds are unsigned. There is no keystore in the repo.
+### Debug signing (in-place updates)
+
+`assembleDebug` signs with the checked-in debug keystore `keystore/debug.keystore`. The path, alias (`androiddebugkey`), and passwords live in `gradle.properties` (`DEBUG_STORE_FILE`, `DEBUG_STORE_PASSWORD`, `DEBUG_KEY_ALIAS`, `DEBUG_KEY_PASSWORD`). Those passwords are the well-known Android debug password `android`. They are not a Play Store or release secret, and they are safe to commit for this sideload build.
+
+A laptop and `.github/workflows/release-apk.yml` both use that file. The package stays `tech.mengfei.agentboard`, and successive debug APKs share one certificate, so a later build installs as an update.
+
+Do not delete the keystore or point debug signing at `~/.android/debug.keystore`. Android Gradle Plugin creates that file per machine. On GitHub-hosted runners it is a new certificate every job. A different certificate cannot update the installed package.
+
+Confirm an APK used this keystore:
+
+```bash
+apksigner verify --print-certs app/build/outputs/apk/debug/app-debug.apk
+keytool -list -v -keystore keystore/debug.keystore -storepass android
+```
+
+Both must show the same SHA-256. For this keystore that fingerprint is:
+
+```text
+79:54:FA:E5:89:3D:51:99:57:02:53:51:D0:4B:2B:07:53:2D:0D:2F:E3:A9:2C:50:5B:65:D8:7F:EC:4C:83:1E
+```
+
+The certificate subject is `CN=Agent Board Debug, OU=Debug, O=Android, C=US`.
+
+**One-time uninstall.** A phone that already has this package from an older CI runner, or from a laptop `~/.android/debug.keystore`, was signed with a different certificate. Android refuses the update (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, or a message that the package conflicts with an existing package). Uninstall Agent Board once, then install this APK. That uninstall clears app data. After it, later debug builds from this keystore update in place.
+
+Release builds stay unsigned. There is no Play signing key in the repo.
 
 ```bash
 ./gradlew :app:assembleRelease
@@ -62,13 +87,13 @@ The APK is `android/app/build/outputs/apk/release/app-release-unsigned.apk`.
 
 ## GitHub Release
 
-Publishing a GitHub Release builds a debug-signed APK and attaches it to the release. The Android Gradle Plugin creates the debug keystore in CI, so the APK has an APK Signature Block and can be sideloaded. `assembleRelease` stays unsigned and is not what this workflow ships.
+Publishing a GitHub Release builds a debug-signed APK and attaches it to the release. The workflow runs `./gradlew :app:assembleDebug`, which uses `keystore/debug.keystore` rather than a keystore generated on the runner. The APK has an APK Signature Block and can be sideloaded, and a later release can update the previous one. `assembleRelease` stays unsigned and is not what this workflow ships.
 
 1. Push the commit you want to ship.
 2. On GitHub, open **Releases → Draft a new release**, choose or create a tag such as `v0.2.0`, and publish it.
 3. `.github/workflows/release-apk.yml` runs on `release: types: [published]` and on pull requests. It sets up JDK 17 and Android SDK 35, then runs `./gradlew :app:assembleDebug` in `android/`.
-4. The workflow checks the APK with `apksigner` (API 30+) and uploads `agent-board-<tag>-<sha>-debug.apk` to that release with `GITHUB_TOKEN`. On `main`, the artifact name is `agent-board-<sha>-debug.apk`.
+4. The workflow checks the APK with `apksigner` (API 30+), checks the signer SHA-256 matches `keystore/debug.keystore`, and uploads `agent-board-<tag>-<sha>-debug.apk` to that release with `GITHUB_TOKEN`. On `main`, the artifact name is `agent-board-<sha>-debug.apk`.
 
 `workflow_dispatch` builds the same APK and stores it as an Actions artifact. It does not attach a release asset.
 
-No signing secrets are required. `ANDROID_KEYSTORE_*` is unused. Store signing is out of scope until a release keystore is added on purpose. A phone that already has this app installed under a different debug key must uninstall it before this APK will replace it.
+No release signing secrets are required. `ANDROID_KEYSTORE_*` is unused. Store signing is out of scope until a release keystore is added on purpose. The debug passwords in `gradle.properties` are debug-only. If the phone still has a build signed with a different debug certificate, uninstall once before installing this APK.
