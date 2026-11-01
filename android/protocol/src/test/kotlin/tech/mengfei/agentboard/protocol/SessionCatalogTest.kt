@@ -644,6 +644,67 @@ class SessionCatalogTest {
     }
 
     @Test
+    fun sameSessionNotificationDropsDeferredPairBeforeCatalogWrite() {
+        val start = oneBoardDisk()
+        val onAdd = AddPairSnapshot(start, emptySet(), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(onAdd.epoch, onAdd.activeSessionId, onAdd.navToken, onAdd.screen)
+        val opened = openNotificationSameSession(onAdd, "task_9")
+        assertEquals("sA", opened.activeSessionId)
+        assertEquals("detail:task_9", opened.screen)
+        assertEquals(start.catalog, opened.disk.catalog)
+        val proceed = planPair(start, addRequest(listOf("board-new"), ids = listOf("sNew"))) as PairOutcome.Proceed
+        val done = completeDeferredPair(opened, attempt, proceed)
+        assertFalse(done.applied)
+        assertFalse(done.successToast)
+        assertNull(done.snapshot.banner)
+        assertEquals("sA", done.snapshot.activeSessionId)
+        assertEquals("detail:task_9", done.snapshot.screen)
+        assertEquals(listOf("sA"), done.snapshot.disk.catalog!!.order)
+        assertNull(done.snapshot.disk.credentials["c-new"])
+        assertEquals(start.catalog, done.snapshot.disk.catalog)
+    }
+
+    @Test
+    fun backAndBoardSwitchDropDeferredPairBeforeCatalogWrite() {
+        val start = sharedDisk()
+        val onAdd = AddPairSnapshot(start, setOf("c1"), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(1, "sA", 0, "add")
+        val proceed = planPair(start, addRequest(listOf("board-c"), ids = listOf("sC"))) as PairOutcome.Proceed
+        val back = completeDeferredPair(leaveAddScreen(onAdd, "tasks", PairDeparture.Back), attempt, proceed)
+        assertFalse(back.applied)
+        assertFalse(back.successToast)
+        assertNull(back.snapshot.banner)
+        assertEquals("sA", back.snapshot.activeSessionId)
+        assertEquals("tasks", back.snapshot.screen)
+        assertEquals(listOf("sA", "sB"), back.snapshot.disk.catalog!!.order)
+        val switched = leaveAddScreen(onAdd, "tasks", PairDeparture.BoardSwitch).copy(activeSessionId = "sB")
+        val picked = completeDeferredPair(switched, attempt, proceed)
+        assertFalse(picked.applied)
+        assertFalse(picked.successToast)
+        assertNull(picked.snapshot.banner)
+        assertEquals("sB", picked.snapshot.activeSessionId)
+        assertEquals("tasks", picked.snapshot.screen)
+        assertEquals(listOf("sA", "sB"), picked.snapshot.disk.catalog!!.order)
+        assertNull(picked.snapshot.disk.credentials["c-new"])
+    }
+
+    @Test
+    fun pairThatIsStillOnAddWritesTheCatalogAndSuccessToast() {
+        val start = oneBoardDisk()
+        val onAdd = AddPairSnapshot(start, emptySet(), "sA", "add", banner = null, epoch = 1, navToken = 0)
+        val attempt = PairContext(1, "sA", 0, "add")
+        val proceed = planPair(start, addRequest(listOf("board-new"), ids = listOf("sNew"))) as PairOutcome.Proceed
+        val done = completeDeferredPair(onAdd, attempt, proceed)
+        assertTrue(done.applied)
+        assertTrue(done.successToast)
+        assertEquals("tasks", done.snapshot.screen)
+        assertEquals(SWITCHED_PREFIX + "Home", done.snapshot.banner)
+        assertEquals(proceed.activeSessionId, done.snapshot.activeSessionId)
+        assertTrue(done.snapshot.disk.catalog!!.order.contains("sNew"))
+        assertNotNull(done.snapshot.disk.credentials["c-new"])
+    }
+
+    @Test
     fun failedForgetAndFailedAddLeaveTheActiveBoard() {
         val start = sharedDisk()
         val forget = planForget(start, "sA")

@@ -252,19 +252,33 @@ fun pairResultApply(requestEpoch: Int, currentEpoch: Int, succeeded: Boolean): P
     return PairApply.Land
 }
 
-enum class PairDeparture { Back, BoardSwitch, Forget }
+enum class PairDeparture { Back, BoardSwitch, Forget, Notification, LeftAdd }
 
-data class PairContext(val epoch: Int, val activeSessionId: String?)
+data class PairContext(
+    val epoch: Int,
+    val activeSessionId: String?,
+    val navToken: Int = 0,
+    /** Pairing screen captured when the attempt started: "add" or "pair". */
+    val screen: String = "",
+)
 
-/** Leaving Add, switching boards, or forgetting invalidates the in-flight pair. */
+/** Any departure from the pairing screen invalidates the in-flight pair. */
 fun pairContextAfterDeparture(context: PairContext, departure: PairDeparture): PairContext {
     return when (departure) {
-        PairDeparture.Back, PairDeparture.BoardSwitch, PairDeparture.Forget -> context.copy(epoch = context.epoch + 1)
+        PairDeparture.Back,
+        PairDeparture.BoardSwitch,
+        PairDeparture.Forget,
+        PairDeparture.Notification,
+        PairDeparture.LeftAdd,
+        -> context.copy(epoch = context.epoch + 1, navToken = context.navToken + 1)
     }
 }
 
 fun pairAttemptStillCurrent(attempt: PairContext, now: PairContext): Boolean {
-    return attempt.epoch == now.epoch && attempt.activeSessionId == now.activeSessionId
+    return attempt.epoch == now.epoch &&
+        attempt.navToken == now.navToken &&
+        attempt.activeSessionId == now.activeSessionId &&
+        attempt.screen == now.screen
 }
 
 data class DeferredPairSuccess(
@@ -292,6 +306,71 @@ fun deferredPairSuccess(
     return DeferredPairSuccess(
         applyTransaction = true,
         activeSessionId = proposedActiveId,
+        successToast = true,
+    )
+}
+
+data class AddPairSnapshot(
+    val disk: PhoneDisk,
+    val openSockets: Set<String>,
+    val activeSessionId: String?,
+    val screen: String,
+    val banner: String?,
+    val epoch: Int,
+    val navToken: Int,
+)
+
+data class DeferredPairResult(
+    val snapshot: AddPairSnapshot,
+    val applied: Boolean,
+    val successToast: Boolean,
+)
+
+/**
+ * Same-session notification: active board stays, and the screen leaves Add for that task.
+ * This is the BoardViewModel.openNotification path that does not call landOn.
+ */
+fun openNotificationSameSession(snapshot: AddPairSnapshot, taskId: String): AddPairSnapshot {
+    return leaveAddScreen(snapshot, "detail:$taskId", PairDeparture.Notification)
+}
+
+/** Back, board switch, notification, or any other navigation off the pairing screen. */
+fun leaveAddScreen(snapshot: AddPairSnapshot, nextScreen: String, departure: PairDeparture): AddPairSnapshot {
+    if ((snapshot.screen != "add" && snapshot.screen != "pair") || nextScreen == snapshot.screen) {
+        return snapshot.copy(screen = nextScreen)
+    }
+    val next = pairContextAfterDeparture(
+        PairContext(snapshot.epoch, snapshot.activeSessionId, snapshot.navToken, snapshot.screen),
+        departure,
+    )
+    return snapshot.copy(epoch = next.epoch, navToken = next.navToken, screen = nextScreen)
+}
+
+/**
+ * Caller for a deferred pair HTTP success. Writes the catalog only while the attempt's
+ * pairing screen is still showing. Otherwise the disk, active board, screen, and banner stay.
+ */
+fun completeDeferredPair(
+    snapshot: AddPairSnapshot,
+    attempt: PairContext,
+    outcome: PairOutcome,
+): DeferredPairResult {
+    val now = PairContext(snapshot.epoch, snapshot.activeSessionId, snapshot.navToken, snapshot.screen)
+    val proposed = (outcome as? PairOutcome.Proceed)?.activeSessionId ?: snapshot.activeSessionId.orEmpty()
+    val effect = deferredPairSuccess(attempt, now, proposed)
+    if (!effect.applyTransaction || outcome !is PairOutcome.Proceed || snapshot.screen != attempt.screen) {
+        return DeferredPairResult(snapshot, applied = false, successToast = false)
+    }
+    val applied = simulate(snapshot.disk, snapshot.openSockets, outcome.tx)
+    return DeferredPairResult(
+        snapshot = snapshot.copy(
+            disk = applied.disk,
+            openSockets = applied.openSockets,
+            activeSessionId = applied.activeSessionId,
+            screen = "tasks",
+            banner = switchedToast(outcome.toastName),
+        ),
+        applied = true,
         successToast = true,
     )
 }

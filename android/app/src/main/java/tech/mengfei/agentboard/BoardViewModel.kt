@@ -147,6 +147,7 @@ import tech.mengfei.agentboard.protocol.settingsPutPromptsEnvelope
 import tech.mengfei.agentboard.protocol.shouldSendLogSubscribe
 import tech.mengfei.agentboard.protocol.subLogsEnvelope
 import tech.mengfei.agentboard.protocol.subTasksEnvelope
+import tech.mengfei.agentboard.protocol.AddPairSnapshot
 import tech.mengfei.agentboard.protocol.ArchiveLoadScope
 import tech.mengfei.agentboard.protocol.BoardPickPath
 import tech.mengfei.agentboard.protocol.ForgetDestination
@@ -162,7 +163,7 @@ import tech.mengfei.agentboard.protocol.acceptArchivePage
 import tech.mengfei.agentboard.protocol.archiveReplyMatches
 import tech.mengfei.agentboard.protocol.archiveRowsForQuery
 import tech.mengfei.agentboard.protocol.confirmedArchiveTasks
-import tech.mengfei.agentboard.protocol.deferredPairSuccess
+import tech.mengfei.agentboard.protocol.completeDeferredPair
 import tech.mengfei.agentboard.protocol.forgetCleanupDisposition
 import tech.mengfei.agentboard.protocol.forgetDestination
 import tech.mengfei.agentboard.protocol.forgetMemoryEffect
@@ -313,6 +314,7 @@ class BoardViewModel(
     private var chip: TaskChip = TaskChip.ALL
     private var searchQuery: String = ""
     private var pairEpoch: Int = 0
+    private var navToken: Int = 0
     private var banner: String? = null
     private var commandNote: String? = null
     private var formError: String? = null
@@ -441,7 +443,7 @@ class BoardViewModel(
         if (session(sessionId) == null) return
         if (sessionId == activeId) {
             searchQuery = ""
-            screen = Screen.Tasks
+            show(Screen.Tasks)
             backStack.clear()
             render()
             return
@@ -455,6 +457,9 @@ class BoardViewModel(
     fun openNotification(sessionId: String?, taskId: String?) {
         val target = notificationTarget(sessions(), sessionId, taskId) ?: return
         if (target.sessionId != activeId && !persistActive(target.sessionId)) return
+        if (screen == Screen.AddBoard || screen == Screen.Pair) {
+            invalidatePendingPair(PairDeparture.Notification)
+        }
         if (target.sessionId != activeId) landOn(target.sessionId, toast = false)
         openTask(taskId ?: return)
     }
@@ -552,10 +557,8 @@ class BoardViewModel(
     }
 
     fun pop() {
-        val leavingAdd = screen == Screen.AddBoard
         val previous = backStack.removeLastOrNull() ?: return
-        screen = previous
-        if (leavingAdd) invalidatePendingPair(PairDeparture.Back)
+        show(previous)
         if (screen !is Screen.Detail) clearLogBinding(activeId)
         render()
     }
@@ -696,7 +699,7 @@ class BoardViewModel(
         val code = trimOuter(_state.value.pairCode)
         val phoneName = _state.value.deviceName.trim().ifBlank { "Android phone" }
         val epoch = ++pairEpoch
-        val attempt = PairContext(epoch, activeId)
+        val attempt = currentPairContext(epoch)
         busy = true
         banner = null
         render()
@@ -745,8 +748,8 @@ class BoardViewModel(
                         render()
                     }
                     is PairOutcome.Proceed -> {
-                        val effect = deferredPairSuccess(attempt, PairContext(pairEpoch, activeId), outcome.activeSessionId)
-                        if (!effect.applyTransaction) {
+                        val gate = completeDeferredPair(addPairSnapshot(), attempt, outcome)
+                        if (!gate.applied || !gate.successToast) {
                             render()
                             return@launch
                         }
@@ -757,13 +760,13 @@ class BoardViewModel(
                                 return@launch
                             }
                             is ApplyVerdict.InForce -> {
-                                if (!effect.successToast || !pairAttemptStillCurrent(attempt, PairContext(pairEpoch, activeId))) {
+                                if (!pairAttemptStillCurrent(attempt, currentPairContext(pairEpoch))) {
                                     render()
                                     return@launch
                                 }
                                 _state.updateCopy { copy(pairCode = "", displayName = "") }
                                 backStack.clear()
-                                landOn(applied.activeSessionId ?: effect.activeSessionId ?: outcome.activeSessionId, toast = true)
+                                landOn(applied.activeSessionId ?: gate.snapshot.activeSessionId ?: outcome.activeSessionId, toast = true)
                                 connectNewCredentials()
                             }
                         }
@@ -860,17 +863,17 @@ class BoardViewModel(
         banner = launch.banner?.let { say(it) }
         when (launch.phase) {
             LaunchPhase.UNPAIRED -> {
-                screen = Screen.Pair
+                show(Screen.Pair)
                 activeId = null
             }
             LaunchPhase.MIGRATING -> {
-                screen = Screen.Reading
+                show(Screen.Reading)
                 activeId = null
                 launch.migrationCredentialId?.let { connect(it) }
             }
             LaunchPhase.READY -> {
                 activeId = launch.activeSessionId
-                screen = Screen.Tasks
+                show(Screen.Tasks)
                 launch.sessions.map { it.credentialId }.distinct().forEach { connect(it) }
             }
         }
@@ -909,7 +912,7 @@ class BoardViewModel(
         holder.detailArchived = false
         holder.archiveDetail = null
         clearLogBinding(sessionId)
-        screen = Screen.Tasks
+        show(Screen.Tasks)
         backStack.clear()
         if (toast) banner = picked.chrome.toast
         render()
@@ -982,13 +985,47 @@ class BoardViewModel(
     }
 
     private fun invalidatePendingPair(departure: PairDeparture) {
-        pairEpoch = pairContextAfterDeparture(PairContext(pairEpoch, activeId), departure).epoch
+        val next = pairContextAfterDeparture(currentPairContext(pairEpoch), departure)
+        pairEpoch = next.epoch
+        navToken = next.navToken
         if (busy) busy = false
     }
 
+    /** Any screen change off Add or the first-run pair screen drops an in-flight pair. */
+    private fun show(next: Screen) {
+        val leavingPair = (screen == Screen.AddBoard || screen == Screen.Pair) && next != screen
+        if (leavingPair) invalidatePendingPair(PairDeparture.LeftAdd)
+        screen = next
+    }
+
+    private fun screenLabel(): String = when (val current = screen) {
+        Screen.AddBoard -> "add"
+        Screen.Pair -> "pair"
+        Screen.Tasks -> "tasks"
+        Screen.MyBoards -> "boards"
+        Screen.Reading -> "reading"
+        is Screen.Detail -> "detail:${current.taskId}"
+        is Screen.Create -> "create"
+        is Screen.WorkspaceCreate -> "workspace-create"
+        Screen.WorkspaceSettings -> "workspace-settings"
+        Screen.BoardSettings -> "board-settings"
+    }
+
+    private fun currentPairContext(epoch: Int) = PairContext(epoch, activeId, navToken, screenLabel())
+
+    private fun addPairSnapshot() = AddPairSnapshot(
+        disk = disk,
+        openSockets = openSocketIds(),
+        activeSessionId = activeId,
+        screen = screenLabel(),
+        banner = banner,
+        epoch = pairEpoch,
+        navToken = navToken,
+    )
+
     /** Stale Add responses must not write the catalog or announce success. */
     private fun leaveStalePair(attempt: PairContext): Boolean {
-        if (pairAttemptStillCurrent(attempt, PairContext(pairEpoch, activeId))) return false
+        if (pairAttemptStillCurrent(attempt, currentPairContext(pairEpoch))) return false
         render()
         return true
     }
@@ -1912,7 +1949,7 @@ class BoardViewModel(
 
     private fun push(next: Screen) {
         if (screen != next) backStack.addLast(screen)
-        screen = next
+        show(next)
         render()
     }
 
