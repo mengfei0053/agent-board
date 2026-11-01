@@ -153,20 +153,27 @@ import tech.mengfei.agentboard.protocol.ForgetDestination
 import tech.mengfei.agentboard.protocol.ForgetMemory
 import tech.mengfei.agentboard.protocol.ListChrome
 import tech.mengfei.agentboard.protocol.LiveLog
-import tech.mengfei.agentboard.protocol.PairApply
+import tech.mengfei.agentboard.protocol.FORGET_CLEANUP_INCOMPLETE
+import tech.mengfei.agentboard.protocol.ForgetReport
+import tech.mengfei.agentboard.protocol.PairContext
+import tech.mengfei.agentboard.protocol.PairDeparture
 import tech.mengfei.agentboard.protocol.TaskListQuery
 import tech.mengfei.agentboard.protocol.acceptArchivePage
 import tech.mengfei.agentboard.protocol.archiveReplyMatches
 import tech.mengfei.agentboard.protocol.archiveRowsForQuery
 import tech.mengfei.agentboard.protocol.confirmedArchiveTasks
+import tech.mengfei.agentboard.protocol.deferredPairSuccess
+import tech.mengfei.agentboard.protocol.forgetCleanupDisposition
 import tech.mengfei.agentboard.protocol.forgetDestination
 import tech.mengfei.agentboard.protocol.forgetMemoryEffect
-import tech.mengfei.agentboard.protocol.pairResultApply
+import tech.mengfei.agentboard.protocol.forgetSuccessToast
+import tech.mengfei.agentboard.protocol.pairAttemptStillCurrent
+import tech.mengfei.agentboard.protocol.pairContextAfterDeparture
 import tech.mengfei.agentboard.protocol.pickBoard
+import tech.mengfei.agentboard.protocol.renderedHotList
 import tech.mengfei.agentboard.protocol.selectWorkspaceChrome
 import tech.mengfei.agentboard.protocol.taskListEmpty
 import tech.mengfei.agentboard.protocol.taskListEmptyCopy
-import tech.mengfei.agentboard.protocol.tasksAfterChipAndQuery
 import tech.mengfei.agentboard.protocol.tasksAfterSessionSwitch
 import tech.mengfei.agentboard.protocol.tasksForChip
 import tech.mengfei.agentboard.protocol.text
@@ -393,8 +400,10 @@ class BoardViewModel(
     fun cancelForget() = _state.updateCopy { copy(confirmForgetId = null) }
 
     fun confirmForget() {
+        invalidatePendingPair(PairDeparture.Forget)
         val sessionId = _state.value.confirmForgetId ?: return
         val forgotten = session(sessionId)
+        val forgotActive = sessionId == activeId
         _state.updateCopy { copy(confirmForgetId = null) }
         val outcome = planForget(disk, sessionId)
         val tx = outcome.tx
@@ -409,10 +418,18 @@ class BoardViewModel(
                 render()
             }
             is ApplyVerdict.InForce -> {
+                val finished: ApplyVerdict.InForce =
+                    if (applied.cleanupPending) retryPendingCleanup(applied.pendingCleanup) else applied
+                val report = forgetCleanupDisposition(finished.cleanupPending)
                 dropSessionMemory(sessionId, forgotten?.credentialId, forgotten?.boardId)
-                val next = applied.activeSessionId
-                when (forgetDestination(allowed = true, forgotActive = sessionId == activeId, rolledBack = false)) {
-                    ForgetDestination.TaskList -> if (next != null) landOn(next, toast = true) else render()
+                val next = finished.activeSessionId
+                if (report == ForgetReport.CleanupIncomplete) {
+                    banner = zh(FORGET_CLEANUP_INCOMPLETE, "The board was removed from this phone, but some local data could not be cleared.")
+                    if (forgotActive && next != null) landOn(next, toast = false) else render()
+                    return
+                }
+                when (forgetDestination(allowed = true, forgotActive = forgotActive, rolledBack = false)) {
+                    ForgetDestination.TaskList -> if (next != null && forgetSuccessToast(report)) landOn(next, toast = true) else render()
                     ForgetDestination.MyBoards, ForgetDestination.Unchanged -> render()
                 }
             }
@@ -420,6 +437,7 @@ class BoardViewModel(
     }
 
     fun activateSession(sessionId: String, path: BoardPickPath = BoardPickPath.TopSwitcher) {
+        invalidatePendingPair(PairDeparture.BoardSwitch)
         if (session(sessionId) == null) return
         if (sessionId == activeId) {
             searchQuery = ""
@@ -534,8 +552,10 @@ class BoardViewModel(
     }
 
     fun pop() {
+        val leavingAdd = screen == Screen.AddBoard
         val previous = backStack.removeLastOrNull() ?: return
         screen = previous
+        if (leavingAdd) invalidatePendingPair(PairDeparture.Back)
         if (screen !is Screen.Detail) clearLogBinding(activeId)
         render()
     }
@@ -676,6 +696,7 @@ class BoardViewModel(
         val code = trimOuter(_state.value.pairCode)
         val phoneName = _state.value.deviceName.trim().ifBlank { "Android phone" }
         val epoch = ++pairEpoch
+        val attempt = PairContext(epoch, activeId)
         busy = true
         banner = null
         render()
@@ -685,7 +706,7 @@ class BoardViewModel(
                 store.saveIdentity(base, phoneName)
                 disk = store.readDisk()
                 val result = relay.request("POST", "$base/auth/pair", encodePairBody(code, phoneName))
-                if (epoch != pairEpoch) return@launch
+                if (leaveStalePair(attempt)) return@launch
                 if (result.code !in 200..299) {
                     busy = false
                     banner = pairHttpFailure(result.code, result.body, englishUi)
@@ -702,6 +723,7 @@ class BoardViewModel(
                     render()
                     return@launch
                 }
+                if (leaveStalePair(attempt)) return@launch
                 val outcome = planPair(
                     disk,
                     PairRequest(
@@ -715,24 +737,35 @@ class BoardViewModel(
                     ),
                 )
                 busy = false
+                if (leaveStalePair(attempt)) return@launch
                 when (outcome) {
                     is PairOutcome.Reject -> {
                         outcome.rollback?.let { applyTx(it) }
                         banner = outcome.message
                         render()
                     }
-                    is PairOutcome.Proceed -> when (val applied = applyTx(outcome.tx)) {
-                        is ApplyVerdict.RolledBack -> {
-                            banner = CODE_CONSUMED_SAVE
+                    is PairOutcome.Proceed -> {
+                        val effect = deferredPairSuccess(attempt, PairContext(pairEpoch, activeId), outcome.activeSessionId)
+                        if (!effect.applyTransaction) {
                             render()
                             return@launch
                         }
-                        is ApplyVerdict.InForce -> {
-                            if (pairResultApply(epoch, pairEpoch, succeeded = true) != PairApply.Land) return@launch
-                            _state.updateCopy { copy(pairCode = "", displayName = "") }
-                            backStack.clear()
-                            landOn(applied.activeSessionId ?: outcome.activeSessionId, toast = true)
-                            connectNewCredentials()
+                        when (val applied = applyTx(outcome.tx)) {
+                            is ApplyVerdict.RolledBack -> {
+                                banner = CODE_CONSUMED_SAVE
+                                render()
+                                return@launch
+                            }
+                            is ApplyVerdict.InForce -> {
+                                if (!effect.successToast || !pairAttemptStillCurrent(attempt, PairContext(pairEpoch, activeId))) {
+                                    render()
+                                    return@launch
+                                }
+                                _state.updateCopy { copy(pairCode = "", displayName = "") }
+                                backStack.clear()
+                                landOn(applied.activeSessionId ?: effect.activeSessionId ?: outcome.activeSessionId, toast = true)
+                                connectNewCredentials()
+                            }
                         }
                     }
                 }
@@ -912,13 +945,52 @@ class BoardViewModel(
                 }
                 disk = store.readDisk()
                 closeUnreferenced()
-                return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = true)
+                return ApplyVerdict.InForce(
+                    disk,
+                    openSocketIds(),
+                    disk.catalog?.activeSessionId,
+                    cleanupPending = true,
+                    pendingCleanup = tx.steps.drop(index),
+                )
             }
             if (index == tx.cutoverIndex) cutover = true
         }
         disk = store.readDisk()
         closeUnreferenced()
         return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = false)
+    }
+
+    /** Re-apply ClearLocals and any later forget step that did not commit. */
+    private fun retryPendingCleanup(ops: List<DiskOp>): ApplyVerdict.InForce {
+        val stillPending = ArrayList<DiskOp>()
+        var failed = false
+        for (op in ops) {
+            if (failed || !store.apply(op)) {
+                failed = true
+                stillPending.add(op)
+            }
+        }
+        disk = store.readDisk()
+        if (!failed) closeUnreferenced()
+        return ApplyVerdict.InForce(
+            disk,
+            openSocketIds(),
+            disk.catalog?.activeSessionId,
+            cleanupPending = failed,
+            pendingCleanup = stillPending,
+        )
+    }
+
+    private fun invalidatePendingPair(departure: PairDeparture) {
+        pairEpoch = pairContextAfterDeparture(PairContext(pairEpoch, activeId), departure).epoch
+        if (busy) busy = false
+    }
+
+    /** Stale Add responses must not write the catalog or announce success. */
+    private fun leaveStalePair(attempt: PairContext): Boolean {
+        if (pairAttemptStillCurrent(attempt, PairContext(pairEpoch, activeId))) return false
+        render()
+        return true
     }
 
     private fun openSocketIds(): Set<String> = lives.keys.filter { lives[it]?.phase != SocketPhase.CLOSED }.toSet()
@@ -1612,9 +1684,9 @@ class BoardViewModel(
             disk = store.readDisk()
         }
         val workspaces = view?.workspaces.orEmpty()
+        val rendered = renderedHotList(rows, workspaces, selection?.selectedId, chip, searchQuery, saw)
         val base = visibleTasks(rows, workspaces, selection?.selectedId)
         val byChip = tasksForChip(base, chip)
-        val hot = tasksAfterChipAndQuery(rows, workspaces, selection?.selectedId, chip, searchQuery)
         val confirmed = confirmedArchiveTasks(
             ArchiveLoadScope(
                 tasks = holder?.archiveTasks.orEmpty(),
@@ -1625,15 +1697,14 @@ class BoardViewModel(
                 selectedWorkspaceId = selection?.selectedId,
             ),
         )
-        val visibleArchive = archiveRowsForQuery(confirmed, searchQuery)
-        val archiveSupportedNow = session != null && ARCHIVE_CAPABILITY in capabilities(session)
         val selectedId = selection?.selectedId
+        val visibleArchive = if (selectedId == null) emptyList() else archiveRowsForQuery(confirmed, searchQuery)
+        val archiveSupportedNow = session != null && ARCHIVE_CAPABILITY in capabilities(session)
         val scopeUnsupported = archiveSupportedNow &&
             selectedId != null &&
             archiveQuery(selectedId) is ArchiveQuery.Unsupported
-        val filterEmpty = taskListEmptyCopy(
-            taskListEmpty(
-                TaskListQuery(
+        val archiveEmpty = taskListEmpty(
+            TaskListQuery(
                     sawSnapshot = saw,
                     selectedWorkspaceId = selection?.selectedId,
                     workspaceCount = workspaces.size,
@@ -1641,7 +1712,7 @@ class BoardViewModel(
                     chip = chip,
                     chipCount = byChip.size,
                     query = searchQuery,
-                    matchedCount = if (chip == TaskChip.ARCHIVE) visibleArchive.size else hot.size,
+                    matchedCount = if (chip == TaskChip.ARCHIVE) visibleArchive.size else rendered.cards.size,
                     archiveSupported = archiveSupportedNow,
                     archiveScopeUnsupported = scopeUnsupported,
                     archiveBusy = holder?.archiveBusy == true,
@@ -1649,10 +1720,12 @@ class BoardViewModel(
                     archiveLoadedCount = confirmed?.size ?: 0,
                     archiveError = holder?.archiveError,
                 ),
-            ),
-            englishUi,
-            holder?.archiveError,
         )
+        val filterEmpty = if (chip == TaskChip.ARCHIVE) {
+            taskListEmptyCopy(archiveEmpty, englishUi, holder?.archiveError)
+        } else {
+            taskListEmptyCopy(rendered.empty, englishUi, holder?.archiveError)
+        }
         val sessions = sessions().map { item ->
             val itemPill = pillCopy(pillFor(item), slot(item.sessionId).snapshotAt, englishUi).primary
             val secret = disk.credentials[item.credentialId]

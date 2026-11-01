@@ -285,18 +285,20 @@ Manual proof, two boards, same relay, two one-board pair codes:
 
 A build that tracks only the active socket and leaves the other card on the last 已连接 fails this plan even if the UI has a switcher.
 
-## 5. Workspace search (D5, D6, D7, R6)
+## 5. Workspace search (D5, D6, D7, R6) — HISTORICAL, do not implement
 
-**Not the list field.** D5 described a workspace-name/path query inside the workspace selector. That list behavior is superseded by task search (see the note at the top of this file). `filterWorkspaces` may remain as a helper; the task-list search box must not call it. Picking a workspace clears the task query and keeps the status chip.
+> **HISTORICAL RECORD ONLY. Not the phone list.** Do not use this section as implementation instructions. The list search field searches tasks in the selected workspace (see the supersession note at the top of this file). `filterWorkspaces` is not wired to that field. Picking a workspace clears the task query and keeps the status chip. The paragraphs and table below describe the retired workspace-name/path field. They are not the current contract.
 
-Pure function, JVM-tested, no I/O:
+The retired field lived in the workspace selector and filtered that menu. The notes that follow are that old contract, kept so the change is visible.
+
+Pure function, JVM-tested, no I/O, **for the retired workspace-name field only**:
 
 - Trim the query. Empty query keeps every row.
 - Otherwise match when `name` or `path`, lowercased with `Locale.ROOT`, contains the lowercased query.
 - 「未分配」 matches on its label only (no path).
 - No pinyin, no normalization beyond that case fold, no server round trip.
 
-The field lives in the workspace selector. It filters that menu. It does not filter the task list by itself; the task list still uses the selected workspace and the 筛选 chip.
+The retired field lived in the workspace selector. It filtered that menu. It did not filter the task list by itself; the task list still used the selected workspace and the 筛选 chip. This is not how the phone list works now.
 
 | Input | Selector | Chip |
 | --- | --- | --- |

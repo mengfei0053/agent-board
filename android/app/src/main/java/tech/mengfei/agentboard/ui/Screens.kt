@@ -73,7 +73,8 @@ import tech.mengfei.agentboard.protocol.detailRounds
 import tech.mengfei.agentboard.protocol.turnHeading
 import tech.mengfei.agentboard.protocol.resumeCommandLabel
 import tech.mengfei.agentboard.protocol.statusLabel
-import tech.mengfei.agentboard.protocol.tasksAfterChipAndQuery
+import tech.mengfei.agentboard.protocol.renderedHotList
+import tech.mengfei.agentboard.protocol.taskListEmptyCopy
 import tech.mengfei.agentboard.protocol.workspaceBanner
 import tech.mengfei.agentboard.protocol.workspaceChipsForTaskSearch
 import tech.mengfei.agentboard.protocol.workspaceDisplayName
@@ -464,21 +465,22 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
         if (state.chip == TaskChip.ARCHIVE) {
             ArchiveList(state, model)
         } else {
-            val visible = tasksAfterChipAndQuery(
+            val rendered = renderedHotList(
                 state.tasks,
                 state.workspaces,
                 state.selectedWorkspaceId,
                 state.chip,
                 state.searchQuery,
+                state.sawSnapshot,
             )
-            if (visible.isEmpty()) {
+            if (rendered.cards.isEmpty()) {
                 Text(
-                    state.filterEmpty ?: stringResource(R.string.no_tasks),
+                    state.filterEmpty ?: taskListEmptyCopy(rendered.empty).orEmpty(),
                     modifier = Modifier.padding(horizontal = 20.dp),
                 )
             } else {
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
-                    items(visible, key = { it.id }) { task ->
+                    items(rendered.cards, key = { it.id }) { task ->
                         TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces, englishNow()), englishNow()) { model.openTask(task.id) }
                         HorizontalDivider()
                     }
@@ -507,7 +509,8 @@ private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingVa
 
 @Composable
 private fun ColumnScope.ArchiveList(state: UiState, model: BoardViewModel) {
-    if (state.archiveVisible.isNotEmpty()) {
+    val blocked = state.sawSnapshot && state.selectedWorkspaceId == null
+    if (!blocked && state.archiveVisible.isNotEmpty()) {
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp)) {
             items(state.archiveVisible, key = { it.id }) { task ->
                 TaskRow(task, workspaceDisplayName(task.workspaceId, state.workspaces, englishNow()), englishNow()) {

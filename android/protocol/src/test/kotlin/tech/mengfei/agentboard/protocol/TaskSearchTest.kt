@@ -45,6 +45,24 @@ class TaskSearchTest {
     }
 
     @Test
+    fun noWorkspaceHidesCardsEvenWhenRowsAreSupplied() {
+        val rows = listOf(
+            task("a", "Alpha", prompt = "alpha"),
+            task("b", "Beta"),
+        )
+        val rooms = listOf(app)
+        assertTrue(tasksAfterChipAndQuery(rows, rooms, null, TaskChip.ALL, "alpha").isEmpty())
+        val shown = renderedHotList(rows, rooms, selectedWorkspaceId = null, chip = TaskChip.ALL, query = "alpha", sawSnapshot = true)
+        assertTrue(shown.cards.isEmpty())
+        assertEquals(TaskListEmpty.NoWorkspace, shown.empty)
+        assertEquals(NO_WORKSPACE_SELECTED_COPY, taskListEmptyCopy(shown.empty))
+        val noRooms = renderedHotList(rows, emptyList(), null, TaskChip.ALL, "alpha", sawSnapshot = true)
+        assertTrue(noRooms.cards.isEmpty())
+        assertEquals(TaskListEmpty.NoWorkspaceBoard, noRooms.empty)
+        assertEquals(NO_WORKSPACE_COPY, taskListEmptyCopy(noRooms.empty))
+    }
+
+    @Test
     fun pipelineIsWorkspaceThenChipThenQuery() {
         val tasks = listOf(
             task("in", "Find me", workspaceId = "ws_app"),
@@ -280,6 +298,32 @@ class TaskSearchTest {
         assertEquals(PairApply.KeepSelection, pairResultApply(requestEpoch = 1, currentEpoch = 1, succeeded = false))
         assertEquals(PairApply.KeepSelection, pairResultApply(requestEpoch = 1, currentEpoch = 2, succeeded = true))
         assertEquals(PairApply.Land, pairResultApply(requestEpoch = 4, currentEpoch = 4, succeeded = true))
+    }
+
+    @Test
+    fun deferredPairSuccessAfterBackDoesNotSwitchOrToast() {
+        val attempt = PairContext(epoch = 4, activeSessionId = "sA")
+        val afterBack = pairContextAfterDeparture(attempt, PairDeparture.Back)
+        assertFalse(pairAttemptStillCurrent(attempt, afterBack))
+        val effect = deferredPairSuccess(attempt, afterBack, proposedActiveId = "sNew")
+        assertFalse(effect.applyTransaction)
+        assertEquals("sA", effect.activeSessionId)
+        assertFalse(effect.successToast)
+    }
+
+    @Test
+    fun deferredPairSuccessAfterBoardSelectionDoesNotSwitchOrToast() {
+        val attempt = PairContext(epoch = 2, activeSessionId = "sA")
+        val departed = pairContextAfterDeparture(attempt, PairDeparture.BoardSwitch)
+        val afterSelection = departed.copy(activeSessionId = "sB")
+        val effect = deferredPairSuccess(attempt, afterSelection, proposedActiveId = "sNew")
+        assertFalse(effect.applyTransaction)
+        assertEquals("sB", effect.activeSessionId)
+        assertFalse(effect.successToast)
+        val stillHere = deferredPairSuccess(attempt, attempt, proposedActiveId = "sNew")
+        assertTrue(stillHere.applyTransaction)
+        assertEquals("sNew", stillHere.activeSessionId)
+        assertTrue(stillHere.successToast)
     }
 
     private fun hot(

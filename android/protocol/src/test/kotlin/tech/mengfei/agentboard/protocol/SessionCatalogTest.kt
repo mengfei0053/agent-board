@@ -581,6 +581,69 @@ class SessionCatalogTest {
     }
 
     @Test
+    fun clearLocalsFailureIsNotReportedAsAFinishedForget() {
+        val start = sharedDisk().copy(
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sA" to "draft-a", "sB" to "draft-b"),
+            archiveCursors = mapOf("sA" to "cur-a", "sB" to "cur-b"),
+        )
+        val tx = planForget(start, "sA").tx!!
+        val clearAt = tx.steps.indexOfFirst { it is DiskOp.ClearLocals }
+        assertTrue(clearAt > tx.cutoverIndex)
+        val retried = forgetFollowThrough(start, setOf("c1"), tx, failAt = clearAt, retryAlsoFails = false)
+        assertEquals(ForgetReport.Cleaned, retried.report)
+        assertTrue(retried.successToast)
+        assertNull(retried.disk.workspaces["sA"])
+        assertNull(retried.disk.drafts["sA"])
+        assertNull(retried.disk.archiveCursors["sA"])
+        assertEquals("ws_b", retried.disk.workspaces["sB"])
+        assertEquals("draft-b", retried.disk.drafts["sB"])
+        assertEquals("cur-b", retried.disk.archiveCursors["sB"])
+        assertNotNull(retried.disk.credentials["c1"])
+        assertEquals("sB", retried.activeSessionId)
+
+        val stuck = forgetFollowThrough(start, setOf("c1"), tx, failAt = clearAt, retryAlsoFails = true)
+        assertEquals(ForgetReport.CleanupIncomplete, stuck.report)
+        assertFalse(stuck.successToast)
+        assertTrue(stuck.dropMemory)
+        assertEquals(FORGET_CLEANUP_INCOMPLETE, stuck.message)
+        assertEquals("ws_a", stuck.disk.workspaces["sA"])
+        assertEquals("draft-a", stuck.disk.drafts["sA"])
+        assertEquals("ws_b", stuck.disk.workspaces["sB"])
+        assertEquals("draft-b", stuck.disk.drafts["sB"])
+        assertEquals("cur-b", stuck.disk.archiveCursors["sB"])
+        assertFalse(stuck.disk.catalog!!.order.contains("sA"))
+        assertEquals(listOf("sB"), stuck.disk.catalog!!.order)
+        assertNotNull(stuck.disk.credentials["c1"])
+        assertEquals("sB", stuck.activeSessionId)
+
+        val separate = PhoneDisk(
+            credentials = mapOf(
+                "cA" to secret("cA", "dt_a", listOf("board-a")),
+                "cB" to secret("cB", "dt_b", listOf("board-b")),
+            ),
+            catalog = catalog(
+                listOf(session("sA", "cA", "board-a"), session("sB", "cB", "board-b")),
+                "sA",
+            ),
+            workspaces = mapOf("sA" to "ws_a", "sB" to "ws_b"),
+            drafts = mapOf("sB" to "keep"),
+        )
+        val deleteTx = planForget(separate, "sA").tx!!
+        val deleteAt = deleteTx.steps.indexOfFirst { it is DiskOp.DeleteCredential }
+        assertTrue(deleteAt > deleteTx.cutoverIndex)
+        val credentialStuck = forgetFollowThrough(separate, setOf("cA", "cB"), deleteTx, failAt = deleteAt, retryAlsoFails = true)
+        assertEquals(ForgetReport.CleanupIncomplete, credentialStuck.report)
+        assertFalse(credentialStuck.successToast)
+        assertNotNull(credentialStuck.disk.credentials["cA"])
+        assertNotNull(credentialStuck.disk.credentials["cB"])
+        assertEquals("ws_b", credentialStuck.disk.workspaces["sB"])
+        assertEquals("keep", credentialStuck.disk.drafts["sB"])
+        assertEquals("sB", credentialStuck.activeSessionId)
+        assertFalse(credentialStuck.disk.catalog!!.order.contains("sA"))
+    }
+
+    @Test
     fun failedForgetAndFailedAddLeaveTheActiveBoard() {
         val start = sharedDisk()
         val forget = planForget(start, "sA")

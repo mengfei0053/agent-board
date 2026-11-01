@@ -892,6 +892,8 @@ sealed interface ApplyVerdict {
         override val openSockets: Set<String>,
         override val activeSessionId: String?,
         val cleanupPending: Boolean,
+        /** Steps at and after the failed post-cutover index. Empty when cleanup finished. */
+        val pendingCleanup: List<DiskOp> = emptyList(),
     ) : ApplyVerdict
 }
 
@@ -909,11 +911,18 @@ fun applyVerdict(
     if (!sim.cutover) {
         return ApplyVerdict.RolledBack(sim.disk, sim.openSockets, sim.activeSessionId)
     }
+    val failedIndex = failAt
+    val pendingCleanup = if (failedIndex != null && failedStepKeepsCatalog(tx.cutoverIndex, failedIndex)) {
+        tx.steps.drop(failedIndex)
+    } else {
+        emptyList()
+    }
     return ApplyVerdict.InForce(
         disk = sim.disk,
         openSockets = sim.openSockets,
         activeSessionId = sim.activeSessionId,
-        cleanupPending = failAt != null && failedStepKeepsCatalog(tx.cutoverIndex, failAt),
+        cleanupPending = pendingCleanup.isNotEmpty(),
+        pendingCleanup = pendingCleanup,
     )
 }
 

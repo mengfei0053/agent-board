@@ -47,8 +47,56 @@ fun tasksAfterChipAndQuery(
     query: String,
 ): List<RelayTask> {
     if (chip == TaskChip.ARCHIVE) return emptyList()
+    // No selection wins over every supplied row. Do not rely on a later filter to drop them.
+    if (selectedWorkspaceId == null) return emptyList()
     val inWorkspace = visibleTasks(tasks, workspaces, selectedWorkspaceId)
     return filterTasks(query, tasksForChip(inWorkspace, chip))
+}
+
+data class RenderedHotList(val cards: List<RelayTask>, val empty: TaskListEmpty)
+
+/**
+ * What the task screen is allowed to paint. A missing workspace selection yields no cards
+ * even when [tasks] is nonempty and the query would have matched those rows.
+ */
+fun renderedHotList(
+    tasks: List<RelayTask>,
+    workspaces: List<ThinWorkspace>,
+    selectedWorkspaceId: String?,
+    chip: TaskChip,
+    query: String,
+    sawSnapshot: Boolean,
+): RenderedHotList {
+    if (selectedWorkspaceId == null) {
+        val kind = when {
+            !sawSnapshot -> TaskListEmpty.Loading
+            workspaces.isEmpty() -> TaskListEmpty.NoWorkspaceBoard
+            else -> TaskListEmpty.NoWorkspace
+        }
+        return RenderedHotList(emptyList(), kind)
+    }
+    val cards = tasksAfterChipAndQuery(tasks, workspaces, selectedWorkspaceId, chip, query)
+    if (!sawSnapshot) {
+        return RenderedHotList(cards, if (cards.isEmpty()) TaskListEmpty.Loading else TaskListEmpty.None)
+    }
+    val inWorkspace = visibleTasks(tasks, workspaces, selectedWorkspaceId)
+    val byChip = tasksForChip(inWorkspace, chip)
+    val kind = taskListEmpty(
+        TaskListQuery(
+            sawSnapshot = true,
+            selectedWorkspaceId = selectedWorkspaceId,
+            workspaceCount = workspaces.size,
+            tasksInWorkspace = inWorkspace.size,
+            chip = chip,
+            chipCount = byChip.size,
+            query = query,
+            matchedCount = cards.size,
+        ),
+    )
+    if (kind == TaskListEmpty.NoWorkspace || kind == TaskListEmpty.NoWorkspaceBoard) {
+        return RenderedHotList(emptyList(), kind)
+    }
+    return RenderedHotList(cards, if (cards.isEmpty()) kind else TaskListEmpty.None)
 }
 
 /**
@@ -202,6 +250,125 @@ enum class PairApply { Land, KeepSelection }
 fun pairResultApply(requestEpoch: Int, currentEpoch: Int, succeeded: Boolean): PairApply {
     if (!succeeded || requestEpoch != currentEpoch) return PairApply.KeepSelection
     return PairApply.Land
+}
+
+enum class PairDeparture { Back, BoardSwitch, Forget }
+
+data class PairContext(val epoch: Int, val activeSessionId: String?)
+
+/** Leaving Add, switching boards, or forgetting invalidates the in-flight pair. */
+fun pairContextAfterDeparture(context: PairContext, departure: PairDeparture): PairContext {
+    return when (departure) {
+        PairDeparture.Back, PairDeparture.BoardSwitch, PairDeparture.Forget -> context.copy(epoch = context.epoch + 1)
+    }
+}
+
+fun pairAttemptStillCurrent(attempt: PairContext, now: PairContext): Boolean {
+    return attempt.epoch == now.epoch && attempt.activeSessionId == now.activeSessionId
+}
+
+data class DeferredPairSuccess(
+    val applyTransaction: Boolean,
+    val activeSessionId: String?,
+    val successToast: Boolean,
+)
+
+/**
+ * Decide a successful pair response before any catalog write.
+ * A departure keeps the active board the user already has and does not toast success.
+ */
+fun deferredPairSuccess(
+    attempt: PairContext,
+    now: PairContext,
+    proposedActiveId: String,
+): DeferredPairSuccess {
+    if (!pairAttemptStillCurrent(attempt, now)) {
+        return DeferredPairSuccess(
+            applyTransaction = false,
+            activeSessionId = now.activeSessionId,
+            successToast = false,
+        )
+    }
+    return DeferredPairSuccess(
+        applyTransaction = true,
+        activeSessionId = proposedActiveId,
+        successToast = true,
+    )
+}
+
+const val FORGET_CLEANUP_INCOMPLETE = "看板已从这台手机的列表里去掉，但本地缓存没有清完。"
+
+enum class ForgetReport { RolledBack, Cleaned, CleanupIncomplete }
+
+fun forgetCleanupDisposition(cleanupStillPending: Boolean): ForgetReport {
+    return if (cleanupStillPending) ForgetReport.CleanupIncomplete else ForgetReport.Cleaned
+}
+
+fun forgetSuccessToast(report: ForgetReport): Boolean = report == ForgetReport.Cleaned
+
+data class ForgetFollowThrough(
+    val report: ForgetReport,
+    val successToast: Boolean,
+    val dropMemory: Boolean,
+    val disk: PhoneDisk,
+    val activeSessionId: String?,
+    val message: String?,
+)
+
+/**
+ * Catalog cutover can succeed while ClearLocals or a later cleanup step fails.
+ * Retry the uncommitted tail. If that retry also fails, say so and do not toast success.
+ * Other sessions' locals and credentials stay.
+ */
+fun forgetFollowThrough(
+    start: PhoneDisk,
+    openSockets: Set<String>,
+    tx: Transaction,
+    failAt: Int?,
+    retryAlsoFails: Boolean = false,
+): ForgetFollowThrough {
+    val verdict = applyVerdict(start, openSockets, tx, failAt)
+    return when (verdict) {
+        is ApplyVerdict.RolledBack -> ForgetFollowThrough(
+            report = ForgetReport.RolledBack,
+            successToast = false,
+            dropMemory = false,
+            disk = verdict.disk,
+            activeSessionId = verdict.activeSessionId,
+            message = null,
+        )
+        is ApplyVerdict.InForce -> {
+            if (!verdict.cleanupPending || failAt == null) {
+                ForgetFollowThrough(
+                    report = ForgetReport.Cleaned,
+                    successToast = true,
+                    dropMemory = true,
+                    disk = verdict.disk,
+                    activeSessionId = verdict.activeSessionId,
+                    message = null,
+                )
+            } else if (!retryAlsoFails) {
+                val retried = applyOps(verdict.disk, tx.steps.drop(failAt))
+                ForgetFollowThrough(
+                    report = forgetCleanupDisposition(cleanupStillPending = false),
+                    successToast = true,
+                    dropMemory = true,
+                    disk = retried,
+                    activeSessionId = verdict.activeSessionId,
+                    message = null,
+                )
+            } else {
+                ForgetFollowThrough(
+                    report = forgetCleanupDisposition(cleanupStillPending = true),
+                    successToast = forgetSuccessToast(ForgetReport.CleanupIncomplete),
+                    dropMemory = true,
+                    disk = verdict.disk,
+                    activeSessionId = verdict.activeSessionId,
+                    message = FORGET_CLEANUP_INCOMPLETE,
+                )
+            }
+        }
+    }
 }
 
 fun archiveReplyMatches(pendingRequestId: String?, messageRef: String?): Boolean {
