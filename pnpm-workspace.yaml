@@ -1,2 +1,12 @@
+packages:
+  - website
+
 allowBuilds:
+  '@embedded-postgres/linux-x64': true
+  embedded-postgres: true
   esbuild: true
+  core-js: false
+  core-js-pure: false
+
+overrides:
+  webpack: 5.101.3

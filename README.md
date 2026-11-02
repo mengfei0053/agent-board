@@ -214,3 +214,16 @@ pnpm exec node scripts/capture-screenshots.mjs
 ## 致谢 / 友情链接
 
 - [LINUX DO](https://linux.do/) — 感谢社区氛围与开源推广支持
+
+## 文档站
+
+文档站使用 Docusaurus，在项目根目录运行：
+
+```bash
+pnpm install
+pnpm docs:start  # 本地预览
+pnpm docs:build  # 生成 website/build 静态文件
+pnpm docs:serve  # 预览已生成的静态文件
+```
+
+文档源码位于 `website/docs/`，站点配置位于 `website/docusaurus.config.js`。

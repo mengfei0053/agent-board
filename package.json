@@ -13,7 +13,10 @@
     "coverage": "pnpm test:coverage",
     "test:e2e": "node test/e2e/workspace-settings.mjs && node test/e2e/board-flows.mjs && node test/e2e/medium-flows.mjs && node test/e2e/low-flows.mjs",
     "test:integration": "tsx --test --test-force-exit test/integration/*.integration.test.ts",
-    "test:coverage:full": "c8 --config .c8rc.full.json tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts"
+    "test:coverage:full": "c8 --config .c8rc.full.json tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts",
+    "docs:start": "pnpm --filter agent-board-docs start",
+    "docs:build": "pnpm --filter agent-board-docs build",
+    "docs:serve": "pnpm --filter agent-board-docs serve"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
