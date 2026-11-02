@@ -58,7 +58,7 @@ async function selectWorkspace(page, id) {
   );
 }
 
-async function createViaUi(page, { mode, title, prompt }) {
+async function createViaUi(page, { mode, title, prompt, model }) {
   if (mode === "todo") await page.click("#btn-new-todo");
   else await page.click("#btn-new");
   await page.waitForSelector("#create-modal:not(.hidden)");
@@ -66,6 +66,7 @@ async function createViaUi(page, { mode, title, prompt }) {
   await page.type('input[name="title"]', title);
   await page.click("#create-prompt", { clickCount: 3 });
   await page.type("#create-prompt", prompt);
+  if (model) await page.type("#create-model", model);
   await Promise.all([
     page.waitForSelector("#detail-modal:not(.hidden)"),
     page.click("#create-submit"),
@@ -412,7 +413,101 @@ async function main() {
       console.log("[e2e-board] E5 worktree checkbox ok");
     }
 
-    console.log("[e2e-board] all E1–E5 passed");
+    // E6: model history survives task deletion/reload and stays scoped to its Agent.
+    {
+      const historyKey = "agent-board.modelHistory.pi";
+      const customModel = 'custom:model<&"test';
+      const options = () => page.$$eval("#model-suggestions option", (els) => els.map((el) => el.value));
+      await selectWorkspace(page, "ws_default");
+      await createViaUi(page, {
+        mode: "draft", title: "模型历史", prompt: "remember model", model: `  ${customModel}  `,
+      });
+      const created = [...state.tasks.values()].find((t) => t.title === "模型历史");
+      assert.equal(created?.model, customModel);
+      assert.deepEqual(state.modelHistory.pi, [customModel]);
+      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
+      await closeDetailIfOpen(page);
+      state.tasks.delete(created.id);
+      await page.reload({ waitUntil: "networkidle2" });
+      await page.waitForSelector(".ws-item");
+      await page.click("#btn-new-todo");
+      await page.waitForFunction((model) => document.querySelector("#model-suggestions option")?.value === model, {}, customModel);
+      assert.equal(await page.$eval("#create-model", (el) => el.list?.id), "model-suggestions");
+      assert.equal((await options())[0], customModel);
+      assert.ok((await options()).includes("cn:deepseek-v4.1-flash"));
+      await page.select('#create-form select[name="kind"]', "claude");
+      assert.equal((await options()).includes(customModel), false);
+      assert.ok((await options()).includes("sonnet"));
+      await page.select('#create-form select[name="kind"]', "pi");
+      assert.equal((await options())[0], customModel);
+      await page.click("#create-cancel");
+
+      // Reusing a model promotes it without duplicates; blank values aren't saved.
+      await createViaUi(page, { mode: "todo", title: "常用模型", prompt: "use preset", model: "cn:glm-5.3" });
+      await closeDetailIfOpen(page);
+      await createViaUi(page, { mode: "draft", title: "复用模型", prompt: "reuse model", model: customModel });
+      await closeDetailIfOpen(page);
+      await createViaUi(page, { mode: "draft", title: "默认模型", prompt: "use default", model: "   " });
+      await closeDetailIfOpen(page);
+      assert.deepEqual(state.modelHistory.pi, [customModel, "cn:glm-5.3"]);
+      await page.click("#btn-new");
+      const suggestions = await options();
+      assert.equal(suggestions[0], customModel);
+      assert.equal(suggestions.filter((m) => m === "cn:glm-5.3").length, 1);
+      await page.type("#create-model", "failed-model");
+      await page.type("#create-prompt", "   ");
+      await page.click("#create-submit");
+      await page.waitForSelector("#form-error:not([hidden])");
+      assert.equal(state.modelHistory.pi.includes("failed-model"), false);
+      await page.click("#create-cancel");
+
+      // A fresh browser receives database history without localStorage or task fallback.
+      for (const [id, task] of state.tasks) {
+        if (task.model === customModel) state.tasks.delete(id);
+      }
+      const context = await browser.createBrowserContext();
+      try {
+        const otherPage = await context.newPage();
+        await otherPage.goto(base + "/", { waitUntil: "networkidle2" });
+        await otherPage.waitForSelector(".ws-item");
+        await otherPage.click("#btn-new");
+        assert.equal(await otherPage.$eval("#model-suggestions option", (el) => el.value), customModel);
+        assert.equal(await otherPage.evaluate((key) => localStorage.getItem(key), historyKey), null);
+      } finally {
+        await context.close();
+      }
+
+      // Browser history is removed only after being imported into the shared store.
+      await page.evaluate((key) => localStorage.setItem(key, JSON.stringify(["legacy-model"])), historyKey);
+      await page.reload({ waitUntil: "networkidle2" });
+      await page.waitForSelector(".ws-item");
+      await page.click("#btn-new");
+      await page.waitForFunction(() => [...document.querySelectorAll("#model-suggestions option")].some((el) => el.value === "legacy-model"));
+      assert.ok(state.modelHistory.pi.includes("legacy-model"));
+      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
+      await page.click("#create-cancel");
+
+      // Failed migration retains the browser copy and retries on the next open.
+      await page.evaluate((key) => localStorage.setItem(key, JSON.stringify(["retry-model"])), historyKey);
+      await page.setRequestInterception(true);
+      const rejectImport = (request) => {
+        if (request.url().endsWith("/api/model-history/import")) request.respond({ status: 503, body: "unavailable" });
+        else request.continue();
+      };
+      page.on("request", rejectImport);
+      await page.reload({ waitUntil: "networkidle2" });
+      assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), historyKey), ["retry-model"]);
+      assert.equal(state.modelHistory.pi.includes("retry-model"), false);
+      await page.setRequestInterception(false);
+      page.off("request", rejectImport);
+      await page.click("#btn-new");
+      await page.waitForFunction(() => [...document.querySelectorAll("#model-suggestions option")].some((el) => el.value === "retry-model"));
+      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
+      await page.click("#create-cancel");
+      console.log("[e2e-board] E6 database model history, migration and Agent filtering ok");
+    }
+
+    console.log("[e2e-board] all E1–E6 passed");
   } finally {
     await browser.close();
     server.close();

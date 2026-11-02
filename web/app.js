@@ -99,14 +99,69 @@ const COMMON_MODELS_BY_KIND = {
 const COMMON_MODELS_ALL = [
   ...new Set(Object.values(COMMON_MODELS_BY_KIND).flat()),
 ];
+const MODEL_HISTORY_PREFIX = "agent-board.modelHistory.";
+const MODEL_HISTORY_LIMIT = 20;
+let modelHistory = {};
+let modelHistoryLoad = null;
+
+function readLegacyModelHistory(kind) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MODEL_HISTORY_PREFIX + kind) || "[]");
+    return Array.isArray(saved)
+      ? [...new Set(saved.filter((m) => typeof m === "string").map((m) => m.trim()).filter((m) => m && m.length <= 200))].slice(0, MODEL_HISTORY_LIMIT)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberModel(kind, model) {
+  if (!model) return;
+  modelHistory[kind] = [model, ...(modelHistory[kind] || []).filter((m) => m !== model)]
+    .slice(0, MODEL_HISTORY_LIMIT);
+}
+
+function loadModelHistory() {
+  if (modelHistoryLoad) return modelHistoryLoad;
+  modelHistoryLoad = (async () => {
+    const legacy = {};
+    for (const kind of Object.keys(COMMON_MODELS_BY_KIND)) {
+      const models = readLegacyModelHistory(kind);
+      if (models.length) legacy[kind] = models;
+    }
+    const importing = Object.keys(legacy).length > 0;
+    const res = await fetch(importing ? "/api/model-history/import" : "/api/model-history", importing ? {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ history: legacy }),
+    } : undefined);
+    if (!res.ok) throw new Error("读取模型历史失败");
+    const data = await res.json();
+    modelHistory = data.history;
+    for (const kind of Object.keys(legacy)) {
+      try { localStorage.removeItem(MODEL_HISTORY_PREFIX + kind); } catch { /* ignore */ }
+    }
+    refreshModelSuggestions(createKindSelect?.value);
+  })().catch((err) => {
+    console.warn("加载模型历史失败，将在下次打开时重试", err);
+  }).finally(() => {
+    modelHistoryLoad = null;
+  });
+  return modelHistoryLoad;
+}
 
 function refreshModelSuggestions(kind) {
   if (!modelSuggestions) return;
   const k = String(kind || "").trim();
-  const list = (k && COMMON_MODELS_BY_KIND[k]) ? COMMON_MODELS_BY_KIND[k] : COMMON_MODELS_ALL;
-  modelSuggestions.innerHTML = list
-    .map((m) => `<option value="${String(m).replace(/"/g, "&quot;")}"></option>`)
-    .join("");
+  const defaults = (k && COMMON_MODELS_BY_KIND[k]) ? COMMON_MODELS_BY_KIND[k] : COMMON_MODELS_ALL;
+  const used = [...tasks.values()]
+    .filter((t) => !k || t.kind === k)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .map((t) => typeof t.model === "string" ? t.model.trim() : "")
+    .filter(Boolean);
+  const history = k ? (modelHistory[k] || []) : Object.values(modelHistory).flat();
+  const list = [...new Set([...history, ...used, ...defaults])];
+  modelSuggestions.replaceChildren(...list.map((model) => new Option(model, model)));
 }
 
 
@@ -790,6 +845,7 @@ function openCreate(mode = "draft") {
     createSubmit.textContent = "保存草稿";
   }
   refreshModelSuggestions(createKindSelect?.value);
+  void loadModelHistory();
   createModal.classList.remove("hidden");
   if (createUseWorktree) createUseWorktree.checked = false;
   void refreshCreateWorktreeEligibility();
@@ -1233,6 +1289,9 @@ if (createKindSelect) {
   });
 }
 refreshModelSuggestions(createKindSelect?.value);
+document.getElementById("create-model")?.addEventListener("focus", () => {
+  refreshModelSuggestions(createKindSelect?.value);
+});
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
@@ -1345,7 +1404,7 @@ form.addEventListener("submit", async (e) => {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
     workspaceId: selectedWorkspaceId,
-    model: fd.get("model") || undefined,
+    model: String(fd.get("model") || "").trim() || undefined,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
     attachments: pendingAttachments.length ? pendingAttachments : undefined,
@@ -1363,6 +1422,7 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   tasks.set(data.task.id, data.task);
+  rememberModel(body.kind, body.model);
   clearPendingAttachments();
   closeCreate();
   renderWorkspaces();
@@ -2024,6 +2084,7 @@ function connectEvents() {
 }
 
 connectEvents();
+void loadModelHistory();
 Promise.all([
   fetch("/api/workspaces").then((r) => r.json()),
   fetch("/api/tasks").then((r) => r.json()),

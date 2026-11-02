@@ -20,7 +20,7 @@ import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, 
 import { join } from "node:path";
 import { clearGitStatusCacheForTests, gitReadOnlyEnv } from "../../src/gitStatus.js";
 import { browseHome } from "../../src/fsbrowse.js";
-import { isRepoDataPath, jsonDbPath, logsDir } from "../../src/db.js";
+import { ensureSchema, isRepoDataPath, jsonDbPath, logsDir } from "../../src/db.js";
 
 await startTestDb();
 
@@ -36,6 +36,7 @@ const {
   pruneTaskLogsForTests,
   logLineCount,
   getTask,
+  saveTaskDurable,
 } = await import("../../src/store.js");
 const { clearHandlesForTests, setNextTaskIdForTests } = await import("../../src/manager.js");
 const { runners } = await import("../../src/runners/index.js");
@@ -69,6 +70,81 @@ describe("integration I1–I12", () => {
     await flushPersist();
     await closePool();
     await stopTestDb();
+  });
+
+  it("model history is durable, survives task deletion, and backfills existing tasks", async () => {
+    const workspaces = await jsonOf(await app.request("/api/workspaces"));
+    const created = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "pi", workspaceId: workspaces.defaultWorkspaceId, prompt: "history", model: "  custom:model  " }),
+    });
+    assert.equal(created.status, 201);
+    const { task } = await jsonOf(created);
+    const stored = await getPool().query("SELECT model FROM model_history WHERE kind = 'pi'");
+    assert.deepEqual(stored.rows, [{ model: "custom:model" }]);
+
+    await getPool().query("DELETE FROM model_history");
+    await ensureSchema();
+    const recovered = await jsonOf(await app.request("/api/model-history"));
+    assert.deepEqual(recovered.history.pi, ["custom:model"]);
+    const deleted = await app.request("/api/tasks/batch-delete", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: [task.id] }),
+    });
+    assert.equal(deleted.status, 200);
+    await flushPersist();
+    await closePool();
+    const reloaded = await jsonOf(await app.request("/api/model-history"));
+    assert.deepEqual(reloaded.history.pi, ["custom:model"]);
+    assert.deepEqual(reloaded.history.claude, []);
+  });
+
+  it("model history shows the latest 20 per Agent and ignores status-update recency", async () => {
+    const workspaceId = (await jsonOf(await app.request("/api/workspaces"))).defaultWorkspaceId;
+    const now = Date.now();
+    for (const [index, model] of ["old-model", "new-model"].entries()) {
+      const task = await jsonOf(await app.request("/api/tasks", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "pi", workspaceId, prompt: "history", model }),
+      }));
+      await saveTaskDurable({ ...getTask(task.task.id)!, createdAt: new Date(now + index * 1000).toISOString() });
+    }
+    const old = (await jsonOf(await app.request("/api/tasks"))).tasks.find((t: any) => t.model === "old-model");
+    await saveTaskDurable({ ...getTask(old.id)!, summary: "updated later", updatedAt: new Date(now + 5000).toISOString() });
+    assert.deepEqual((await jsonOf(await app.request("/api/model-history"))).history.pi, ["new-model", "old-model"]);
+
+    await getPool().query(`
+      INSERT INTO model_history (kind, model, last_used_at)
+      SELECT 'claude', 'model-' || n, NOW() + n * INTERVAL '1 second' FROM generate_series(1, 25) n
+    `);
+    const { history } = await jsonOf(await app.request("/api/model-history"));
+    assert.equal(history.claude.length, 20);
+    assert.equal(history.claude[0], "model-25");
+    assert.equal(history.claude[19], "model-6");
+    assert.deepEqual(history.codex, []);
+  });
+
+  it("model history import validates atomically and merges without overwriting timestamps", async () => {
+    const importHistory = (history: unknown) => app.request("/api/model-history/import", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ history }),
+    });
+    for (const invalid of [null, [], { unknown: ["x"] }, { pi: ["valid"], claude: [false] }, { pi: [""] }, { pi: ["x".repeat(201)] }, { pi: Array(21).fill("x") }]) {
+      assert.equal((await importHistory(invalid)).status, 400);
+    }
+    assert.equal((await getPool().query("SELECT * FROM model_history")).rowCount, 0);
+    const imported = await jsonOf(await importHistory({ pi: [" first ", "second", "first"], codex: ["shared"] }));
+    assert.deepEqual(imported.history.pi, ["first", "second"]);
+    assert.deepEqual(imported.history.codex, ["shared"]);
+    const timestamps = await getPool().query("SELECT model, last_used_at FROM model_history ORDER BY kind, model");
+    await importHistory({ pi: ["second", "first"], codex: ["shared"] });
+    assert.deepEqual((await getPool().query("SELECT model, last_used_at FROM model_history ORDER BY kind, model")).rows, timestamps.rows);
+    await Promise.all([importHistory({ pi: ["parallel-a"] }), importHistory({ pi: ["parallel-b"] })]);
+    const merged = await jsonOf(await app.request("/api/model-history"));
+    assert.equal(merged.history.pi.length, 4);
+    assert.ok(merged.history.pi.includes("parallel-a"));
+    assert.ok(merged.history.pi.includes("parallel-b"));
   });
 
   it("I1 workspace CRUD + settings persist to Postgres", async () => {

@@ -122,6 +122,7 @@ export function createState(seed = {}) {
     taskSeq: seed.taskSeq || 1,
     settings,
     uploads,
+    modelHistory: { pi: [], claude: [], cursor: [], devin: [], codex: [] },
   };
 }
 
@@ -226,6 +227,21 @@ export function createMockServer(state, extra) {
       }
     }
 
+    if (pathname === "/api/model-history" && req.method === "GET") {
+      return json(res, 200, { history: state.modelHistory });
+    }
+
+    if (pathname === "/api/model-history/import" && req.method === "POST") {
+      const body = await readBody(req);
+      for (const [kind, models] of Object.entries(body.history || {})) {
+        const history = state.modelHistory[kind];
+        if (history && Array.isArray(models)) {
+          state.modelHistory[kind] = [...history, ...models.filter((m) => !history.includes(m))].slice(0, 20);
+        }
+      }
+      return json(res, 200, { history: state.modelHistory });
+    }
+
     if (pathname === "/api/tasks" && req.method === "GET") {
       const workspaceId = u.searchParams.get("workspaceId") || undefined;
       let list = [...state.tasks.values()];
@@ -283,6 +299,11 @@ export function createMockServer(state, extra) {
         };
       }
       state.tasks.set(id, task);
+      const model = typeof body.model === "string" ? body.model.trim() : "";
+      if (model) {
+        const history = state.modelHistory[task.kind] || [];
+        state.modelHistory[task.kind] = [model, ...history.filter((m) => m !== model)].slice(0, 20);
+      }
       return json(res, 201, { task });
     }
 

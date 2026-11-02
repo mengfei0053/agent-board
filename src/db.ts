@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS model_history (
+  kind TEXT NOT NULL,
+  model TEXT NOT NULL,
+  last_used_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (kind, model)
+);
+CREATE INDEX IF NOT EXISTS model_history_recent_idx ON model_history(kind, last_used_at DESC);
+
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -212,6 +220,15 @@ export async function ensureSchema(): Promise<void> {
   await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attachments JSONB`);
   await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worktree JSONB`);
   await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS settings JSONB`);
+  // Recover models used before model history was introduced.
+  await p.query(`
+    INSERT INTO model_history (kind, model, last_used_at)
+    SELECT kind, BTRIM(model), MAX(created_at) FROM tasks
+    WHERE model IS NOT NULL AND BTRIM(model) <> ''
+    GROUP BY kind, BTRIM(model)
+    ON CONFLICT (kind, model) DO UPDATE SET
+      last_used_at = GREATEST(model_history.last_used_at, EXCLUDED.last_used_at)
+  `);
 }
 
 export function jsonDbExists(): boolean {

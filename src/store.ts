@@ -553,6 +553,17 @@ async function persistTask(task: Task): Promise<void> {
       ],
     );
 
+    if (task.model?.trim()) {
+      // Keep history in the task transaction, independent of task deletion.
+      // Log/status updates must not promote an older task's model.
+      await client.query(`
+        INSERT INTO model_history (kind, model, last_used_at)
+        VALUES ($1, $2, $3::timestamptz)
+        ON CONFLICT (kind, model) DO UPDATE SET
+          last_used_at = GREATEST(model_history.last_used_at, EXCLUDED.last_used_at)
+      `, [task.kind, task.model.trim(), task.createdAt]);
+    }
+
     await client.query(`DELETE FROM task_outputs WHERE task_id = $1`, [task.id]);
     for (const o of task.outputs || []) {
       await client.query(
@@ -1360,7 +1371,7 @@ export async function resetStoreForTests(): Promise<void> {
   pendingTaskWrites.clear();
   const p = getPool();
   await p.query(
-    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta RESTART IDENTITY CASCADE`,
+    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta, model_history RESTART IDENTITY CASCADE`,
   );
   tasks = new Map();
   workspaces = new Map();

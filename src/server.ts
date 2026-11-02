@@ -49,6 +49,7 @@ import type {
   Workspace,
 } from "./types.js";
 import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
+import { importModelHistory, readModelHistory } from "./modelHistory.js";
 import { ArchivedReadonlyError } from "./taskErrors.js";
 import { applyWorkspacePatch } from "./workspaceRecord.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
@@ -697,6 +698,17 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 }
 
 
+
+app.get("/api/model-history", async (c) => c.json({ history: await readModelHistory() }));
+
+app.post("/api/model-history/import", async (c) => {
+  try {
+    const body = await readJsonObject(c);
+    return c.json({ history: await importModelHistory(body.history) });
+  } catch (e) {
+    return errorJson(c, e, 500);
+  }
+});
 
 app.get("/api/settings", async (c) => c.json(await readSettingsDocument()));
 
