@@ -88,7 +88,7 @@
         <section class="settings-card" aria-labelledby="ws-mcp-title">
           <header class="settings-block-head">
             <h2 id="ws-mcp-title">MCP</h2>
-            <p class="settings-block-desc">JSON 或说明文本。当前会作为工作区 MCP 说明注入 prompt；各 CLI 原生 --mcp-config 接线后续可扩展。</p>
+            <p class="settings-block-desc">填写 mcpServers JSON，保存后在各 Agent 下次新建或继续任务时加载。支持 command/args/env 和 url/headers；OAuth 服务需在各 CLI 分别登录。Pi 需要 pi-mcp-adapter。纯文本仅作为提示词说明。</p>
           </header>
           <textarea id="ws-mcp" name="mcp" rows="8" placeholder='{"mcpServers":{"example":{"command":"npx","args":["-y","…"]}}}' spellcheck="false"></textarea>
         </section>

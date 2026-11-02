@@ -16,6 +16,7 @@ import type { Task } from "../../src/types.js";
 export type RunnerCall = {
   prompt: string;
   continuePrompt?: string;
+  workspaceMcp?: string;
   sessionId?: string;
   workspaceId: string;
 };
@@ -125,6 +126,7 @@ function makeFakeRunner(): Runner {
       runnerCalls.push({
         prompt: task.prompt,
         continuePrompt: opts?.continuePrompt,
+        workspaceMcp: opts?.workspaceMcp,
         sessionId: task.sessionId,
         workspaceId: task.workspaceId,
       });

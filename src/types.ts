@@ -79,8 +79,8 @@ export type WorkspaceSettings = {
   skills?: string[];
   /**
    * MCP config for this workspace.
-   * Free-form JSON or prose; persisted and surfaced to the agent via prompt
-   * until native per-CLI MCP wiring exists.
+   * mcpServers JSON is loaded natively on each launch/resume.
+   * Legacy prose is still passed as a prompt note.
    */
   mcp?: string;
 };

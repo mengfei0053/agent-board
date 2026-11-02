@@ -159,7 +159,7 @@
     <string name="path_keeps_cwd">已有任务仍使用原来的工作目录。</string>
     <string name="first_run_prompt">首次运行提示词</string>
     <string name="skills">Skills</string>
-    <string name="mcp_note">MCP 说明</string>
+    <string name="mcp_note">MCP 配置</string>
     <string name="save">保存</string>
     <string name="default_model_sentence">默认模型来自各 CLI 的本机配置，看板不保存。</string>
     <string name="quick_prompts">快捷提示词</string>
@@ -178,7 +178,7 @@
     <string name="space_instructions">系统 / 空间指令</string>
     <string name="space_instructions_hint">首次启动本空间任务时，会自动前置拼到用户 prompt。</string>
     <string name="skills_hint">每行一个 skill 名称或路径。</string>
-    <string name="mcp_hint">JSON 或说明文本，作为工作区 MCP 说明注入 prompt。</string>
+    <string name="mcp_hint">mcpServers JSON 会在各 Agent 下次新建或继续任务时加载。OAuth 需各 CLI 分别登录；Pi 需要 pi-mcp-adapter。纯文本仍作为提示词说明。</string>
     <string name="conversation_rounds">对话轮次</string>
     <string name="task_actions">操作</string>
     <string name="user_prompt">用户提示词</string>

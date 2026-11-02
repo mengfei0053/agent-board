@@ -168,7 +168,7 @@ describe("integration I1–I12", () => {
         settings: {
           systemPrompt: "你是空间助手",
           skills: ["skill-a", "skill-b"],
-          mcp: '{"mcpServers":{"demo":{}}}',
+          mcp: '{"mcpServers":{"demo":{"command":"node"}}}',
         },
       }),
     });
@@ -325,6 +325,41 @@ describe("integration I1–I12", () => {
     // With session: workspace prefix must NOT be re-applied to the runner task prompt
     assert.doesNotMatch(runnerCalls[0].prompt, /SPACE_PROMPT_MARKER/);
     assert.equal(runnerCalls[0].continuePrompt, "CONTINUE_PROMPT_BODY");
+  });
+
+  it("loads current native MCP settings on first launch, resume, and after clearing", async () => {
+    const { workspace } = await jsonOf(await app.request("/api/workspaces", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "MCP runtime", path: freshWorkspacePath() }),
+    }));
+    const initial = JSON.stringify({ mcpServers: { tool: { url: "https://first.example/mcp" } } });
+    const updated = JSON.stringify({ mcpServers: { tool: { command: "node", args: ["server.js"] } } });
+    const save = (mcp: string) => app.request(`/api/workspaces/${workspace.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { mcp } }),
+    });
+    assert.equal((await save("{")).status, 400);
+    assert.equal((await save(initial)).status, 200);
+    const { task } = await jsonOf(await app.request("/api/tasks", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "codex", workspaceId: workspace.id, prompt: "MCP test", start: false }),
+    }));
+    runnerCalls.length = 0;
+    await app.request(`/api/tasks/${task.id}/start`, { method: "POST" });
+    await waitSettled(task.id);
+    assert.equal(runnerCalls.at(-1)?.workspaceMcp, initial);
+    assert.equal(runnerCalls.at(-1)?.prompt, "MCP test");
+    for (const mcp of [updated, ""]) {
+      assert.equal((await save(mcp)).status, 200);
+      const response = await app.request(`/api/tasks/${task.id}/continue`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "next" }),
+      });
+      assert.equal(response.status, 200);
+      await waitSettled(task.id);
+      assert.equal(runnerCalls.at(-1)?.workspaceMcp, mcp || undefined);
+      assert.ok(runnerCalls.at(-1)?.sessionId);
+    }
   });
 
   it("I4 webhook auth: disabled / unauthorized / ok", async () => {

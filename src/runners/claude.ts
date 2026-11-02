@@ -87,6 +87,7 @@ export const claudeRunner: Runner = {
     let status = task.status;
     return spawnLogged(resolveCliCommand("claude"), built.args, task.cwd, hooks, {
       cliKind: "claude",
+      workspaceMcp: opts?.workspaceMcp,
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

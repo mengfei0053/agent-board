@@ -44,6 +44,7 @@ export const piRunner: Runner = {
     let status = task.status;
     return spawnLogged(resolveCliCommand("pi"), built.args, task.cwd, hooks, {
       cliKind: "pi",
+      workspaceMcp: opts?.workspaceMcp,
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

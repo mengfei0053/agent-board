@@ -18,6 +18,8 @@ export type RunnerHandle = {
 export type RunnerStartOptions = {
   /** Follow-up prompt when resuming the same CLI session */
   continuePrompt?: string;
+  /** Current workspace MCP configuration, refreshed even when resuming. */
+  workspaceMcp?: string;
 };
 
 export type Runner = {

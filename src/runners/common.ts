@@ -1,3 +1,4 @@
+import { prepareWorkspaceMcp } from "./workspaceMcp.js";
 import { spawn } from "node:child_process";
 import { isBoardMetaLine } from "../extractOutput.js";
 import { childProcessEnv, lastInjectedProxyKeys } from "../proxyEnv.js";
@@ -109,6 +110,7 @@ export function spawnLogged(
   opts: {
     /** Agent kind — selects per-kind proxy overrides. */
     cliKind: CliCommandKey;
+    workspaceMcp?: string;
     classifyLine?: (line: string, hooks: RunnerHooks) => void;
     getStatus: () => TaskStatus;
   },
@@ -117,7 +119,10 @@ export function spawnLogged(
   let endedByWatchdog = false;
   let consecutive429 = 0;
   const env = childProcessEnv(opts.cliKind, { NO_COLOR: "1", FORCE_COLOR: "0" });
+  let cleanupMcp = () => {};
+  let mcpArgCount = 0;
   const failSync = (err: unknown): RunnerHandle => {
+    cleanupMcp();
     const error = err instanceof Error ? err.message : String(err);
     const settled = Promise.resolve();
     queueMicrotask(() => {
@@ -135,6 +140,15 @@ export function spawnLogged(
       stopAndWait: async () => settled,
     };
   };
+  try {
+    const prepared = prepareWorkspaceMcp(opts.cliKind, cwd, opts.workspaceMcp);
+    cleanupMcp = prepared.cleanup;
+    mcpArgCount = prepared.args.length;
+    args = [...prepared.args, ...args];
+    if (prepared.serverNames.length) hooks.onLog(JSON.stringify({
+      type: "workspace_mcp_applied", servers: prepared.serverNames,
+    }));
+  } catch (error) { return failSync(error); }
   if (cmd.includes("\0") || args.some((a) => a.includes("\0"))) {
     return failSync(new Error("spawn arguments must not contain NUL"));
   }
@@ -163,7 +177,7 @@ export function spawnLogged(
     JSON.stringify({
       type: "spawn",
       cmd,
-      args: args.map(previewArg),
+      args: args.map((arg, index) => index < mcpArgCount && args[index - 1] === "-c" ? "[MCP config]" : previewArg(arg)),
       cwd,
       pid: child.pid,
       ...(lastInjectedProxyKeys.length
@@ -178,6 +192,7 @@ export function spawnLogged(
   const markClosed = () => {
     if (closed) return;
     closed = true;
+    cleanupMcp();
     if (killTimer) {
       clearTimeout(killTimer);
       killTimer = null;
@@ -345,6 +360,7 @@ export function spawnLogged(
   child.stderr?.on("data", (chunk: Buffer) => feed(stderrState, "stderr", chunk));
 
   child.on("error", (err) => {
+    cleanupMcp();
     if (stoppedByUser || endedByWatchdog || closed) return;
     hooks.onStatus({
       status: "failed",

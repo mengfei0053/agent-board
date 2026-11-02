@@ -173,6 +173,7 @@ export function extractTextFromEventLine(line: string): string | undefined {
 
 export const BOARD_META_TYPE_LIST = [
   "spawn",
+  "workspace_mcp_applied",
   "exit",
   "continue",
   "start",

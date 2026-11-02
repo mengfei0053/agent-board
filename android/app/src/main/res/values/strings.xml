@@ -159,7 +159,7 @@
     <string name="path_keeps_cwd">Existing tasks keep their current working directory.</string>
     <string name="first_run_prompt">First-run prompt</string>
     <string name="skills">Skills</string>
-    <string name="mcp_note">MCP note</string>
+    <string name="mcp_note">MCP configuration</string>
     <string name="save">Save</string>
     <string name="default_model_sentence">The default model comes from each CLI on this machine. The board does not store one.</string>
     <string name="quick_prompts">Shortcuts</string>
@@ -178,7 +178,7 @@
     <string name="space_instructions">System / workspace instructions</string>
     <string name="space_instructions_hint">Prepended to the user prompt when a workspace task first starts.</string>
     <string name="skills_hint">One skill name or path per line.</string>
-    <string name="mcp_hint">JSON or explanatory text injected into the prompt as workspace MCP instructions.</string>
+    <string name="mcp_hint">mcpServers JSON is loaded on the next start or resume for every agent. OAuth requires sign-in per CLI; Pi requires pi-mcp-adapter. Plain text remains a prompt note.</string>
     <string name="conversation_rounds">Conversation rounds</string>
     <string name="task_actions">Actions</string>
     <string name="user_prompt">User prompt</string>

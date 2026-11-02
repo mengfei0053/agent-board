@@ -140,6 +140,7 @@ export const cursorRunner: Runner = {
       let status = task.status;
       inner = spawnLogged(resolveCliCommand("agent"), built.args, task.cwd, hooks, {
         cliKind: "agent",
+        workspaceMcp: opts?.workspaceMcp,
         getStatus: () => status,
         classifyLine: (line, h) => {
           const detected = modelFromJsonLine(line);

@@ -1,4 +1,5 @@
 import type { Workspace, WorkspaceSettings } from "./types.js";
+import { parseWorkspaceMcp } from "./workspaceMcp.js";
 import { HttpError } from "./httpError.js";
 
 export function normalizeWorkspaceSettings(
@@ -44,7 +45,10 @@ export function normalizeWorkspaceSettings(
   }
   if (typeof rec.mcp === "string") {
     const m = rec.mcp.trim();
-    if (m) out.mcp = m;
+    if (m) {
+      parseWorkspaceMcp(m);
+      out.mcp = m;
+    }
   }
 
   return Object.keys(out).length ? out : undefined;
@@ -92,10 +96,8 @@ export function buildWorkspacePromptPrefix(
     );
   }
   if (settings.mcp?.trim()) {
-    parts.push(
-      `[工作区 MCP]\n本工作区配置了以下 MCP（请在能力范围内使用相关工具；原生 MCP 注入尚未接线时以此为说明）：\n` +
-        settings.mcp.trim(),
-    );
+    if (!/^[\[{]/.test(settings.mcp.trim())) parts.push(`[工作区 MCP]\n${settings.mcp.trim()}`);
+    // Native configuration can contain credentials; never include it in a prompt.
   }
   return parts.join("\n\n");
 }

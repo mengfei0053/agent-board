@@ -304,7 +304,7 @@ function spawnRunner(task: Task): Task {
       if (currentRunId(id) !== runId) return;
       writeLog(id, line, source);
     },
-  });
+  }, { workspaceMcp: wsSettings?.mcp });
   if (currentRunId(id) !== runId) {
     try { handle.stop(); } catch { /* ignore */ }
     return getTask(id)!;
@@ -586,7 +586,7 @@ async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
         writeLog(id, line, source);
       },
     },
-    { continuePrompt: contPrompt },
+    { continuePrompt: contPrompt, workspaceMcp: wsSettings?.mcp },
   );
   if (currentRunId(id) !== runId) {
     try { handle.stop(); } catch { /* ignore */ }

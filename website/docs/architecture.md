@@ -232,7 +232,11 @@ stateDiagram-v2
 
 `gitWorktree.ts` 只接受带有可用 HEAD 的 Git 工作树根目录。任务选择隔离执行后，cwd 变为 `<原目录>/.agent-board/worktrees/<taskId>`，分支为 `agent-board/<taskId>`。删除时验证所属路径和 Git 登记信息；有未提交改动则保留并返回警告。worktree 提供代码目录隔离，任务的执行权限仍由 CLI 和宿主环境决定。
 
-工作区的 `systemPrompt`、skills 和 MCP 说明由 `workspaceApply.ts` 组装为 prompt 前缀。首跑或无会话的续跑会加入前缀，已有会话续跑沿用上下文；当前 MCP 设置以文本说明传给 Agent，尚未为每种 CLI 注入原生 MCP 配置。
+工作区的 `systemPrompt`、skills 和纯文本 MCP 说明由 `workspaceApply.ts` 组装为 prompt 前缀。首跑或无会话的续跑会加入前缀，已有会话续跑沿用上下文。结构化 MCP 使用 `{"mcpServers":{"figma-official":{"url":"https://mcp.figma.com/mcp"}}}`，在每次启动（包括续跑）时原生加载，不进入提示词。支持 stdio 的 `command`、`args`、`env` 和 Streamable HTTP 的 `url`、`headers`。
+
+Codex 使用 `-c mcp_servers.<name>=…`；Claude 和 Pi 使用临时 `--mcp-config` 文件（Pi 需安装 `pi-mcp-adapter`），进程结束时清理。Cursor 使用 `.cursor/mcp.json`，Devin 使用 `.devin/mcp_config.local.json`，通过同目录的 `.agent-board.json` 后缀文件记录原配置；下次启动同类 Agent 时更新或清除看板条目、恢复原配置，保留其他条目。手工修改看板管理的同名条目会报错，避免覆盖。两个空间若共用同一路径，Cursor/Devin 也共享项目配置；应使用不同目录隔离。运行中的任务不会热更新。
+
+远程服务的 OAuth 认证由各 CLI 管理，Codex 登录不会自动登录其他客户端。Pi adapter 的认证使用 `/mcp-auth`；其他客户端使用各自的 MCP 登录命令。项目已有的独立 MCP 配置仍有效，清空空间设置仅移除看板管理的配置。 同名服务仍受各 CLI 原生合并规则约束：Codex 会合并已有字段，切换同名服务的传输类型前需清理原定义；Pi 的项目配置优先于 `--mcp-config`，同名项目条目也需同步。建议为不同服务使用不同名称。
 
 上传文件经 `uploads.ts` 校验并保存，任务中记录引用，运行前将引用转换为绝对路径。图片通过 Markdown 展示；普通附件使用附件元信息传递。孤儿文件清理带数据库 owner 标识，测试和多实例需配置独立的 `DATA_DIR` / `UPLOADS_DIR`。
 

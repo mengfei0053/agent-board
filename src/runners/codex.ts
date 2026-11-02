@@ -124,6 +124,7 @@ export const codexRunner: Runner = {
     let status = task.status;
     return spawnLogged(resolveCliCommand("codex"), built.args, task.cwd, hooks, {
       cliKind: "codex",
+      workspaceMcp: opts?.workspaceMcp,
       getStatus: () => status,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);

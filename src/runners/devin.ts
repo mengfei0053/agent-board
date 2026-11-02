@@ -102,6 +102,7 @@ export const devinRunner: Runner = {
       },
       {
         cliKind: "devin",
+        workspaceMcp: opts?.workspaceMcp,
         getStatus: () => status,
         classifyLine: (line, h) => {
           const trimmed = line.trim();

@@ -29,12 +29,12 @@ describe("normalizeWorkspaceSettings", () => {
     const s = normalizeWorkspaceSettings({
       systemPrompt: "  用 pnpm  ",
       skills: [" a ", "", "b"],
-      mcp: ' {"x":1} ',
+      mcp: ' {"mcpServers":{}} ',
     });
     assert.deepEqual(s, {
       systemPrompt: "用 pnpm",
       skills: ["a", "b"],
-      mcp: '{"x":1}',
+      mcp: '{"mcpServers":{}}',
     });
   });
 
@@ -75,7 +75,7 @@ describe("buildWorkspacePromptPrefix", () => {
     assert.match(prefix, /规则 A/);
     assert.match(prefix, /\[工作区 Skills\]/);
     assert.match(prefix, /- review/);
-    assert.match(prefix, /\[工作区 MCP\]/);
+    assert.doesNotMatch(prefix, /mcpServers/);
   });
 
   it("returns empty when no settings", () => {
