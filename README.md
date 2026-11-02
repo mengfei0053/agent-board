@@ -30,7 +30,7 @@
 | Webhook | `POST /api/hooks/tasks`（需 `AGENT_BOARD_WEBHOOK_SECRET`） |
 | 存储 | Postgres（`DATABASE_URL`） |
 
-更多设计见 [ARCHITECTURE.md](./ARCHITECTURE.md)，HTTP 接口见运行中的 [/docs](http://127.0.0.1:8791/docs)。
+整体架构及多端通信图解见文档站的 [项目架构](./website/docs/architecture.md)，本机功能细节见 [ARCHITECTURE.md](./ARCHITECTURE.md)，HTTP 接口见运行中的 [/docs](http://127.0.0.1:8791/docs)。
 
 ## 要求
 

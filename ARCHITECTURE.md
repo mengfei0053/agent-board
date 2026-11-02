@@ -1,21 +1,25 @@
-# agent-board 架构（v0.1）
+# agent-board 架构与本机功能细节
 
-本机 Web 看板：新建 / 观察 / 停止本地 Agent CLI 任务。覆盖 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**。
+Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android 客户端及独立 connector 组成。本机服务执行 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI** 任务，以 PostgreSQL 持久化，通过 SSE 向浏览器推送，通过嵌入 Relay 拨号支持手机遥控。
 
-## 目标
+完整的模块职责、部署拓扑、执行流程、数据模型、远程协议及测试入口见文档站的 **[项目架构](./website/docs/architecture.md)**。本文保留本机功能的实现约定，远程消息字段以 [PROTOCOL.md](./PROTOCOL.md) 为准。
+
+多端通信图解集中在项目架构页，包括 Web / Android / Relay / 本机执行的整体拓扑、嵌入与独立连接器对照、SSE 更新、手机配对、命令执行、超时查询、断线恢复和多看板隔离。文档站通过 Mermaid 将这些流程渲染为架构图与时序图。
+
+## 本机能力
 
 - 左侧工作区 CRUD；右侧显示当前工作区任务（选 kind、prompt、可选 model；cwd 来自工作区）
-- 看到运行中任务的状态：`queued | running | blocked | succeeded | failed | stopped`
+- 任务状态：`draft | queued | running | blocked | succeeded | failed | stopped | archived`
 - 实时尾随日志（SSE）
 - 停止任务（杀进程组）
 - 任务迭代次数 +「继续任务」（基于各 CLI session/resume 续上下文）
-- 卡片多选与批量删除（运行中先 stop 再删）
+- 卡片多选与批量删除（跳过 queued / running；可删除任务有残留进程句柄时先 stop）
 
-## 不做（v0.1）
+## 当前边界
 
-- 不接管「已经在别的终端交互开着」的 TUI（那要 hooks/ACP 旁路；后续可接）
+- 不接管「已经在别的终端交互开着」的 TUI；服务重启也不会接管遗留子进程
 - 不接 Herdr 面板
-- 不做多机调度 / 权限细粒度 / 费用账单
+- Relay 可连接多个独立看板；当前不做跨机任务调度 / 权限细粒度 / 费用账单
 
 ## 组件
 
@@ -30,7 +34,7 @@
                         │    ├─ cursor: agent -p --output-format stream-json
                         │    ├─ devin:  devin -p --permission-mode accept-edits (plain stdout)
                         │    └─ codex:  codex exec --json --approve-for-me
-                        ├─ 每任务：子进程 + data/logs/<id>.jsonl
+                        ├─ 每任务：子进程；日志存于内存 + Postgres task_logs
                         └─ 可选：嵌入中继拨号（src/relay/，默认关）
                               进程内 BoardFacade → 公网 WSS
                               不另起 connector，也不回环打自己的 HTTP
@@ -40,20 +44,16 @@
 
 ## 状态机
 
-`draft → queued → running → (blocked?) → succeeded|failed|stopped`
+`draft → queued → running → (blocked?) → succeeded|failed|stopped → archived`
 
 - 新建默认 **draft**（不 spawn）；拖到 Todo / `POST .../start|move` 才开始跑
 
 - **pi**：`agent_start`/`tool_execution_start` → running；`ask_user_question` → blocked；`agent_settled` / 进程退出 → 终态
 - **claude / cursor**：收到 stream-json 事件 → running；进程 exit 0 → succeeded，非 0 → failed；未知事件只记日志
-- **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；session 在结束后用 `devin list --format json` / sessions.db 尽力回填，继续任务用 `-r <sid>`（无 id 时新开跑 + 原 `task.prompt`，不用 `-c`）
+- **devin**：`-p` 纯文本 stdout（无 stream-json）；exit 0 → succeeded（若日志含 `Error: Agent error` 则标 failed）；不自动绑定 cwd 中的最新 session，继续任务用 `-r <sid>`（无 id 时新开跑 + 原 `task.prompt`，不用 `-c`）
 - **codex**：`codex exec --json`（thread JSONL：`thread.started` / `turn.*` / `item.*`）→ running；exit 0 → succeeded；`thread_id` 写入 sessionId；继续任务用 `codex exec resume <id>`（无 id 时新开 `codex exec` + 原 `task.prompt`，不用 `--last`）；非交互审批用 `--approve-for-me`
 
-## 后续扩展点
-
-1. 用 Claude hooks / pi extension / Cursor ACP 上报「外部已开会话」到同一 Store
-2. 接 Herdr socket（本机已有 `herdr-agent-state.ts`）做旁路状态
-3. SQLite、多用户、按仓库过滤、重跑、模板任务
+启动时，数据库中遗留的 `queued` / `running` / `blocked` 会被标记为中断失败；继续任务保留会话 ID 和轮次历史，重新开始则创建新一轮独立会话。`archived` 任务只读。
 
 ## 继续任务 / 迭代
 
@@ -67,7 +67,7 @@
 ## 批量删除
 
 - `POST /api/tasks/batch-delete` body `{ ids: string[] }`
-- 对仍在跑 / 有 handle 的任务先 stop，再从 store 删除并清日志；SSE `task_delete`
+- 跳过 `queued` / `running`；其余可删除任务若有 handle 则先 stop，再从 store 删除并清日志；SSE `task_delete`
 
 ## 删除限制
 
@@ -156,8 +156,9 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 ## 存储（Postgres）
 
 - 连接串：环境变量 `DATABASE_URL`（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
-- 表：`tasks`、`task_logs`、`task_outputs`、`task_side_jobs`、`meta`（含 `default_workspace_id`、`cli_paths`、`proxy_env` 等）
-- 进程内有内存镜像；写入先更新内存再异步落库（API/SSE 行为不变）
+- 表：`workspaces`、`tasks`、`task_logs`、`task_prompts`、`task_outputs`、`task_side_jobs`、`uploads`、`meta`（含 `default_workspace_id`、`cli_paths`、`proxy_env`、`quick_prompts`、`codex_sandbox` 等）
+- 进程内有内存镜像；创建、启动、续跑等关键步骤等待落库，高频状态与日志更新通过写队列合并、批量异步落库；持久化降级时 `/api/health` 返回 503
+- 当前日志写入 `task_logs`，按行数与字符数限制保留；归档清理原始日志，保留轮次输入和回复。JSONL 仅用于旧数据迁移与清理
 - 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
 - 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`
 

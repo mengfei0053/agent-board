@@ -13,10 +13,10 @@ Agent Board 是运行在本机的 Agent 任务看板。它把工作区和任务�
 - 可选地在独立 Git worktree 中启动任务。
 - 通过 Relay 和 Android 客户端远程查看和操作任务。
 
-开始使用请阅读 [快速开始](./quick-start.md)；日常操作见 [使用指南](./usage.md)。
+开始使用请阅读 [快速开始](./quick-start.md)；日常操作见 [使用指南](./usage.md)；模块职责、任务执行和远程通信流程见 [项目架构](./architecture.md)。
 
 ## 相关资料
 
 - [项目 README](https://github.com/mengfei0053/agent-board#readme)：完整配置、运行和开发说明。
-- [架构设计](https://github.com/mengfei0053/agent-board/blob/HEAD/ARCHITECTURE.md)和 [Relay 协议](https://github.com/mengfei0053/agent-board/blob/HEAD/PROTOCOL.md)。
+- [本机架构细节](https://github.com/mengfei0053/agent-board/blob/HEAD/ARCHITECTURE.md)和 [Relay 协议](https://github.com/mengfei0053/agent-board/blob/HEAD/PROTOCOL.md)。
 - 看板运行后，可在 [本机 API 文档](http://127.0.0.1:8791/docs)查看 HTTP 接口。

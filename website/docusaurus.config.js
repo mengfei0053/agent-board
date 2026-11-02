@@ -9,6 +9,8 @@ const config = {
   organizationName: 'mengfei0053',
   projectName: 'agent-board',
   onBrokenLinks: 'throw',
+  markdown: { mermaid: true },
+  themes: ['@docusaurus/theme-mermaid'],
   i18n: { defaultLocale: 'zh-Hans', locales: ['zh-Hans'] },
   presets: [
     ['classic', {
