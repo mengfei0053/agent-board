@@ -152,10 +152,11 @@ npm start</code></pre>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/stop</code></pre>
 
         <h3>继续（迭代）</h3>
-        <p><code>POST /api/tasks/:id/continue</code> body 可选 <code>{ "prompt": "补充说明" }</code>。成功后 <code>iteration + 1</code>，按各 CLI session/resume 续跑。</p>
+        <p><code>POST /api/tasks/:id/continue</code> body 可选 <code>{ "prompt": "补充说明", "model": "目标模型" }</code>。成功后 <code>iteration + 1</code>，按各 CLI session/resume 续跑。省略 <code>model</code> 沿用当前模型；提供时必须是非空字符串，最多 200 字符。</p>
+        <p>切换模型仅适用于已有会话且已完成、失败或停止的任务，保留原执行器、会话、目录和历史；无会话或尚未停止的 blocked 任务切换模型返回 409。不接受更改 <code>kind</code>、<code>sessionId</code>、<code>cwd</code> 或 <code>workspaceId</code>。续接失败不自动新建会话或回退模型；上下文窗口与自动压缩仍由 CLI 决定。</p>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/continue \
   -H 'content-type: application/json' \
-  -d '{ "prompt": "接着把测试也补上" }'</code></pre>
+  -d '{ "prompt": "接着把测试也补上", "model": "目标模型" }'</code></pre>
       </section>
 
       <section id="batch">

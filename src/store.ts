@@ -555,13 +555,13 @@ async function persistTask(task: Task): Promise<void> {
 
     if (task.model?.trim()) {
       // Keep history in the task transaction, independent of task deletion.
-      // Log/status updates must not promote an older task's model.
+      // Use the persisted turn time, not status-update time, to promote resumed models.
       await client.query(`
         INSERT INTO model_history (kind, model, last_used_at)
         VALUES ($1, $2, $3::timestamptz)
         ON CONFLICT (kind, model) DO UPDATE SET
           last_used_at = GREATEST(model_history.last_used_at, EXCLUDED.last_used_at)
-      `, [task.kind, task.model.trim(), task.createdAt]);
+      `, [task.kind, task.model.trim(), task.prompts?.at(-1)?.at || task.createdAt]);
     }
 
     await client.query(`DELETE FROM task_outputs WHERE task_id = $1`, [task.id]);

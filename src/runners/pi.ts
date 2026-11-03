@@ -25,7 +25,9 @@ export function buildPiArgs(
       : opts?.continuePrompt?.trim() || task.prompt;
   // A fresh run must not reuse task.id — that session file would keep the previous chat.
   const sessionId = task.sessionId || opts?.freshSessionId || `${task.id}-${nanoid(8)}`;
-  const args = ["-p", "--mode", "json", "--session-id", sessionId];
+  // --session-id creates a missing session; continuation must fail instead of losing history.
+  const sessionFlag = isContinue && task.sessionId ? "--session" : "--session-id";
+  const args = ["-p", "--mode", "json", sessionFlag, sessionId];
   if (task.model) args.push("--model", task.model);
   args.push(prompt);
   return {

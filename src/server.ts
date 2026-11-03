@@ -572,6 +572,7 @@ app.post("/api/tasks/:id/archive", async (c) => {
 
 app.post("/api/tasks/:id/continue", async (c) => {
   let prompt: string | undefined;
+  let model: string | undefined;
   try {
     const raw = await c.req.text();
     if (raw.trim()) {
@@ -585,15 +586,21 @@ app.post("/api/tasks/:id/continue", async (c) => {
         return c.json({ error: "body must be an object" }, 400);
       }
       const body = parsed as Record<string, unknown>;
+      for (const key of ["kind", "sessionId", "cwd", "workspaceId"]) {
+        if (key in body) throw new HttpError(400, `${key} cannot be changed when continuing a task`);
+      }
       if (body.prompt != null) {
         prompt = requireString(body, "prompt", { max: MAX_PROMPT_CHARS });
+      }
+      if ("model" in body) {
+        model = requireString(body, "model", { required: true, max: MAX_MODEL_CHARS });
       }
     }
   } catch (err) {
     return errorJson(c, err);
   }
   try {
-    const task = await continueTask(c.req.param("id"), prompt);
+    const task = await continueTask(c.req.param("id"), prompt, model);
     return c.json({ task });
   } catch (err) {
     return taskMutationError(c, err);

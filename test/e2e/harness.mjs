@@ -471,6 +471,11 @@ export function createMockServer(state, extra) {
       const t = state.tasks.get(id);
       if (!t) return json(res, 404, { error: "not found" });
       const body = await readBody(req);
+      if (body.model) {
+        if (!t.sessionId) return json(res, 409, { error: "缺少原会话，无法切换模型" });
+        t.model = body.model.trim();
+        state.modelHistory[t.kind] = [t.model, ...state.modelHistory[t.kind].filter((m) => m !== t.model)].slice(0, 20);
+      }
       const prompt =
         typeof body.prompt === "string" && body.prompt.trim()
           ? body.prompt.trim()

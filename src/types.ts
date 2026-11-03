@@ -165,6 +165,8 @@ export type UpdateWorkspaceInput = {
 
 export type ContinueTaskInput = {
   prompt?: string;
+  /** Next model in the same CLI session; omitted keeps the current model. */
+  model?: string;
 };
 
 export type BoardEvent =

@@ -327,6 +327,90 @@ describe("integration I1–I12", () => {
     assert.equal(runnerCalls[0].continuePrompt, "CONTINUE_PROMPT_BODY");
   });
 
+  it("continue changes only the model, preserves history, and durably remembers the new selection", async () => {
+    const workspaceId = (await jsonOf(await app.request("/api/workspaces"))).defaultWorkspaceId;
+    const { task } = await jsonOf(await app.request("/api/tasks", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "codex", workspaceId, prompt: "original", model: "old-model", start: true }),
+    }));
+    const first = await waitSettled(task.id);
+    runnerCalls.length = 0;
+    const response = await app.request(`/api/tasks/${task.id}/continue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "next turn", model: "  new-model  " }),
+    });
+    assert.equal(response.status, 200);
+    const continued = await waitSettled(task.id);
+    assert.equal(continued.model, "new-model");
+    assert.equal(continued.sessionId, first.sessionId);
+    assert.equal(continued.cwd, first.cwd);
+    assert.equal(continued.kind, "codex");
+    assert.equal(continued.iteration, 2);
+    assert.deepEqual(continued.prompts[0], first.prompts[0]);
+    assert.deepEqual(continued.outputs[0], first.outputs[0]);
+    assert.equal(continued.prompts[1].prompt, "next turn");
+    assert.equal(runnerCalls.length, 1);
+    assert.equal(runnerCalls[0]?.model, "new-model");
+    assert.equal(runnerCalls[0]?.sessionId, first.sessionId);
+    assert.equal(runnerCalls[0]?.kind, first.kind);
+    assert.equal(runnerCalls[0]?.cwd, first.cwd);
+    assert.equal(runnerCalls[0]?.continuePrompt, "next turn");
+    await flushPersist();
+    const saved = await getPool().query("SELECT model, session_id FROM tasks WHERE id = $1", [task.id]);
+    assert.deepEqual(saved.rows, [{ model: "new-model", session_id: first.sessionId }]);
+    assert.deepEqual((await jsonOf(await app.request("/api/model-history"))).history.codex, ["new-model", "old-model"]);
+
+    // An omitted model keeps the latest choice, even with an empty request body.
+    const again = await app.request(`/api/tasks/${task.id}/continue`, { method: "POST" });
+    assert.equal(again.status, 200);
+    await waitSettled(task.id);
+    assert.equal(runnerCalls.at(-1)?.model, "new-model");
+    assert.equal(runnerCalls.at(-1)?.sessionId, first.sessionId);
+  });
+
+  it("continue rejects invalid models and session/executor changes before any mutation", async () => {
+    const workspaceId = (await jsonOf(await app.request("/api/workspaces"))).defaultWorkspaceId;
+    const { task } = await jsonOf(await app.request("/api/tasks", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "pi", workspaceId, prompt: "original", model: "old-model", start: true }),
+    }));
+    await waitSettled(task.id);
+    const before = structuredClone(getTask(task.id));
+    runnerCalls.length = 0;
+    const invalid = [
+      { model: 123 }, { model: [] }, { model: {} }, { model: false },
+      { model: null }, { model: "" }, { model: "   " },
+      { model: "new-model", kind: "codex" }, { sessionId: "another" },
+      { cwd: "/tmp" }, { workspaceId: "another" },
+    ];
+    for (const body of invalid) {
+      const response = await app.request(`/api/tasks/${task.id}/continue`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.deepEqual(getTask(task.id), before);
+    }
+    const oversized = await app.request(`/api/tasks/${task.id}/continue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "x".repeat(201) }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal(runnerCalls.length, 0);
+    assert.deepEqual(getTask(task.id), before);
+
+    await saveTaskDurable({ ...getTask(task.id)!, sessionId: undefined });
+    const missingSession = await app.request(`/api/tasks/${task.id}/continue`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "new-model" }),
+    });
+    assert.equal(missingSession.status, 409);
+    assert.match((await jsonOf(missingSession)).error, /缺少原会话/);
+    assert.equal(getTask(task.id)?.iteration, 1);
+    assert.equal(getTask(task.id)?.model, "old-model");
+    assert.equal(runnerCalls.length, 0);
+    assert.deepEqual((await jsonOf(await app.request("/api/model-history"))).history.pi, ["old-model"]);
+  });
+
   it("loads current native MCP settings on first launch, resume, and after clearing", async () => {
     const { workspace } = await jsonOf(await app.request("/api/workspaces", {
       method: "POST", headers: { "content-type": "application/json" },

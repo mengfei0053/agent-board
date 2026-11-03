@@ -265,6 +265,11 @@
           <button type="button" id="archive-btn" class="secondary" hidden>归档</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
+          <label class="continue-model-label" for="continue-model">下一轮模型
+            <input id="continue-model" list="continue-model-suggestions" maxlength="200" autocomplete="off" aria-describedby="continue-model-hint" placeholder="留空沿用当前模型" />
+          </label>
+          <datalist id="continue-model-suggestions"></datalist>
+          <p id="continue-model-hint" class="muted continue-hint"></p>
           <div id="continue-quick-prompts" class="quick-prompts" hidden></div>
           <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）"></textarea>
           <div class="prompt-toolbar prompt-toolbar-inline" data-for="continue-prompt">

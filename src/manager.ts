@@ -56,7 +56,7 @@ import {
   type OwnedWorktreeCleanup,
   type WorktreeCleanupWarning,
 } from "./gitWorktree.js";
-import { BOARD_FIELD_CHARS } from "./limits.js";
+import { assertTextLimit, BOARD_FIELD_CHARS, MAX_MODEL_CHARS } from "./limits.js";
 
 const handles = new Map<string, RunnerHandle>();
 /** Serializes start/move/stop/continue for one task across awaits. */
@@ -491,11 +491,11 @@ async function startTaskBody(id: string): Promise<Task> {
   return spawnRunner(getTask(id)!);
 }
 
-export function continueTask(id: string, prompt?: string): Promise<Task> {
-  return withTaskLock(id, () => continueTaskBody(id, prompt));
+export function continueTask(id: string, prompt?: string, model?: string): Promise<Task> {
+  return withTaskLock(id, () => continueTaskBody(id, prompt, model));
 }
 
-async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
+async function continueTaskBody(id: string, prompt?: string, model?: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "archived") throw new ArchivedReadonlyError();
@@ -504,6 +504,18 @@ async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
   }
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is still running; stop it before continue");
+  }
+  const nextModel = model === undefined ? t.model : model.trim();
+  if (model !== undefined) {
+    assertTextLimit(model, MAX_MODEL_CHARS, "model");
+    if (!nextModel) throw new HttpError(400, "model required");
+  }
+  const changingModel = nextModel !== t.model;
+  if (changingModel && !t.sessionId?.trim()) {
+    throw new HttpError(409, "缺少原会话，无法在保留上下文的情况下切换模型");
+  }
+  if (changingModel && t.status === "blocked") {
+    throw new HttpError(409, "请先停止任务，再切换下一轮模型");
   }
   resolveAllowedDirectory(t.cwd, "cwd");
 
@@ -531,6 +543,7 @@ async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
   await patchDurable(id, {
     status: "queued",
     iteration: nextIter,
+    model: nextModel,
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
@@ -553,6 +566,8 @@ async function continueTaskBody(id: string, prompt?: string): Promise<Task> {
       iteration: nextIter,
       prompt: continuePrompt,
       sessionId: t.sessionId,
+      model: nextModel,
+      previousModel: t.model,
     }),
   );
 

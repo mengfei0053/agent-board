@@ -128,7 +128,9 @@ pnpm dev
 
 首次启动若存在 `data/db.json`，会自动迁移到 Postgres，并将 JSON 改名为 `db.json.migrated-*`。
 
-新建任务时使用的模型会按 Agent 保存到 Postgres 的 `model_history` 表；下拉列表优先显示最近使用的模型，可跨浏览器和设备共享，删除任务后仍保留。服务启动时会补齐已有任务中的模型记录，页面会将旧版浏览器 `localStorage` 中的模型历史导入数据库，成功后清理本地记录。`GET /api/model-history` 返回各 Agent 最近 20 个模型；`POST /api/model-history/import` 接收 `{ "history": { "pi": ["model-name"] } }`，按需合并旧记录。
+任务完成、失败或停止后，可在详情页的「下一轮模型」选择同一执行器内的兼容模型，再点击「继续任务」；留空沿用当前模型。切换保留任务、原 CLI 会话、工作目录及对话历史，不支持通过续跑更换执行器。没有原会话时禁止切换模型；续接失败不会自动新建会话或回退模型。模型上下文窗口、历史格式转换及 CLI 自动压缩仍可能影响实际送入模型的上下文。
+
+新建或继续任务时使用的模型会按 Agent 保存到 Postgres 的 `model_history` 表；下拉列表优先显示最近使用的模型，可跨浏览器和设备共享，删除任务后仍保留。服务启动时会补齐已有任务中的模型记录，页面会将旧版浏览器 `localStorage` 中的模型历史导入数据库，成功后清理本地记录。`GET /api/model-history` 返回各 Agent 最近 20 个模型；`POST /api/model-history/import` 接收 `{ "history": { "pi": ["model-name"] } }`，按需合并旧记录。
 
 ## Android、中继、connector
 

@@ -50,7 +50,8 @@ describe("U16 runner buildArgs (no spawn)", () => {
         { continuePrompt: "  more  " },
       );
       assert.equal(r.prompt, "more");
-      assert.ok(r.args.includes("sess-pi"));
+      assert.equal(r.args[r.args.indexOf("--session") + 1], "sess-pi");
+      assert.ok(!r.args.includes("--session-id"));
       assert.equal(r.args.at(-1), "more");
       assert.equal(r.assignSession, false);
     });
@@ -229,6 +230,31 @@ describe("U16 runner buildArgs (no spawn)", () => {
       assert.match(r.args.at(-1) || "", /ignored/);
       assert.match(r.args.at(-1) || "", /继续指令/);
     });
+  });
+
+  describe("same-session model switch", () => {
+    const sessionId = "original-session";
+    const model = "next-model";
+    const input = { id: "task-model-switch", prompt: "original", sessionId, model };
+    const opts = { continuePrompt: "next turn" };
+    const cases = [
+      { kind: "pi", build: () => buildPiArgs(input, opts), sessionFlag: "--session", modelFlag: "--model" },
+      { kind: "claude", build: () => buildClaudeArgs(input, opts), sessionFlag: "--resume", modelFlag: "--model" },
+      { kind: "codex", build: () => buildCodexArgs(input, opts), sessionFlag: "resume", modelFlag: "-m" },
+      { kind: "cursor", build: () => buildCursorArgs(input, opts), sessionFlag: "--resume", modelFlag: "--model" },
+      { kind: "devin", build: () => buildDevinArgs(input, opts), sessionFlag: "-r", modelFlag: "--model" },
+    ];
+    for (const { kind, build, sessionFlag, modelFlag } of cases) {
+      it(`${kind} sends the new model with the original resume handle`, () => {
+        const { args, prompt } = build();
+        assert.equal(args[args.indexOf(sessionFlag) + 1], sessionId);
+        assert.equal(args[args.indexOf(modelFlag) + 1], model);
+        assert.equal(prompt, "next turn");
+        assert.ok(!args.includes("--continue"));
+        assert.ok(!args.includes("--last"));
+        assert.ok(!args.includes("--session-id"));
+      });
+    }
   });
 
   describe("runners index", () => {

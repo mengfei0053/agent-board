@@ -31,6 +31,10 @@ const archiveBtn = document.getElementById("archive-btn");
 const continueRow = document.getElementById("continue-row");
 const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
+const continueModel = document.getElementById("continue-model");
+const continueModelHint = document.getElementById("continue-model-hint");
+const continueModelSuggestions = document.getElementById("continue-model-suggestions");
+let continuingTaskId = null;
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
 const createQuickPromptsEl = document.getElementById("create-quick-prompts");
@@ -142,6 +146,7 @@ function loadModelHistory() {
       try { localStorage.removeItem(MODEL_HISTORY_PREFIX + kind); } catch { /* ignore */ }
     }
     refreshModelSuggestions(createKindSelect?.value);
+    refreshModelSuggestions(tasks.get(selectedId)?.kind, continueModelSuggestions);
   })().catch((err) => {
     console.warn("加载模型历史失败，将在下次打开时重试", err);
   }).finally(() => {
@@ -150,8 +155,8 @@ function loadModelHistory() {
   return modelHistoryLoad;
 }
 
-function refreshModelSuggestions(kind) {
-  if (!modelSuggestions) return;
+function refreshModelSuggestions(kind, target = modelSuggestions) {
+  if (!target) return;
   const k = String(kind || "").trim();
   const defaults = (k && COMMON_MODELS_BY_KIND[k]) ? COMMON_MODELS_BY_KIND[k] : COMMON_MODELS_ALL;
   const used = [...tasks.values()]
@@ -161,7 +166,7 @@ function refreshModelSuggestions(kind) {
     .filter(Boolean);
   const history = k ? (modelHistory[k] || []) : Object.values(modelHistory).flat();
   const list = [...new Set([...history, ...used, ...defaults])];
-  modelSuggestions.replaceChildren(...list.map((model) => new Option(model, model)));
+  target.replaceChildren(...list.map((model) => new Option(model, model)));
 }
 
 
@@ -665,6 +670,7 @@ function clearCreatePrompt() {
 
 function clearContinuePrompt() {
   if (continuePrompt) continuePrompt.value = "";
+  if (continueModel) continueModel.value = "";
   if (continueError) {
     continueError.hidden = true;
     continueError.textContent = "";
@@ -922,7 +928,7 @@ async function openDetail(id) {
 }
 
 function canContinue(task) {
-  return !["draft", "queued", "running"].includes(task.status);
+  return !["draft", "queued", "running", "archived"].includes(task.status);
 }
 
 function metaItem(k, v, wide = false, opts = {}) {
@@ -1212,16 +1218,24 @@ function paintDetail(task) {
   }
 
   const showContinue = canContinue(task);
-  continueRow.hidden = task.status === "draft";
-  continueBtn.disabled = !showContinue;
-  continueHint.textContent = task.status === "draft"
+  continueRow.hidden = task.status === "draft" || task.status === "archived";
+  const submitting = continuingTaskId === task.id;
+  continueBtn.disabled = !showContinue || submitting;
+  continueModel.disabled = !["succeeded", "failed", "stopped"].includes(task.status) || !task.sessionId || submitting;
+  continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
+  continueModelHint.textContent = !task.sessionId
+    ? "缺少原会话，不能在保留上下文的情况下切换模型。"
+    : !["succeeded", "failed", "stopped"].includes(task.status)
+      ? "请先停止任务，再选择下一轮模型。"
+      : `仅切换 ${task.kind} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
+  refreshModelSuggestions(task.kind, continueModelSuggestions);
+  continueHint.textContent = task.status === "draft" || task.status === "archived"
     ? ""
     : showContinue
       ? task.sessionId
         ? `将续会话 ${task.sessionId}`
-        : "无 sessionId 时将尝试 CLI continue（同目录最近会话）"
+        : "无原会话：仅携带初始提示词和本轮指令重新执行，不恢复历史上下文"
       : "任务运行中，请先停止再继续";
-  continueError.hidden = true;
 }
 
 function renderLogViewerFromCache() {
@@ -1293,6 +1307,10 @@ if (createKindSelect) {
 refreshModelSuggestions(createKindSelect?.value);
 document.getElementById("create-model")?.addEventListener("focus", () => {
   refreshModelSuggestions(createKindSelect?.value);
+});
+continueModel.addEventListener("focus", () => {
+  refreshModelSuggestions(tasks.get(selectedId)?.kind, continueModelSuggestions);
+  void loadModelHistory();
 });
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
@@ -1504,28 +1522,40 @@ deleteBtn.addEventListener("click", async () => {
 });
 
 continueBtn.addEventListener("click", async () => {
-  if (!selectedId) return;
+  if (!selectedId || continuingTaskId) return;
+  const id = selectedId;
+  const model = continueModel.disabled ? "" : continueModel.value.trim();
+  const body = {
+    prompt: continuePrompt.value.trim() || undefined,
+    model: model || undefined,
+  };
+  continuingTaskId = id;
   continueError.hidden = true;
   continueBtn.disabled = true;
-  const body = { prompt: continuePrompt.value.trim() || undefined };
-  const res = await fetch(`/api/tasks/${selectedId}/continue`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    continueError.hidden = false;
-    continueError.textContent = data.error || res.statusText;
-    const t = tasks.get(selectedId);
-    continueBtn.disabled = t ? !canContinue(t) : false;
-    return;
-  }
-  if (data.task) {
-    tasks.set(data.task.id, data.task);
-    clearContinuePrompt();
-    paintDetail(data.task);
-    renderList();
+  continueModel.disabled = true;
+  try {
+    const res = await fetch(`/api/tasks/${id}/continue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (data.task) {
+      tasks.set(data.task.id, data.task);
+      rememberModel(data.task.kind, data.task.model);
+      if (selectedId === id) clearContinuePrompt();
+      renderList();
+    }
+  } catch (err) {
+    if (selectedId === id) {
+      continueError.hidden = false;
+      continueError.textContent = err?.message || "继续任务失败，请重试";
+    }
+  } finally {
+    continuingTaskId = null;
+    const task = tasks.get(selectedId);
+    if (task) paintDetail(task);
   }
 });
 
@@ -1988,7 +2018,9 @@ function schedulePaintDetail(task) {
   paintDetailTimer = setTimeout(() => {
     paintDetailTimer = null;
     if (task.id !== selectedId || detailModal.classList.contains("hidden")) return;
-    paintDetail(task);
+    // A continue response may already have changed the model/iteration since this SSE tick.
+    const latest = tasks.get(task.id);
+    if (latest) paintDetail(latest);
   }, 120);
 }
 
