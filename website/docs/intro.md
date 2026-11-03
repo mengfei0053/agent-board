@@ -19,4 +19,4 @@ Agent Board 是运行在本机的 Agent 任务看板。它把工作区和任务�
 
 - [项目 README](https://github.com/mengfei0053/agent-board#readme)：完整配置、运行和开发说明。
 - [本机架构细节](https://github.com/mengfei0053/agent-board/blob/HEAD/ARCHITECTURE.md)和 [Relay 协议](https://github.com/mengfei0053/agent-board/blob/HEAD/PROTOCOL.md)。
-- 看板运行后，可在 [本机 API 文档](http://127.0.0.1:8791/docs)查看 HTTP 接口。
+- [API 参考](./api/overview.md)：看板后端 HTTP / SSE、Relay HTTP 与 WebSocket 接口，无需启动本机服务即可查阅。

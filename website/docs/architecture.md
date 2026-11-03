@@ -6,7 +6,7 @@ description: Agent Board 的模块职责、部署拓扑、任务执行、存储�
 
 Agent Board 以本机看板服务为核心：工作区指向本机目录，任务由本机安装的 Agent CLI 执行，任务数据保存到 PostgreSQL。浏览器通过 HTTP 和 SSE 操作看板；Android 客户端通过公网 Relay 远程操作同一个看板。
 
-本文描述仓库当前实现。接口字段和部署参数分别见 [HTTP API 文档](http://127.0.0.1:8791/docs)、[Relay 协议](https://github.com/mengfei0053/agent-board/blob/HEAD/PROTOCOL.md)和[项目 README](https://github.com/mengfei0053/agent-board#readme)。
+本文描述仓库当前实现。接口字段见站内 [API 参考](./api/overview.md)（[看板 HTTP / SSE](./api/board.md)、[Relay HTTP](./api/relay-http.md)、[Relay WebSocket](./api/relay-websocket.md)）；部署参数见[项目 README](https://github.com/mengfei0053/agent-board#readme)，完整线协议见仓库 [PROTOCOL.md](https://github.com/mengfei0053/agent-board/blob/HEAD/PROTOCOL.md)。
 
 ## 整体拓扑
 

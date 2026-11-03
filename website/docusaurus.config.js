@@ -24,6 +24,7 @@ const config = {
       title: 'Agent Board',
       items: [
         { to: '/', label: '文档', position: 'left' },
+        { to: '/api/overview', label: 'API 参考', position: 'left' },
         { href: 'https://github.com/mengfei0053/agent-board', label: 'GitHub', position: 'right' },
       ],
     },
