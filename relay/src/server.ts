@@ -5,6 +5,7 @@ import { serveAdmin } from "./admin.js";
 import { RelayHub, type BoardConn, type PhoneConn } from "./hub.js";
 import { log as defaultLog, type LogFields } from "./log.js";
 import { makeErr, PROTOCOL_VERSION, type Envelope } from "./protocol.js";
+import { SqliteAuthStore } from "./persistence.js";
 import { RateLimiter } from "./rate-limit.js";
 
 type LogFn = (level: "info" | "warn" | "error", message: string, fields?: LogFields) => void;
@@ -14,6 +15,8 @@ export type ServerOptions = {
   port?: number;
   adminToken: string;
   boardToken: string;
+  /** Omit for the backwards-compatible in-memory development mode. */
+  databasePath?: string;
   tokenTtlMs?: number;
   pairTtlMs?: number;
   cmdTimeoutMs?: number;
@@ -42,15 +45,24 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
   const port = options.port ?? 0;
   const writeLog = options.log ?? defaultLog;
   const now = options.now ?? Date.now;
-  const auth = new AuthStore({
-    adminToken: options.adminToken,
-    boardToken: options.boardToken,
-    tokenTtlMs: options.tokenTtlMs ?? 7 * 24 * 60 * 60 * 1000,
-    pairTtlMs: options.pairTtlMs ?? 300_000,
-    pairAttemptLimit: options.pairAttemptLimit,
-    pairWindowMs: options.pairWindowMs,
-    now,
-  });
+  let persistence: SqliteAuthStore | undefined;
+  let auth: AuthStore;
+  try {
+    persistence = options.databasePath ? new SqliteAuthStore(options.databasePath) : undefined;
+    auth = new AuthStore({
+      adminToken: options.adminToken,
+      boardToken: options.boardToken,
+      tokenTtlMs: options.tokenTtlMs ?? 7 * 24 * 60 * 60 * 1000,
+      pairTtlMs: options.pairTtlMs ?? 300_000,
+      pairAttemptLimit: options.pairAttemptLimit,
+      pairWindowMs: options.pairWindowMs,
+      now,
+      persistence,
+    });
+  } catch (error) {
+    persistence?.close();
+    throw error;
+  }
   const hub = new RelayHub(auth, {
     cmdTimeoutMs: options.cmdTimeoutMs ?? 8_000,
     idempotencyTtlMs: options.idempotencyTtlMs,
@@ -168,21 +180,26 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
   }, 30_000);
   ping.unref?.();
 
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error) => {
-      server.off("error", onError);
-      reject(error);
-    };
-    server.once("error", onError);
-    server.listen(port, host, () => {
-      server.off("error", onError);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        server.off("error", onError);
+        reject(error);
+      };
+      server.once("error", onError);
+      server.listen(port, host, () => {
+        server.off("error", onError);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    await closeServer(server, wss, sockets, hub, ping, auth);
+    throw error;
+  }
 
   const address = server.address();
   if (!address || typeof address === "string") {
-    await closeServer(server, wss, sockets, hub, ping);
+    await closeServer(server, wss, sockets, hub, ping, auth);
     throw new Error("server did not bind a TCP port");
   }
   const clientHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
@@ -191,7 +208,7 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
     port: address.port,
     httpUrl: `http://${clientHost}:${address.port}`,
     wsUrl: `ws://${clientHost}:${address.port}/v1/ws`,
-    close: () => closeServer(server, wss, sockets, hub, ping),
+    close: () => closeServer(server, wss, sockets, hub, ping, auth),
   };
 }
 
@@ -451,9 +468,11 @@ async function closeServer(
   sockets: Set<WebSocket>,
   hub: RelayHub,
   ping: NodeJS.Timeout,
+  auth: AuthStore,
 ): Promise<void> {
   clearInterval(ping);
   hub.dispose();
+  auth.close();
   for (const socket of sockets) socket.terminate();
   sockets.clear();
   await new Promise<void>((resolve) => {

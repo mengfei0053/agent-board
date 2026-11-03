@@ -5,6 +5,7 @@ export type AppConfig = {
   port: number;
   adminToken: string;
   boardToken: string;
+  databasePath?: string;
   tokenTtlMs: number;
   pairTtlMs: number;
   cmdTimeoutMs: number;
@@ -54,11 +55,14 @@ export function loadConfig(env: NodeJS.ProcessEnv): LoadConfigResult {
   const wsMessagesPerSec = parsePositiveInt(env.WS_MESSAGES_PER_SEC, 40);
   if (wsMessagesPerSec === null) return { ok: false, message: "WS_MESSAGES_PER_SEC must be a positive integer" };
 
+  const databasePath = env.RELAY_DB_PATH?.trim() || undefined;
+
   const production = env.NODE_ENV === "production";
   const adminFromEnv = env.ADMIN_TOKEN?.trim() ?? "";
   const boardFromEnv = env.BOARD_TOKEN?.trim() ?? "";
   if (production && !adminFromEnv) return { ok: false, message: "ADMIN_TOKEN is required when NODE_ENV=production" };
   if (production && !boardFromEnv) return { ok: false, message: "BOARD_TOKEN is required when NODE_ENV=production" };
+  if (production && !databasePath) return { ok: false, message: "RELAY_DB_PATH is required when NODE_ENV=production" };
 
   const warnings: string[] = [];
   const adminToken = adminFromEnv || generateAdminToken();
@@ -74,6 +78,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): LoadConfigResult {
       port,
       adminToken,
       boardToken,
+      databasePath,
       tokenTtlMs,
       pairTtlMs,
       cmdTimeoutMs,

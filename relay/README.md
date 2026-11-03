@@ -2,13 +2,13 @@
 
 In the agent-board monorepo this package is `relay/`. Run the commands below from this directory. Production on `https://relay.mengfei.tech` (UCloud 101, Bitwarden `agent-board-relay 101`) uses `ADMIN_TOKEN` and `BOARD_TOKEN`.
 
-In-memory relay between a phone and the agent-board connector on a ThinkBook.
+Relay between a phone and the agent-board connector on a ThinkBook. Authorization state is stored in SQLite in production; task routing data stays in memory.
 
 The phone never talks to the board. The board connector dials out to this relay. Agent-board itself stays on `127.0.0.1:8791` on the ThinkBook; mapping commands onto that HTTP API is P1, inside the connector. This process does not call it and does not run CLIs. There is no Tailscale shortcut.
 
 P0 is the relay, a fake connector, and a fake phone. The Android app is later (Kotlin Compose). It will send `cmd.create` as specified in [PROTOCOL.md](PROTOCOL.md). Completion is `evt.task.done` while the phone socket is online. That delivery is best-effort: receiving the frame is not the same as an Android system notification being shown, and an offline phone is not pushed.
 
-Pair codes, device tokens, board credentials, sockets, idempotency records, and the latest snapshot exist only in process memory. They are not written to disk.
+Device sessions, dynamically issued board credential hashes, known board IDs, and revocations are persisted when `RELAY_DB_PATH` is set. Pair codes, sockets, idempotency records, task snapshots, and logs exist only in process memory.
 
 ## Public deploy prerequisites
 
@@ -28,7 +28,7 @@ npm test
 npm run dev
 ```
 
-`npm run dev` listens on `127.0.0.1:8787`. If `ADMIN_TOKEN` or `BOARD_TOKEN` is unset, the process generates one and prints it once. `NODE_ENV=production` refuses to generate them.
+`npm run dev` listens on `127.0.0.1:8787`. If `ADMIN_TOKEN` or `BOARD_TOKEN` is unset, the process generates one and prints it once. `NODE_ENV=production` refuses to generate them and requires `RELAY_DB_PATH`. Node.js 22.13 or newer is required for the built-in SQLite driver.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -36,6 +36,7 @@ npm run dev
 | `PORT` | `8787` | HTTP and WebSocket port. WebSocket path is `/v1/ws`. |
 | `ADMIN_TOKEN` | generated | Bearer token for `POST /auth/pair/create`, revoke, and board issue. |
 | `BOARD_TOKEN` | generated | Bootstrap credential the connector sends in `board.register`. |
+| `RELAY_DB_PATH` | memory only in development | SQLite authorization database. Required in production; mount its parent directory on persistent storage. |
 | `PAIR_TTL_MS` | `300000` | Maximum pair-code lifetime. `PAIR_TTL` is accepted as an alias. |
 | `TOKEN_TTL_MS` | 7 days | Device token lifetime. Refresh rotates it. |
 | `IDEMPOTENCY_TTL_MS` | `600000` | How long a `cmd.*` result is remembered. |
@@ -49,12 +50,12 @@ npm run dev
 Open **http://127.0.0.1:8787/admin** (or `https://<relay-host>/admin` behind TLS) and enter `ADMIN_TOKEN`.
 
 - View uptime, protocol version, online boards/phone connections, paired devices, and the count of unused pair codes. Use **刷新状态** to reload; there is no background polling.
-- View online/offline boards known during this process lifetime, device names, allowed board IDs, and token expiration times. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
+- View online/offline known boards, device names, allowed board IDs, and token expiration times. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
 - Create one-time phone pair codes for 1–20 board IDs (including offline boards); revoke devices and immediately disconnect their sockets.
 - Revoke a board or issue a replacement scoped `BOARD_TOKEN`, with confirmation. **These operations also revoke the bootstrap credential and any old credential overlapping the specified boards. Other boards sharing those credentials may disconnect too.** Update affected board configurations before reconnecting. These actions do not stop tasks on the local board.
 - The admin token is held only in page memory, not in cookies, localStorage, or sessionStorage. Reloading/closing the page or logging out requires logging in again. Generated secrets are shown only after their creation and can be cleared from the page.
 
-No database or account system is added. Restarting the relay clears paired devices, dynamic board tokens, pair codes, and revocations; `BOARD_TOKEN` from the environment becomes the bootstrap credential again. Do not treat a revocation as permanent across restarts. Serve the console over HTTPS and avoid shared browsers. Admin state reads and writes share the existing limit of 60 requests/minute per TCP peer.
+With `RELAY_DB_PATH` configured, restarts retain paired devices, dynamic board tokens, known boards, and revocations. The database stores SHA-256 token hashes rather than plaintext tokens; protect and back up the database file. Pair codes, connections, task data, logs, and in-flight command results are still cleared. Serve the console over HTTPS and avoid shared browsers. Admin state reads and writes share the existing limit of 60 requests/minute per TCP peer.
 
 Static assets are in `public/`; distribute them alongside `dist/`. The Docker image includes both. Browser tests use the repository root's existing Puppeteer dependency and a real temporary relay:
 

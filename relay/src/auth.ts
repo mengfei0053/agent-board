@@ -3,6 +3,21 @@ import { RateLimiter } from "./rate-limit.js";
 
 export type PhoneRole = "phone";
 
+export type AuthSnapshot = {
+  version: 1;
+  bootstrap: { tokenHash: string; revoked: boolean };
+  devices: StoredDeviceSession[];
+  credentials: PersistedCredential[];
+  boardIds: string[];
+  revokedBoardIds: string[];
+};
+
+export interface AuthStorePersistence {
+  load(): AuthSnapshot | null;
+  save(snapshot: AuthSnapshot): void;
+  close(): void;
+}
+
 export type DeviceSession = {
   deviceId: string;
   deviceName: string;
@@ -35,9 +50,16 @@ type PairRecord = {
   expiresAt: number;
 };
 
-type Credential = {
+type StoredDeviceSession = DeviceSession & { tokenHash: string };
+
+type PersistedCredential = {
   id: string;
-  token: string;
+  /** Only SHA-256 hashes are persisted; plaintext credentials never reach the database. */
+  tokenHash: string;
+  boardIds: string[];
+};
+
+type Credential = Omit<PersistedCredential, "boardIds"> & {
   /** null means the bootstrap credential may register any board that is not revoked. */
   boardIds: string[] | null;
   revoked: boolean;
@@ -46,17 +68,19 @@ type Credential = {
 const BOARD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * Admin token, pair codes, device tokens, and board credentials live here only.
- * Pair codes are deleted when used. Nothing is written to disk.
+ * Long-lived device sessions, board credential hashes, and revocations can be
+ * persisted. Pair codes, admin tokens, rate limits, and sockets remain in memory.
  */
 export class AuthStore {
   private readonly adminToken: string;
   private readonly pairs = new Map<string, PairRecord>();
-  private readonly devices = new Map<string, DeviceSession>();
+  private readonly devices = new Map<string, StoredDeviceSession>();
   private readonly tokensByDevice = new Map<string, Set<string>>();
-  private readonly revokedDevices = new Set<string>();
-  private readonly credentials: Credential[] = [];
-  private readonly revokedBoardIds = new Set<string>();
+  private credentials: Credential[] = [];
+  private revokedBoardIds = new Set<string>();
+  private boardIds = new Set<string>();
+  private readonly bootstrap: { token: string; revoked: boolean };
+  private readonly persistence?: AuthStorePersistence;
   private readonly pairAttempts: RateLimiter;
 
   constructor(
@@ -68,6 +92,7 @@ export class AuthStore {
       pairAttemptLimit?: number;
       pairWindowMs?: number;
       now?: () => number;
+      persistence?: AuthStorePersistence;
     },
   ) {
     if (!opts.adminToken) throw new Error("admin token is empty");
@@ -75,13 +100,14 @@ export class AuthStore {
     if (!Number.isFinite(opts.pairTtlMs) || opts.pairTtlMs < 1_000) throw new Error("pair TTL must be at least 1000ms");
     if (!Number.isFinite(opts.tokenTtlMs) || opts.tokenTtlMs <= 0) throw new Error("token TTL must be positive");
     this.adminToken = opts.adminToken;
+    this.persistence = opts.persistence;
+    this.bootstrap = { token: opts.boardToken, revoked: false };
     this.pairAttempts = new RateLimiter(opts.pairAttemptLimit ?? 8, opts.pairWindowMs ?? 60_000, () => this.now());
-    this.credentials.push({
-      id: `cred_${randomBytes(8).toString("hex")}`,
-      token: opts.boardToken,
-      boardIds: null,
-      revoked: false,
-    });
+    this.restore(this.persistence?.load() ?? null);
+  }
+
+  close(): void {
+    this.persistence?.close();
   }
 
   verifyAdmin(token: string): boolean {
@@ -121,34 +147,39 @@ export class AuthStore {
     }
     this.pairs.delete(key);
     const minted = this.mint(name, record.boardIds);
+    this.persist();
     return { ok: true, ...minted };
   }
 
   refresh(deviceToken: string): PairSuccess | AuthFailure {
     if (!deviceToken) return { ok: false, code: "bad_request", message: "deviceToken is required" };
-    const session = this.devices.get(deviceToken);
-    if (!session || session.expiresAt <= this.now() || this.revokedDevices.has(session.deviceId)) {
-      if (session) this.forgetToken(deviceToken, session.deviceId);
+    const tokenHash = hashSecret(deviceToken);
+    const session = this.devices.get(tokenHash);
+    if (!session || session.expiresAt <= this.now()) {
+      if (session) this.forgetTokenAndPersist(tokenHash, session.deviceId);
       return { ok: false, code: "unauthorized", message: "device token rejected" };
     }
     const minted = this.mint(session.deviceName, session.boardIds, session.deviceId);
-    this.forgetToken(deviceToken, session.deviceId);
+    this.forgetToken(tokenHash, session.deviceId, false);
+    this.persist();
     return { ok: true, ...minted };
   }
 
   verifyDevice(token: string): DeviceSession | null {
-    const session = this.devices.get(token);
+    const tokenHash = hashSecret(token);
+    const session = this.devices.get(tokenHash);
     if (!session) return null;
-    if (session.expiresAt <= this.now() || this.revokedDevices.has(session.deviceId)) {
-      this.forgetToken(token, session.deviceId);
+    if (session.expiresAt <= this.now()) {
+      this.forgetTokenAndPersist(tokenHash, session.deviceId);
       return null;
     }
-    return { ...session, boardIds: [...session.boardIds] };
+    return publicSession(session);
   }
 
   verifyBoard(token: string, boardId: string): BoardCheck {
     if (!BOARD_ID.test(boardId)) return { ok: false, code: "unauthorized", message: "board token rejected" };
-    const credential = this.credentials.find((item) => !item.revoked && safeEqual(item.token, token));
+    const tokenHash = hashSecret(token);
+    const credential = this.credentials.find((item) => !item.revoked && safeEqual(item.tokenHash, tokenHash));
     if (!credential) return { ok: false, code: "unauthorized", message: "board token rejected" };
     if (this.revokedBoardIds.has(boardId)) return { ok: false, code: "unauthorized", message: "board token rejected" };
     if (credential.boardIds && !credential.boardIds.includes(boardId)) {
@@ -157,25 +188,36 @@ export class AuthStore {
     return { ok: true, credentialId: credential.id };
   }
 
+  noteBoard(boardId: string): void {
+    if (!BOARD_ID.test(boardId) || this.boardIds.has(boardId)) return;
+    this.boardIds.add(boardId);
+    this.persist();
+  }
+
   revokeDevice(deviceId: string): boolean {
     const tokens = this.tokensByDevice.get(deviceId);
     if (!tokens || tokens.size === 0) return false;
-    for (const token of [...tokens]) this.forgetToken(token, deviceId);
-    this.revokedDevices.add(deviceId);
+    for (const token of [...tokens]) this.forgetToken(token, deviceId, false);
+    this.persist();
     return true;
   }
 
   revokeBoardToken(token: string): string | null {
-    const credential = this.credentials.find((item) => !item.revoked && safeEqual(item.token, token));
+    const tokenHash = hashSecret(token);
+    const credential = this.credentials.find((item) => !item.revoked && safeEqual(item.tokenHash, tokenHash));
     if (!credential) return null;
     credential.revoked = true;
+    if (credential.boardIds === null) this.bootstrap.revoked = true;
+    this.persist();
     return credential.id;
   }
 
   revokeBoardId(boardId: string): { ok: true; credentialIds: string[] } | { ok: false } {
     if (!BOARD_ID.test(boardId)) return { ok: false };
     this.revokedBoardIds.add(boardId);
-    return { ok: true, credentialIds: this.revokeCovering([boardId]) };
+    const credentialIds = this.revokeCovering([boardId]);
+    this.persist();
+    return { ok: true, credentialIds };
   }
 
   issueBoardToken(
@@ -188,11 +230,12 @@ export class AuthStore {
     const boardToken = `bt_${randomBytes(32).toString("base64url")}`;
     const credential: Credential = {
       id: `cred_${randomBytes(8).toString("hex")}`,
-      token: boardToken,
+      tokenHash: hashSecret(boardToken),
       boardIds: [...ids.boardIds],
       revoked: false,
     };
     this.credentials.push(credential);
+    this.persist();
     return { ok: true, boardToken, credentialId: credential.id, boardIds: [...ids.boardIds], revokedCredentialIds };
   }
 
@@ -204,6 +247,7 @@ export class AuthStore {
       const covers = credential.boardIds === null || boardIds.some((id) => credential.boardIds?.includes(id));
       if (!covers) continue;
       credential.revoked = true;
+      if (credential.boardIds === null) this.bootstrap.revoked = true;
       revoked.push(credential.id);
     }
     return revoked;
@@ -212,7 +256,7 @@ export class AuthStore {
   deviceCount(): number {
     const now = this.now();
     for (const [token, session] of this.devices) {
-      if (session.expiresAt <= now || this.revokedDevices.has(session.deviceId)) this.forgetToken(token, session.deviceId);
+      if (session.expiresAt <= now) this.forgetTokenAndPersist(token, session.deviceId);
     }
     return this.tokensByDevice.size;
   }
@@ -226,14 +270,14 @@ export class AuthStore {
     this.deviceCount();
     this.prunePairs();
     const devices = [...new Map([...this.devices.values()].map((session) => [session.deviceId, session])).values()]
-      .map((session) => ({ ...session, boardIds: [...session.boardIds] }));
-    const boardIds = new Set([...knownBoardIds, ...this.revokedBoardIds]);
+      .map(publicSession);
+    const boardIds = new Set([...knownBoardIds, ...this.boardIds, ...this.revokedBoardIds]);
     for (const credential of this.credentials) {
       for (const boardId of credential.boardIds ?? []) boardIds.add(boardId);
     }
     for (const session of devices) for (const boardId of session.boardIds) boardIds.add(boardId);
     for (const pair of this.pairs.values()) for (const boardId of pair.boardIds) boardIds.add(boardId);
-    const boards = [...boardIds].sort().map((boardId) => ({
+    const boards = [...boardIds].sort(compareText).map((boardId) => ({
       boardId,
       revoked: this.revokedBoardIds.has(boardId),
       credentialActive: !this.revokedBoardIds.has(boardId) && this.credentials.some((credential) =>
@@ -242,23 +286,89 @@ export class AuthStore {
     return { devices, boards, activePairCodes: this.pairs.size };
   }
 
+  private restore(snapshot: AuthSnapshot | null): void {
+    if (!snapshot) {
+      this.credentials = [this.bootstrapCredential()];
+      this.persist();
+      return;
+    }
+    validateSnapshot(snapshot);
+    this.bootstrap.revoked = snapshot.bootstrap.revoked && snapshot.bootstrap.tokenHash === hashSecret(this.bootstrap.token);
+    this.credentials = [
+      this.bootstrapCredential(),
+      ...snapshot.credentials.map((credential) => ({
+        id: credential.id,
+        tokenHash: credential.tokenHash,
+        boardIds: [...credential.boardIds],
+        revoked: false,
+      })),
+    ];
+    this.revokedBoardIds = new Set(snapshot.revokedBoardIds);
+    this.boardIds = new Set(snapshot.boardIds);
+    for (const session of snapshot.devices) {
+      if (session.expiresAt <= this.now()) continue;
+      this.devices.set(session.tokenHash, { ...session, boardIds: [...session.boardIds] });
+      this.tokensByDevice.set(session.deviceId, new Set([session.tokenHash]));
+    }
+    this.persist();
+  }
+
+  private bootstrapCredential(): Credential {
+    return {
+      id: "cred_bootstrap",
+      tokenHash: hashSecret(this.bootstrap.token),
+      boardIds: null,
+      revoked: this.bootstrap.revoked,
+    };
+  }
+
+  private persist(): void {
+    if (!this.persistence) return;
+    const devices = [...new Map([...this.devices.values()].map((session) => [session.deviceId, session])).values()]
+      .map((session) => ({ ...session, boardIds: [...session.boardIds] }));
+    const credentials = this.credentials.flatMap((credential) =>
+      credential.boardIds !== null && !credential.revoked
+        ? [{ id: credential.id, tokenHash: credential.tokenHash, boardIds: [...credential.boardIds] }]
+        : []);
+    this.persistence.save({
+      version: 1,
+      bootstrap: { tokenHash: hashSecret(this.bootstrap.token), revoked: this.bootstrap.revoked },
+      devices,
+      credentials,
+      boardIds: [...this.boardIds].sort(compareText),
+      revokedBoardIds: [...this.revokedBoardIds].sort(compareText),
+    });
+  }
+
   private mint(deviceName: string, boardIds: string[], deviceId = `dev_${randomBytes(8).toString("hex")}`): Omit<PairSuccess, "ok"> {
     const deviceToken = `dt_${randomBytes(32).toString("base64url")}`;
     const expiresAt = this.now() + this.opts.tokenTtlMs;
-    const session: DeviceSession = { deviceId, deviceName, role: "phone", boardIds: [...boardIds], expiresAt };
-    this.devices.set(deviceToken, session);
+    const session: StoredDeviceSession = {
+      deviceId,
+      deviceName,
+      role: "phone",
+      boardIds: [...boardIds],
+      expiresAt,
+      tokenHash: hashSecret(deviceToken),
+    };
+    this.devices.set(session.tokenHash, session);
     const bucket = this.tokensByDevice.get(deviceId) ?? new Set<string>();
-    bucket.add(deviceToken);
+    bucket.add(session.tokenHash);
     this.tokensByDevice.set(deviceId, bucket);
     return { deviceId, deviceToken, role: "phone", boardIds: [...boardIds], expiresAt };
   }
 
-  private forgetToken(token: string, deviceId: string): void {
+  private forgetTokenAndPersist(token: string, deviceId: string): void {
+    this.forgetToken(token, deviceId, true);
+  }
+
+  private forgetToken(token: string, deviceId: string, persist = false): void {
     this.devices.delete(token);
     const bucket = this.tokensByDevice.get(deviceId);
     if (!bucket) return;
     bucket.delete(token);
     if (bucket.size === 0) this.tokensByDevice.delete(deviceId);
+    if (persist) this.persist();
   }
 
   private prunePairs(): void {
@@ -297,6 +407,41 @@ function normalizeBoardIds(boardIds: string[]): { ok: true; boardIds: string[] }
 
 function hashCode(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
+}
+
+function hashSecret(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function publicSession(session: StoredDeviceSession): DeviceSession {
+  return {
+    deviceId: session.deviceId,
+    deviceName: session.deviceName,
+    role: "phone",
+    boardIds: [...session.boardIds],
+    expiresAt: session.expiresAt,
+  };
+}
+
+function validateSnapshot(snapshot: AuthSnapshot): void {
+  const validHash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  const validIds = (value: unknown) => Array.isArray(value) && value.length >= 1 && value.length <= 20 &&
+    value.every((id) => typeof id === "string" && BOARD_ID.test(id));
+  const valid = snapshot?.version === 1 &&
+    typeof snapshot.bootstrap?.revoked === "boolean" && validHash(snapshot.bootstrap.tokenHash) &&
+    Array.isArray(snapshot.devices) && snapshot.devices.every((session) =>
+      session && typeof session.deviceId === "string" && typeof session.deviceName === "string" &&
+      session.role === "phone" && validHash(session.tokenHash) && validIds(session.boardIds) &&
+      Number.isSafeInteger(session.expiresAt) && session.expiresAt > 0) &&
+    Array.isArray(snapshot.credentials) && snapshot.credentials.every((credential) =>
+      credential && typeof credential.id === "string" && validHash(credential.tokenHash) && validIds(credential.boardIds)) &&
+    Array.isArray(snapshot.boardIds) && snapshot.boardIds.every((id) => typeof id === "string" && BOARD_ID.test(id)) &&
+    Array.isArray(snapshot.revokedBoardIds) && snapshot.revokedBoardIds.every((id) => typeof id === "string" && BOARD_ID.test(id));
+  if (!valid) throw new Error("relay auth database contains invalid state");
+}
+
+function compareText(left: string, right: string): number {
+  return left.localeCompare(right);
 }
 
 function safeEqual(a: string, b: string): boolean {

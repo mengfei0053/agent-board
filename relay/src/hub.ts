@@ -124,7 +124,7 @@ export class BoardConn {
 }
 
 /**
- * In-memory router. Pairings, commands, snapshots, and sockets are not persisted.
+ * In-memory router. Pair codes, commands, snapshots, and sockets are not persisted.
  * Offline commands are rejected. evt.task.done is forwarded only to phones that
  * are connected and allowed to see that board.
  */
@@ -366,6 +366,7 @@ export class RelayHub {
       this.deliver(conn.send, makeErr(this.now(), check.message, { code: check.code, ref: parsed.envelope.id, stage: "failed" }));
       return;
     }
+    this.auth.noteBoard(parsed.boardId);
     if (conn.boardId === parsed.boardId && this.boards.get(parsed.boardId) === conn) {
       if (parsed.label) conn.label = parsed.label;
       this.deliver(conn.send, makeAck(this.now(), parsed.envelope.id, {

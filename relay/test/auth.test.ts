@@ -154,11 +154,17 @@ test("idempotency TTL cannot be shorter than the command timeout", () => {
 
 test("production requires admin and board tokens", () => {
   assert.equal(loadConfig({ NODE_ENV: "production" }).ok, false);
+  assert.equal(loadConfig({
+    NODE_ENV: "production",
+    ADMIN_TOKEN: "admin-token-value-123",
+    BOARD_TOKEN: "board-token-value-123",
+  }).ok, false);
   const ready = loadConfig({
     NODE_ENV: "production",
     ADMIN_TOKEN: "admin-token-value-123",
     BOARD_TOKEN: "board-token-value-123",
     PAIR_TTL_MS: "120000",
+    RELAY_DB_PATH: "/var/lib/agent-board-relay/relay.sqlite",
   });
   assert.equal(ready.ok, true);
   if (!ready.ok) return;
@@ -169,6 +175,10 @@ test("production requires admin and board tokens", () => {
   if (!local.ok) return;
   assert.equal(local.config.generatedAdminToken, true);
   assert.equal(local.config.generatedBoardToken, true);
+  assert.equal(local.config.databasePath, undefined);
+  const configured = loadConfig({ RELAY_DB_PATH: " data/relay.sqlite " });
+  assert.equal(configured.ok, true);
+  if (configured.ok) assert.equal(configured.config.databasePath, "data/relay.sqlite");
 });
 
 function must<T extends { ok: true; pairCode: string } | { ok: false; message: string }>(result: T): { pairCode: string } {

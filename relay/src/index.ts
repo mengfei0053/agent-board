@@ -16,6 +16,7 @@ const server = await startServer({
   port: config.port,
   adminToken: config.adminToken,
   boardToken: config.boardToken,
+  databasePath: config.databasePath,
   tokenTtlMs: config.tokenTtlMs,
   pairTtlMs: config.pairTtlMs,
   cmdTimeoutMs: config.cmdTimeoutMs,
@@ -36,7 +37,12 @@ if (config.generatedBoardToken) {
 } else {
   log("info", "BOARD_TOKEN loaded from environment");
 }
-log("info", "pair codes, device tokens, board credentials, and sockets stay in memory and are dropped on exit");
+if (config.databasePath) {
+  log("info", "persistent device sessions and board credential hashes enabled");
+} else {
+  log("warn", "RELAY_DB_PATH is unset; device sessions, board credentials, and revocations are dropped on exit");
+}
+log("info", "pair codes, task data, logs, and sockets stay in memory and are dropped on exit");
 
 let closing = false;
 async function shutdown(signal: string): Promise<void> {
