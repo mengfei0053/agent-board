@@ -108,6 +108,13 @@ export function createState(seed = {}) {
       devin: {},
       codex: {},
     },
+    processEnv: {
+      pi: {},
+      claude: {},
+      agent: {},
+      devin: {},
+      codex: {},
+    },
     quickPrompts: seed.quickPrompts || [
       { id: "qp_demo", label: "总结一下", content: "请用三句话总结当前进度" },
     ],
@@ -425,6 +432,13 @@ export function createMockServer(state, extra) {
           devin: {},
           codex: {},
         };
+        state.settings.processEnv = {
+          pi: {},
+          claude: {},
+          agent: {},
+          devin: {},
+          codex: {},
+        };
         state.settings.quickPrompts = [];
         state.settings.codexSandbox = true;
         return json(res, 200, state.settings);
@@ -439,6 +453,9 @@ export function createMockServer(state, extra) {
       }
       if (body.proxyEnv && typeof body.proxyEnv === "object") {
         state.settings.proxyEnv = body.proxyEnv;
+      }
+      if (body.processEnv && typeof body.processEnv === "object") {
+        state.settings.processEnv = body.processEnv;
       }
       if (Array.isArray(body.quickPrompts)) {
         state.settings.quickPrompts = body.quickPrompts

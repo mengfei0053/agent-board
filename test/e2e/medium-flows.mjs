@@ -52,6 +52,15 @@ async function main() {
     await cliInput.click({ clickCount: 3 });
     await cliInput.type("/tmp/e2e-fake-pi");
 
+    // add a custom process environment variable
+    await page.click('[data-add-process-env="pi"]');
+    const envRows = await page.$$('[data-process-env-list="pi"] [data-process-env-row]');
+    const envRow = envRows[envRows.length - 1];
+    const envKey = await envRow.$('[data-process-env-key]');
+    const envValue = await envRow.$('[data-process-env-value]');
+    await envKey.type("OPENAI_BASE_URL");
+    await envValue.type("https://e2e.example/v1");
+
     // add a quick prompt
     await page.click("#btn-add-quick-prompt");
     await page.waitForSelector('.quick-prompt-item[data-quick-idx]');
@@ -69,6 +78,7 @@ async function main() {
       () => document.getElementById("settings-status")?.textContent?.includes("已保存"),
     );
     assert.equal(state.settings.cliPaths.pi.override, "/tmp/e2e-fake-pi");
+    assert.equal(state.settings.processEnv.pi.OPENAI_BASE_URL, "https://e2e.example/v1");
     assert.ok(state.settings.quickPrompts.some((q) => q.label === "复盘" && q.content.includes("复盘")));
 
     // reload and verify
@@ -78,6 +88,11 @@ async function main() {
     );
     const cliVal = await page.$eval('input[data-cli-key="pi"]', (el) => el.value);
     assert.equal(cliVal, "/tmp/e2e-fake-pi");
+    const envKeys = await page.$$eval(
+      '[data-process-env-list="pi"] [data-process-env-key]',
+      (els) => els.map((e) => e.value),
+    );
+    assert.ok(envKeys.includes("OPENAI_BASE_URL"));
     const labels = await page.$$eval(
       '[data-quick-field="label"]',
       (els) => els.map((e) => e.value),

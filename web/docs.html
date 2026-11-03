@@ -194,11 +194,11 @@ npm start</code></pre>
       </section>
     
       <section id="settings">
-        <h2>设置（按 Agent：CLI 路径 + 进程代理）</h2>
-        <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。UI 顶部按 Agent 切换，同屏编辑该 Agent 的 CLI 路径与代理。</p>
-        <p><code>GET /api/settings</code> — 返回 <code>cliPaths</code> 与按 kind 分桶的 <code>proxyEnv</code>（覆盖值、生效值；空键可显示是否继承看板进程环境）。</p>
+        <h2>设置（按 Agent：CLI 路径、进程代理与自定义环境变量）</h2>
+        <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。UI 顶部按 Agent 切换，同屏编辑该 Agent 的 CLI 路径、代理与其他环境变量。</p>
+        <p><code>GET /api/settings</code> — 返回 <code>cliPaths</code>、按 kind 分桶的 <code>proxyEnv</code>（覆盖值、生效值；空键可显示是否继承看板进程环境）和 <code>processEnv</code>（自定义环境变量，无配置时为空对象）。</p>
         <pre><code>curl -sS http://127.0.0.1:8791/api/settings</code></pre>
-        <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code> 和/或 <code>proxyEnv</code>。代理按 <code>pi</code> / <code>claude</code> / <code>agent</code> / <code>devin</code> / <code>codex</code> 分别配置；空字符串清除该项覆盖。</p>
+        <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code>、<code>proxyEnv</code>、<code>processEnv</code>、<code>quickPrompts</code>、<code>codexSandbox</code> 中的任意一组。代理按 <code>pi</code> / <code>claude</code> / <code>agent</code> / <code>devin</code> / <code>codex</code> 分别配置；空字符串清除该项覆盖。<code>processEnv</code> 按 kind 整体替换（提交的对象即该 kind 的完整集合，空对象清空），变量名须匹配 <code>[A-Za-z_][A-Za-z0-9_]*</code>，代理键与控制面密钥不可设置。</p>
         <pre><code>curl -sS -X PUT http://127.0.0.1:8791/api/settings \
   -H 'content-type: application/json' \
   -d '{
@@ -214,9 +214,12 @@ npm start</code></pre>
         "HTTP_PROXY": "http://127.0.0.1:7891",
         "HTTPS_PROXY": "http://127.0.0.1:7891"
       }
+    },
+    "processEnv": {
+      "pi": {"OPENAI_BASE_URL": "https://example.test/v1"}
     }
   }'</code></pre>
-        <p>全部恢复默认：<code>{ "clear": true }</code>。持久化 <code>meta.cli_paths</code> / <code>meta.proxy_env</code>（per-kind）；旧版全局扁平代理会在启动时复制到全部 kind。保存后对新 spawn 生效。子进程日志仅记录注入的代理键名，不写具体值。</p>
+        <p>全部恢复默认：<code>{ "clear": true }</code>（保留快捷输入）。持久化 <code>meta.cli_paths</code> / <code>meta.proxy_env</code> / <code>meta.process_env</code>（均 per-kind）；旧版全局扁平代理会在启动时复制到全部 kind。保存后对新 spawn 生效。子进程日志仅记录注入的代理键名，不写具体值。</p>
       </section>
 
     </main>

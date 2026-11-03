@@ -255,10 +255,13 @@ data: {"type":"task_delete","taskIds":["task1"]}
 | --- | --- |
 | `cliPaths` | 按 Agent kind 索引，每项 `{default,override,effective,resolved,label}`，resolved 可能为 null |
 | `proxyEnv` | 按 Agent kind、环境变量键索引，每项 `{override,effective,inherited,configured,hasCredential}` |
+| `processEnv` | 按 Agent kind 索引的自定义环境变量，每项是 `{变量名:值}`；无配置时为空对象 |
 | `quickPrompts` | `[{id,label,content}]` |
 | `codexSandbox` | boolean |
 
 代理键支持 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`、`ALL_PROXY`。URL 用户信息以 `***` 脱敏，仍不应记录整份设置文档。
+
+`processEnv` 的变量名须匹配 `[A-Za-z_][A-Za-z0-9_]*`（最长 128 字符），值最长 8192 字符，每个 kind 最多 50 项。代理键和控制面密钥（如 `DATABASE_URL`、`AGENT_BOARD_WEBHOOK_SECRET`）不能通过此项设置。
 
 ### PUT `/api/settings`
 
@@ -268,6 +271,7 @@ data: {"type":"task_delete","taskIds":["task1"]}
 {
   "cliPaths": {"pi": "/home/me/.local/bin/pi"},
   "proxyEnv": {"codex": {"HTTPS_PROXY": "http://127.0.0.1:7890"}},
+  "processEnv": {"pi": {"OPENAI_BASE_URL": "https://example.test/v1"}},
   "quickPrompts": [{"label": "继续", "content": "继续并运行测试"}],
   "codexSandbox": true
 }
@@ -275,8 +279,9 @@ data: {"type":"task_delete","taskIds":["task1"]}
 
 - `cliPaths` 的值为字符串，空字符串或 null 清除该覆盖。
 - `proxyEnv` 按 Agent / 变量逐项更新，空字符串或 null 清除覆盖，之后可能重新继承进程环境；脱敏占位值保留原凭据。
+- `processEnv` 按 Agent kind 整体替换：提交的该 kind 对象即完整集合，空对象清空，省略 kind 保持不变；空字符串或 null 值的项被删除。
 - `quickPrompts` 整体替换，`[]` 清空；最多保留 50 条，label 截至 40 字符，content 上限 100,000 字符；id 可省略，空白无效项被丢弃。
-- `{clear:true}` 重置 CLI 路径、代理覆盖及 Codex sandbox（true），**保留快捷提示词**，该请求中的其他设置不再应用。
+- `{clear:true}` 重置 CLI 路径、代理覆盖、自定义环境变量及 Codex sandbox（true），**保留快捷提示词**，该请求中的其他设置不再应用。
 
 成功 `200` 返回提交后的脱敏设置文档。此接口不修改 Relay 的环境变量配置。
 

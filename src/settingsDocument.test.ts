@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import { _resetCliPathOverridesForTests } from "./cliPaths.js";
 import { _resetCodexSandboxForTests } from "./codexSandbox.js";
 import { childProcessEnv, _resetProxyEnvOverridesForTests } from "./proxyEnv.js";
+import { _resetProcessEnvOverridesForTests } from "./processEnv.js";
 import { _resetQuickPromptsForTests } from "./quickPrompts.js";
 import {
   readSettingsDocument,
@@ -17,6 +18,7 @@ const PLACEHOLDER = "http://user:***@127.0.0.1:8899";
 afterEach(() => {
   setSettingsMetaUpsertForTests(null);
   _resetProxyEnvOverridesForTests({});
+  _resetProcessEnvOverridesForTests({});
   _resetCliPathOverridesForTests({});
   _resetQuickPromptsForTests([]);
   _resetCodexSandboxForTests(true);
@@ -106,6 +108,42 @@ describe("settings document", () => {
     assert.equal(cleared.cliPaths.codex.override, "");
     assert.equal(cleared.codexSandbox, true);
     assert.equal(cleared.quickPrompts[0]?.label, "Keep");
+  });
+
+  it("writes custom process env per kind and resets it on clear", async () => {
+    setSettingsMetaUpsertForTests(async () => undefined);
+    const saved = await writeSettingsDocument({
+      processEnv: {
+        pi: { OPENAI_BASE_URL: "https://pi.example/v1" },
+        codex: { OPENAI_BASE_URL: "https://codex.example/v1" },
+      },
+    }, { allowClear: true });
+    assert.deepEqual(saved.processEnv.pi, { OPENAI_BASE_URL: "https://pi.example/v1" });
+    assert.deepEqual(saved.processEnv.codex, { OPENAI_BASE_URL: "https://codex.example/v1" });
+    assert.deepEqual(saved.processEnv.claude, {});
+    assert.equal(childProcessEnv("pi").OPENAI_BASE_URL, "https://pi.example/v1");
+    assert.equal(childProcessEnv("codex").OPENAI_BASE_URL, "https://codex.example/v1");
+
+    const replaced = await writeSettingsDocument({
+      processEnv: { pi: { PI_ONLY: "1" } },
+    }, { allowClear: false });
+    assert.deepEqual(replaced.processEnv.pi, { PI_ONLY: "1" });
+    assert.deepEqual(replaced.processEnv.codex, { OPENAI_BASE_URL: "https://codex.example/v1" });
+
+    await assert.rejects(
+      writeSettingsDocument({ processEnv: { pi: { HTTP_PROXY: "http://x" } } }, { allowClear: false }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /reserved/);
+        return true;
+      },
+    );
+    const reread = await readSettingsDocument();
+    assert.deepEqual(reread.processEnv.pi, { PI_ONLY: "1" });
+
+    const cleared = await writeSettingsDocument({ clear: true }, { allowClear: true });
+    assert.deepEqual(cleared.processEnv.pi, {});
+    assert.deepEqual(cleared.processEnv.codex, {});
   });
 });
 

@@ -9,6 +9,11 @@ import { applyCodexSandboxMemory, getCodexSandboxSettings, planCodexSandbox } fr
 import { upsertMetaMany } from "./db.js";
 import { HttpError, httpStatusOf } from "./httpError.js";
 import { getProxyEnvSettings, planProxyEnvOverrides, applyProxyEnvMemory, PROXY_ENV_KEYS, type ProxyEnvKey } from "./proxyEnv.js";
+import {
+  applyProcessEnvMemory,
+  getProcessEnvSettings,
+  planProcessEnvOverrides,
+} from "./processEnv.js";
 import { applyQuickPromptsMemory, getQuickPromptSettings, planQuickPrompts } from "./quickPrompts.js";
 import { withSettingsLock } from "./settingsLock.js";
 
@@ -27,12 +32,14 @@ export function setSettingsMetaUpsertForTests(fn: MetaUpsert | null): void {
 export async function readSettingsDocument(): Promise<{
   cliPaths: Awaited<ReturnType<typeof getCliPathSettingsResolved>>["cliPaths"];
   proxyEnv: ReturnType<typeof getProxyEnvSettings>["proxyEnv"];
+  processEnv: ReturnType<typeof getProcessEnvSettings>["processEnv"];
   quickPrompts: ReturnType<typeof getQuickPromptSettings>["quickPrompts"];
   codexSandbox: boolean;
 }> {
   return {
     ...(await getCliPathSettingsResolved()),
     ...getProxyEnvSettings(),
+    ...getProcessEnvSettings(),
     ...getQuickPromptSettings(),
     ...getCodexSandboxSettings(),
   };
@@ -71,6 +78,7 @@ async function writeSettingsBody(
       await metaUpsert([
         ["cli_paths", "{}"],
         ["proxy_env", "{}"],
+        ["process_env", "{}"],
         ["codex_sandbox", "true"],
       ]);
     } catch {
@@ -78,20 +86,23 @@ async function writeSettingsBody(
     }
     applyCliPathMemory({});
     applyProxyEnvMemory({});
+    applyProcessEnvMemory({});
     applyCodexSandboxMemory(true);
     return readSettingsDocument();
   }
 
   const hasCli = raw.cliPaths != null;
   const hasProxy = raw.proxyEnv != null;
+  const hasProcessEnv = raw.processEnv != null;
   const hasQuick = raw.quickPrompts != null;
   const hasCodexSandbox = raw.codexSandbox != null;
-  if (!hasCli && !hasProxy && !hasQuick && !hasCodexSandbox) {
-    throw new HttpError(400, "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required (or clear: true)");
+  if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox) {
+    throw new HttpError(400, "cliPaths, proxyEnv, processEnv, quickPrompts, and/or codexSandbox required (or clear: true)");
   }
 
   let cliPlan: ReturnType<typeof planCliPathOverrides> | undefined;
   let proxyPlan: ReturnType<typeof planProxyEnvOverrides> | undefined;
+  let processPlan: ReturnType<typeof planProcessEnvOverrides> | undefined;
 
   if (hasCli) {
     if (typeof raw.cliPaths !== "object" || Array.isArray(raw.cliPaths)) {
@@ -140,6 +151,7 @@ async function writeSettingsBody(
   let quickPlan: ReturnType<typeof planQuickPrompts> | undefined;
   let codexPlan: ReturnType<typeof planCodexSandbox> | undefined;
   try {
+    if (hasProcessEnv) processPlan = planProcessEnvOverrides(raw.processEnv);
     if (hasQuick) quickPlan = planQuickPrompts(raw.quickPrompts);
     if (hasCodexSandbox) codexPlan = planCodexSandbox(raw.codexSandbox);
   } catch (err) {
@@ -149,6 +161,7 @@ async function writeSettingsBody(
   const entries: Array<readonly [string, string]> = [];
   if (cliPlan) entries.push(["cli_paths", cliPlan.json]);
   if (proxyPlan) entries.push(["proxy_env", proxyPlan.json]);
+  if (processPlan) entries.push(["process_env", processPlan.json]);
   if (quickPlan) entries.push(["quick_prompts", quickPlan.json]);
   if (codexPlan) entries.push(["codex_sandbox", codexPlan.json]);
   try {
@@ -158,6 +171,7 @@ async function writeSettingsBody(
   }
   if (cliPlan) applyCliPathMemory(cliPlan.next);
   if (proxyPlan) applyProxyEnvMemory(proxyPlan.next);
+  if (processPlan) applyProcessEnvMemory(processPlan.next);
   if (quickPlan) applyQuickPromptsMemory(quickPlan.next);
   if (codexPlan) applyCodexSandboxMemory(codexPlan.next);
   return readSettingsDocument();

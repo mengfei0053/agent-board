@@ -18,6 +18,7 @@ import {
 } from "./db.js";
 import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
+import { loadProcessEnvOverrides } from "./processEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
 import { boardMetaLineSqlPattern } from "./extractOutput.js";
@@ -990,6 +991,7 @@ export async function initStore(): Promise<void> {
   await loadAllFromPg();
   await loadCliPathOverrides();
   await loadProxyEnvOverrides();
+  await loadProcessEnvOverrides();
   await loadQuickPrompts();
   await loadCodexSandbox();
   // Patch in-memory tasks missing workspaceId

@@ -2310,6 +2310,26 @@ button.topbar-brand[aria-expanded="true"] {
 }
 
 .settings-proxy-cell { min-width: 0; }
+
+.process-env-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.process-env-empty {
+  margin: 0;
+  font-size: 13px;
+}
+.process-env-row { gap: 8px; }
+.process-env-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 8px;
+}
+@media (max-width: 720px) {
+  .process-env-fields { grid-template-columns: 1fr; }
+}
 .settings-cell-foot {
   display: flex;
   flex-wrap: wrap;

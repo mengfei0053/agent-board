@@ -140,7 +140,7 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
 - 详情「后台 / Monitor」；卡片角标「N 后台」；解析失败不影响主流程
 
 
-## CLI 路径与进程代理设置
+## CLI 路径、进程代理与自定义环境变量设置
 
 - UI：左上角 **agent-board** 菜单 → **设置**（`/settings`）
 - API：`GET /api/settings` · `PUT /api/settings`
@@ -148,15 +148,18 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
   - `proxyEnv`: **按 Agent kind 分桶**  
     `{ "pi"|"claude"|"agent"|"devin"|"codex": { "HTTP_PROXY"|"HTTPS_PROXY"|"NO_PROXY"|"ALL_PROXY": "<值或空>" } }`  
     （可只传部分 kind / 键；空字符串清除该项）
-  - `{ "clear": true }` 清除路径与代理全部覆盖
-- 持久化：`meta.cli_paths` · `meta.proxy_env`（JSON，代理为 per-kind）
+  - `processEnv`: **按 Agent kind 分桶的自定义环境变量**  
+    `{ "pi"|"claude"|"agent"|"devin"|"codex": { "OPENAI_BASE_URL": "<值或空>" } }`  
+    （每个提交的 kind 整体替换；空对象或空值清除该项；代理键与控制面密钥不可在此设置）
+  - `{ "clear": true }` 清除路径、代理与自定义环境变量覆盖，并将 Codex 沙箱恢复为开启
+- 持久化：`meta.cli_paths` · `meta.proxy_env` · `meta.process_env`（JSON，均 per-kind）
   - 兼容：若读到旧版全局扁平 `{ HTTP_PROXY: "..." }`，启动时复制到全部 kind 并写回新结构
-- Runner：`resolveCliCommand(kind)` 取命令；`childProcessEnv(kind, extras)` 只注入**该 kind** 的代理覆盖到 `spawn` / `spawnSync`（日志只记键名，不记值）
+- Runner：`resolveCliCommand(kind)` 取命令；`childProcessEnv(kind, extras)` 把**该 kind** 的代理覆盖与自定义环境变量注入 `spawn` / `spawnSync`（日志只记注入的代理键名，不记值）
 
 ## 存储（Postgres）
 
 - 连接串：环境变量 `DATABASE_URL`（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
-- 表：`workspaces`、`tasks`、`task_logs`、`task_prompts`、`task_outputs`、`task_side_jobs`、`uploads`、`meta`（含 `default_workspace_id`、`cli_paths`、`proxy_env`、`quick_prompts`、`codex_sandbox` 等）
+- 表：`workspaces`、`tasks`、`task_logs`、`task_prompts`、`task_outputs`、`task_side_jobs`、`uploads`、`meta`（含 `default_workspace_id`、`cli_paths`、`proxy_env`、`process_env`、`quick_prompts`、`codex_sandbox` 等）
 - 进程内有内存镜像；创建、启动、续跑等关键步骤等待落库，高频状态与日志更新通过写队列合并、批量异步落库；持久化降级时 `/api/health` 返回 503
 - 当前日志写入 `task_logs`，按行数与字符数限制保留；归档清理原始日志，保留轮次输入和回复。JSONL 仅用于旧数据迁移与清理
 - 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`

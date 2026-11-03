@@ -4,6 +4,7 @@ import {
   CLI_COMMAND_KEYS,
   type CliCommandKey,
 } from "./cliPaths.js";
+import { customProcessEnvForKind } from "./processEnv.js";
 
 export const PROXY_ENV_KEYS = [
   "HTTP_PROXY",
@@ -285,6 +286,12 @@ export function childProcessEnv(
   for (const [k, v] of Object.entries(extra)) {
     if (CHILD_ENV_DENY.test(k)) continue;
     if (v !== undefined) env[k] = v;
+  }
+  // Saved custom variables win over inherited values, but proxy overrides below
+  // still win (proxy keys are reserved in processEnv).
+  for (const [k, v] of Object.entries(customProcessEnvForKind(kind))) {
+    if (CHILD_ENV_DENY.test(k)) continue;
+    env[k] = v;
   }
   const injected: string[] = [];
   const kindMap = overrides[kind] || {};

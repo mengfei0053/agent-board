@@ -74,6 +74,8 @@ let lastCli = {};
 let lastProxy = {};
 /** @type {{ id: string, label: string, content: string }[]} */
 let lastQuick = [];
+/** @type {Record<string, { key: string, value: string }[]>} */
+let lastProcessEnv = {};
 /** @type {boolean} default ON */
 let lastCodexSandbox = true;
 
@@ -87,6 +89,13 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** Parse HTML in the element's context without assigning innerHTML. */
+function setElementHtml(el, html) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  el.replaceChildren(range.createContextualFragment(html));
 }
 
 function setStatus(msg, ok) {
@@ -110,7 +119,7 @@ function proxyHint(row) {
 }
 
 function renderTabs() {
-  tabsEl.innerHTML = CLI_ORDER.map((kind) => {
+  const html = CLI_ORDER.map((kind) => {
     const selected = kind === activeKind;
     return `<button
       type="button"
@@ -122,6 +131,7 @@ function renderTabs() {
       id="agent-tab-${escapeHtml(kind)}"
     >${escapeHtml(KIND_LABELS[kind] || kind)}</button>`;
   }).join("");
+  setElementHtml(tabsEl, html);
 }
 
 function renderCliBlock(kind, cliRow) {
@@ -202,6 +212,82 @@ function renderProxyBlock(kind, kindMap) {
     </section>`;
 }
 
+function processEnvRowHtml(row, idx) {
+  return `
+      <div class="process-env-row settings-row" data-process-env-row>
+        <div class="quick-prompt-item-head">
+          <span class="muted settings-default">第 ${idx + 1} 个变量</span>
+          <button type="button" class="settings-mini-btn danger-ish" data-remove-process-env>删除</button>
+        </div>
+        <div class="process-env-fields">
+          <input
+            type="text"
+            data-process-env-key
+            value="${escapeHtml(row.key || "")}"
+            placeholder="变量名，如 OPENAI_BASE_URL"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <input
+            type="text"
+            data-process-env-value
+            value="${escapeHtml(row.value || "")}"
+            placeholder="变量值"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </div>
+        <span class="settings-hint muted">同名变量会覆盖从看板继承的值；值留空保存后删除该项。</span>
+      </div>`;
+}
+
+function processEnvListHtml(kind) {
+  const rows = lastProcessEnv[kind] || [];
+  return rows.length
+    ? rows.map(processEnvRowHtml).join("")
+    : `<p class="muted process-env-empty">暂无自定义变量。</p>`;
+}
+
+function processEnvListEl(kind) {
+  return panelsEl.querySelector(`[data-process-env-list="${CSS.escape(kind)}"]`);
+}
+
+function syncProcessEnvListFromDom(kind) {
+  const list = processEnvListEl(kind);
+  if (!list) return lastProcessEnv[kind] || [];
+  const rows = [];
+  for (const row of list.querySelectorAll("[data-process-env-row]")) {
+    rows.push({
+      key: row.querySelector("[data-process-env-key]")?.value || "",
+      value: row.querySelector("[data-process-env-value]")?.value || "",
+    });
+  }
+  lastProcessEnv[kind] = rows;
+  return rows;
+}
+
+function renderProcessEnvList(kind) {
+  const list = processEnvListEl(kind);
+  if (!list) return;
+  setElementHtml(list, processEnvListHtml(kind));
+}
+
+function renderProcessEnvBlock(kind) {
+  const label = KIND_LABELS[kind] || kind;
+  const body = processEnvListHtml(kind);
+  return `
+    <section class="settings-block" aria-labelledby="process-env-title-${escapeHtml(kind)}">
+      <header class="settings-block-head">
+        <h2 id="process-env-title-${escapeHtml(kind)}">其他环境变量</h2>
+        <p class="settings-block-desc">为 ${escapeHtml(label)} 新开的任务进程补充环境变量；代理变量请用上方「进程代理」，控制面密钥不可在此设置。</p>
+      </header>
+      <div class="process-env-list" data-process-env-list="${escapeHtml(kind)}">${body}</div>
+      <div class="quick-prompt-actions">
+        <button type="button" class="secondary" data-add-process-env="${escapeHtml(kind)}">＋ 添加环境变量</button>
+      </div>
+    </section>`;
+}
+
 function renderCodexSandboxBlock() {
   const on = lastCodexSandbox !== false;
   return `
@@ -234,7 +320,7 @@ function renderCodexSandboxBlock() {
 }
 
 function renderPanels() {
-  panelsEl.innerHTML = CLI_ORDER.map((kind) => {
+  const html = CLI_ORDER.map((kind) => {
     const hidden = kind !== activeKind;
     const extra = kind === "codex" ? renderCodexSandboxBlock() : "";
     return `
@@ -249,10 +335,12 @@ function renderPanels() {
         <div class="settings-card settings-agent-card">
           ${renderCliBlock(kind, lastCli[kind])}
           ${renderProxyBlock(kind, lastProxy[kind])}
+          ${renderProcessEnvBlock(kind)}
           ${extra}
         </div>
       </div>`;
   }).join("");
+  setElementHtml(panelsEl, html);
 }
 
 function showKind(kind) {
@@ -274,10 +362,10 @@ function showKind(kind) {
 function renderQuickPrompts() {
   if (!quickListEl) return;
   if (!lastQuick.length) {
-    quickListEl.innerHTML = `<p class="muted quick-prompt-empty">暂无快捷输入。点击下方添加后，会出现在新建任务与续跑输入框上方。</p>`;
+    setElementHtml(quickListEl, `<p class="muted quick-prompt-empty">暂无快捷输入。点击下方添加后，会出现在新建任务与续跑输入框上方。</p>`);
     return;
   }
-  quickListEl.innerHTML = lastQuick.map((item, idx) => `
+  const html = lastQuick.map((item, idx) => `
     <div class="quick-prompt-item settings-row" data-quick-idx="${idx}">
       <div class="quick-prompt-item-head">
         <label class="settings-label">
@@ -305,6 +393,7 @@ function renderQuickPrompts() {
       >${escapeHtml(item.content || "")}</textarea>
     </div>
   `).join("");
+  setElementHtml(quickListEl, html);
 }
 
 function syncQuickFromDom() {
@@ -325,9 +414,34 @@ function syncQuickFromDom() {
   return lastQuick;
 }
 
+function syncProcessEnvFromDom() {
+  const next = {};
+  for (const list of panelsEl.querySelectorAll("[data-process-env-list]")) {
+    const kind = list.dataset.processEnvList;
+    if (!kind) continue;
+    const rows = [];
+    for (const row of list.querySelectorAll("[data-process-env-row]")) {
+      const key = row.querySelector("[data-process-env-key]")?.value || "";
+      const value = row.querySelector("[data-process-env-value]")?.value || "";
+      rows.push({ key, value });
+    }
+    next[kind] = rows;
+  }
+  lastProcessEnv = next;
+  return lastProcessEnv;
+}
+
 function renderAll(data) {
   lastCli = data.cliPaths || {};
   lastProxy = data.proxyEnv || {};
+  lastProcessEnv = {};
+  for (const kind of CLI_ORDER) {
+    const map = data.processEnv && typeof data.processEnv === "object" ? data.processEnv[kind] : null;
+    lastProcessEnv[kind] =
+      map && typeof map === "object" && !Array.isArray(map)
+        ? Object.entries(map).map(([key, value]) => ({ key, value: String(value ?? "") }))
+        : [];
+  }
   lastQuick = Array.isArray(data.quickPrompts)
     ? data.quickPrompts.map((x) => ({
         id: x.id || newQuickId(),
@@ -343,6 +457,7 @@ function renderAll(data) {
 }
 
 function collectPayload() {
+  syncProcessEnvFromDom();
   const cliPaths = {};
   for (const input of panelsEl.querySelectorAll("input[data-cli-key]")) {
     cliPaths[input.dataset.cliKey] = input.value;
@@ -365,7 +480,23 @@ function collectPayload() {
     .filter((x) => x.label && x.content.trim());
   const sandboxEl = panelsEl.querySelector("input[data-codex-sandbox]");
   const codexSandbox = sandboxEl ? Boolean(sandboxEl.checked) : lastCodexSandbox !== false;
-  return { cliPaths, proxyEnv, quickPrompts, codexSandbox };
+  const processEnv = {};
+  for (const kind of CLI_ORDER) {
+    const map = {};
+    for (const row of lastProcessEnv[kind] || []) {
+      const key = (row.key || "").trim();
+      if (!key) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)) {
+        throw new Error(`环境变量名不合法：${key}（仅字母、数字、下划线，且不能以数字开头）`);
+      }
+      if (Object.prototype.hasOwnProperty.call(map, key)) {
+        throw new Error(`环境变量重复：${key}`);
+      }
+      map[key] = row.value || "";
+    }
+    processEnv[kind] = map;
+  }
+  return { cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox };
 }
 
 tabsEl.addEventListener("click", (e) => {
@@ -384,6 +515,37 @@ panelsEl.addEventListener("change", (e) => {
       : "关：-s danger-full-access（可访问内网；hook 拦截取决于本机 Codex 配置）";
   }
   setStatus(t.checked ? "已勾选启用沙箱（尚未保存）。" : "已取消沙箱（尚未保存）。");
+});
+
+panelsEl.addEventListener("click", (e) => {
+  const addBtn = e.target.closest("[data-add-process-env]");
+  if (addBtn) {
+    e.preventDefault();
+    const kind = addBtn.dataset.addProcessEnv;
+    if (!CLI_ORDER.includes(kind)) return;
+    syncProcessEnvListFromDom(kind);
+    if (!lastProcessEnv[kind]) lastProcessEnv[kind] = [];
+    lastProcessEnv[kind].push({ key: "", value: "" });
+    renderProcessEnvList(kind);
+    const keys = processEnvListEl(kind)?.querySelectorAll("[data-process-env-key]");
+    keys?.item(keys.length - 1)?.focus();
+    setStatus("已添加一个环境变量（尚未保存）。");
+    return;
+  }
+  const removeBtn = e.target.closest("[data-remove-process-env]");
+  if (removeBtn) {
+    e.preventDefault();
+    const list = removeBtn.closest("[data-process-env-list]");
+    const kind = list?.dataset.processEnvList;
+    const row = removeBtn.closest("[data-process-env-row]");
+    if (!list || !kind) return;
+    const rows = syncProcessEnvListFromDom(kind);
+    const idx = row ? Array.prototype.indexOf.call(list.querySelectorAll("[data-process-env-row]"), row) : -1;
+    if (idx < 0) return;
+    rows.splice(idx, 1);
+    renderProcessEnvList(kind);
+    setStatus("已删除（尚未保存）。");
+  }
 });
 
 panelsEl.addEventListener("click", (e) => {
@@ -443,7 +605,13 @@ async function load() {
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const body = collectPayload();
+  let body;
+  try {
+    body = collectPayload();
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), false);
+    return;
+  }
   setStatus("保存中…");
   try {
     const res = await fetch("/api/settings", {
@@ -464,7 +632,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 btnClear.addEventListener("click", async () => {
-  if (!confirm("确定清除全部 CLI 路径、各 Agent 代理覆盖，并将 Codex 沙箱恢复为开启？")) return;
+  if (!confirm("确定清除全部 CLI 路径、代理覆盖、自定义环境变量，并将 Codex 沙箱恢复为开启？")) return;
   setStatus("恢复中…");
   try {
     const res = await fetch("/api/settings", {
