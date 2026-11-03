@@ -220,6 +220,7 @@ initThemeToggle();
 
 
 const LANES = ["draft", "todo", "running", "done", "archived"];
+const LANE_LABEL = { draft: "草稿", todo: "Todo", running: "进行中", done: "已完成", archived: "归档" };
 
 const TAB_STATUSES = {
   draft: ["draft"],
@@ -632,6 +633,7 @@ function renderList() {
   ensureLaneSelectButtons();
   bindLaneDropTargets();
   updateCounts();
+  updateWorkspaceCounts();
   const buckets = { draft: [], todo: [], running: [], done: [], archived: [] };
   for (const t of tasksInCurrentWorkspace()) {
     if (!matchesQuery(t)) continue;
@@ -1712,14 +1714,31 @@ function selectWorkspace(id) {
   }
 }
 
+function updateWorkspaceCounts() {
+  if (!wsListEl) return;
+  const counts = new Map();
+  for (const task of tasks.values()) {
+    if (!counts.has(task.workspaceId)) {
+      counts.set(task.workspaceId, { draft: 0, todo: 0, running: 0, done: 0, archived: 0 });
+    }
+    counts.get(task.workspaceId)[tabOf(task.status)]++;
+  }
+  for (const btn of wsListEl.querySelectorAll(".ws-item")) {
+    const lanes = counts.get(btn.dataset.workspaceId);
+    const total = lanes ? Object.values(lanes).reduce((sum, count) => sum + count, 0) : 0;
+    btn.querySelector(".ws-item-count").textContent = `${total} 个任务`;
+    for (const countEl of btn.querySelectorAll(".ws-lane-count")) {
+      countEl.textContent = lanes?.[countEl.dataset.lane] || 0;
+    }
+  }
+}
+
 function renderWorkspaces() {
   if (!wsListEl) return;
   wsListEl.innerHTML = "";
   const list = [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   if (wsEmptyEl) wsEmptyEl.hidden = list.length > 0;
   for (const w of list) {
-    let count = 0;
-    for (const t of tasks.values()) if (t.workspaceId === w.id) count++;
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1727,7 +1746,10 @@ function renderWorkspaces() {
     btn.dataset.workspaceId = w.id;
     btn.innerHTML = `<span class="ws-item-name">${escapeHtml(w.name)}</span>
       <span class="ws-item-path">${escapeHtml(w.path)}</span>
-      <span class="ws-item-count">${count} 个任务</span>`;
+      <span class="ws-item-count">0 个任务</span>
+      <span class="ws-item-stats">${LANES.map((lane) =>
+        `<span class="ws-lane-stat" data-lane="${lane}">${LANE_LABEL[lane]} <b class="ws-lane-count" data-lane="${lane}">0</b></span>`
+      ).join("")}</span>`;
     btn.onclick = () => selectWorkspace(w.id);
     btn.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1737,6 +1759,7 @@ function renderWorkspaces() {
     li.appendChild(btn);
     wsListEl.appendChild(li);
   }
+  updateWorkspaceCounts();
   const cur = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
   if (wsBannerName) wsBannerName.textContent = cur ? cur.name : "未选择工作区";
   if (wsBannerPath) wsBannerPath.textContent = cur ? cur.path : "请在左侧新建或选择工作区";

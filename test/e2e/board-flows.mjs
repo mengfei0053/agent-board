@@ -58,6 +58,17 @@ async function selectWorkspace(page, id) {
   );
 }
 
+async function expectWorkspaceCounts(page, workspaceId, expected) {
+  await page.waitForFunction((id, counts) => {
+    const item = document.querySelector(`.ws-item[data-workspace-id="${id}"]`);
+    if (!item) return false;
+    const actual = [...item.querySelectorAll(".ws-lane-count")].map((el) => Number(el.textContent));
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    return JSON.stringify(actual) === JSON.stringify(counts)
+      && item.querySelector(".ws-item-count")?.textContent === `${total} 个任务`;
+  }, {}, workspaceId, expected);
+}
+
 async function createViaUi(page, { mode, title, prompt, model }) {
   if (mode === "todo") await page.click("#btn-new-todo");
   else await page.click("#btn-new");
@@ -222,6 +233,7 @@ async function main() {
         .map((t) => t.id);
       assert.equal(draftIds.length, 1);
       assert.equal(state.tasks.get(draftIds[0])?.status, "draft");
+      await expectWorkspaceCounts(page, "ws_default", [1, 0, 0, 0, 0]);
       console.log("[e2e-board] E3 draft lane ok");
 
       await createViaUi(page, {
@@ -238,6 +250,7 @@ async function main() {
       const todo = [...state.tasks.values()].find((t) => t.title === "E3Todo");
       assert.ok(todo);
       assert.equal(todo.status, "queued");
+      await expectWorkspaceCounts(page, "ws_default", [1, 1, 0, 0, 0]);
       console.log("[e2e-board] E3 todo lane ok");
     }
 
@@ -267,6 +280,7 @@ async function main() {
         moveId,
       );
       assert.equal(state.tasks.get(moveId)?.status, "stopped");
+      await expectWorkspaceCounts(page, "ws_default", [1, 1, 0, 1, 0]);
       console.log("[e2e-board] E4 move to done ok");
 
       // Bulk delete: draft (ok) + running (skip)
@@ -328,6 +342,7 @@ async function main() {
       );
       assert.equal(state.tasks.has(delOk), false);
       assert.equal(state.tasks.has(delSkip), true);
+      await expectWorkspaceCounts(page, "ws_default", [1, 1, 1, 1, 0]);
       console.log("[e2e-board] E4 bulk-delete skip ok");
     }
 
@@ -507,7 +522,66 @@ async function main() {
       console.log("[e2e-board] E6 database model history, migration and Agent filtering ok");
     }
 
-    console.log("[e2e-board] all E1–E6 passed");
+    // E7: sidebar counts group every status and follow SSE across workspaces.
+    {
+      const statuses = ["draft", "queued", "running", "blocked", "succeeded", "failed", "stopped", "archived"];
+      const countState = createState({ tasks: statuses.map((status) => makeTask({
+        id: `count_${status}`, workspaceId: "ws_default", status,
+      })) });
+      const streams = new Set();
+      const countServer = createMockServer(countState, (req, res, url) => {
+        if (url.pathname !== "/api/events") return false;
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        res.write(`event: hello\ndata: ${JSON.stringify({
+          tasks: [...countState.tasks.values()], workspaces: [...countState.workspaces.values()],
+        })}\n\n`);
+        streams.add(res);
+        req.on("close", () => streams.delete(res));
+        return true;
+      });
+      const { base: countBase } = await listen(countServer);
+      const countPage = await browser.newPage();
+      const sendEvent = (event, payload) => {
+        for (const stream of streams) stream.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+      };
+      try {
+        await countPage.goto(countBase, { waitUntil: "networkidle2" });
+        await expectWorkspaceCounts(countPage, "ws_default", [1, 1, 2, 3, 1]);
+        await expectWorkspaceCounts(countPage, "ws_extra", [0, 0, 0, 0, 0]);
+
+        await countPage.type("#search", "no matching task");
+        await countPage.waitForFunction(() => document.getElementById("count-draft")?.textContent === "0");
+        await expectWorkspaceCounts(countPage, "ws_default", [1, 1, 2, 3, 1]);
+        await selectWorkspace(countPage, "ws_extra");
+
+        const task = countState.tasks.get("count_draft");
+        for (const [status, expected] of [
+          ["queued", [0, 2, 2, 3, 1]],
+          ["running", [0, 1, 3, 3, 1]],
+          ["succeeded", [0, 1, 2, 4, 1]],
+          ["archived", [0, 1, 2, 3, 2]],
+        ]) {
+          task.status = status;
+          sendEvent("task_upsert", { task });
+          await expectWorkspaceCounts(countPage, "ws_default", expected);
+          await expectWorkspaceCounts(countPage, "ws_extra", [0, 0, 0, 0, 0]);
+        }
+
+        task.workspaceId = "ws_extra";
+        sendEvent("task_upsert", { task });
+        await expectWorkspaceCounts(countPage, "ws_default", [0, 1, 2, 3, 1]);
+        await expectWorkspaceCounts(countPage, "ws_extra", [0, 0, 0, 0, 1]);
+        sendEvent("task_delete", { taskIds: [task.id] });
+        await expectWorkspaceCounts(countPage, "ws_extra", [0, 0, 0, 0, 0]);
+        console.log("[e2e-board] E7 workspace counts, search and live SSE updates ok");
+      } finally {
+        await countPage.close();
+        for (const stream of streams) stream.end();
+        await new Promise((resolve) => countServer.close(resolve));
+      }
+    }
+
+    console.log("[e2e-board] all E1–E7 passed");
   } finally {
     await browser.close();
     server.close();

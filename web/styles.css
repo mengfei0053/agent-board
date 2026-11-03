@@ -479,6 +479,37 @@ a.btn-link.secondary { background: var(--panel-2); }
   color: var(--faint);
   margin-top: 1px;
 }
+.ws-item-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.ws-lane-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  --lane-color: var(--muted);
+}
+.ws-lane-stat::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lane-color);
+}
+.ws-lane-stat[data-lane="draft"] { --lane-color: var(--draft); }
+.ws-lane-stat[data-lane="running"] { --lane-color: var(--run); }
+.ws-lane-stat[data-lane="done"] { --lane-color: var(--ok); }
+.ws-lane-stat[data-lane="archived"] { --lane-color: var(--archived); }
+.ws-lane-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
 .ws-empty {
   padding: 16px 14px;
   margin: 0;
