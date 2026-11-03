@@ -1,0 +1,104 @@
+{
+  "nextId": 13,
+  "tasks": [
+    {
+      "id": "4",
+      "subject": "审查并提交推送中继后台管理",
+      "description": "确认当前 Git 状态，排除无关和敏感文件，仅提交本次后台功能，fetch 后安全推送当前分支。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793675836226,
+      "updatedAt": 1793675945408
+    },
+    {
+      "id": "5",
+      "subject": "确认并部署线上中继服务",
+      "description": "只读确认 SSH/部署路径/运行方式，备份当前版本和配置引用，部署已推送的中继版本，保留回滚版本，不重启本机看板。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793675849458,
+      "updatedAt": 1793676180269
+    },
+    {
+      "id": "6",
+      "subject": "验证线上后台及中继健康",
+      "description": "线上 HTTPS 页面/JS/CSS/health=200，匿名 admin API=401，当前 ADMIN_TOKEN 本地及公网 API=200，敏感值未输出；容器 healthy，公网 WSS 使用当前 bootstrap token 和全部能力注册通过；Chrome 登录页无运行错误。原有看板未自动恢复，已确认本地 BOARD_TOKEN 不匹配线上 .env（线上 env 未变化），转后续任务 #7 处理。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793675860953,
+      "updatedAt": 1793676456678
+    },
+    {
+      "id": "7",
+      "subject": "协调看板凭证不一致后的安全重连",
+      "description": "线上中继 9ba5e05 健康且公网 WSS 使用当前 bootstrap token 注册通过，但原有看板未重连；本地 .env.relay 的 BOARD_TOKEN 与线上环境不一致，线上 .env 与备份完全一致。需要确认正确的现行凭证、原有看板运行环境及是否来自动态令牌，规划在任务空闲时更新配置并重连；未擅自覆盖密钥或重启看板。",
+      "status": "pending",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793676446653,
+      "updatedAt": 1793676446653
+    },
+    {
+      "id": "8",
+      "subject": "检查文档站构建和线上挂载方式",
+      "description": "确认 Docusaurus baseUrl、源码状态、构建命令及线上 Nginx Proxy Manager 配置，选择不重启中继的独立静态部署方案。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793677074577,
+      "updatedAt": 1793677283943
+    },
+    {
+      "id": "9",
+      "subject": "构建并部署 /docs 文档站",
+      "description": "设置或覆盖正确的 /docs/ 构建路径，验证构建产物，备份代理配置，独立部署静态站点并配置路径路由，保留回滚方式。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793677083313,
+      "updatedAt": 1793677555659
+    },
+    {
+      "id": "10",
+      "subject": "验证线上文档站及现有中继入口",
+      "description": "已验证 /docs 308 到 /docs/；首页/架构/API/sitemap=200、未知路径404；静态产物146个内部资源/链接无缺失，真实Chrome验证8个站内导航链接、API跳转/深层刷新、9个Mermaid图、390px菜单、无失败请求/运行错误。文档与中继容器healthy，代理配置已持久化，/health /admin=200、匿名API401、WSS握手通过，中继启动时间不变。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793677092961,
+      "updatedAt": 1793677754939
+    },
+    {
+      "id": "11",
+      "subject": "添加控制台与文档站双向顶部导航",
+      "description": "在 relay /admin 顶栏添加 /docs/ 链接，在 Docusaurus 顶栏添加 /admin 返回入口，验证桌面和手机。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793682521503,
+      "updatedAt": 1793682830640
+    },
+    {
+      "id": "12",
+      "subject": "部署导航改动并验证线上双向跳转",
+      "description": "文档和控制台顶部双向链接已部署；确认无活跃看板/设备/配对后备份并短暂重建中继仅更新静态HTML/CSS，未改动令牌。两容器healthy，1440/390/320px真实Chrome往返跳转测试及导航布局通过；本地管理e2e/文档构建/LSP/diff-check通过，线上health/admin/docs200、匿名管理API401、安全头保留。",
+      "status": "completed",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793682530963,
+      "updatedAt": 1793683159343
+    }
+  ]
+}

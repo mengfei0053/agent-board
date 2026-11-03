@@ -1,0 +1,38 @@
+{
+  "nextId": 4,
+  "tasks": [
+    {
+      "id": "1",
+      "subject": "梳理中继状态与数据库接入方案",
+      "description": "检查中继注册、鉴权、管理接口及部署测试，确定持久化范围与兼容策略。",
+      "status": "in_progress",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793683570478,
+      "updatedAt": 1793683590003
+    },
+    {
+      "id": "2",
+      "subject": "实现中继数据库持久化",
+      "description": "为中继接入数据库，持久化已注册看板信息及必要鉴权状态，更新配置、部署文档与测试。",
+      "status": "pending",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793683576584,
+      "updatedAt": 1793683576584
+    },
+    {
+      "id": "3",
+      "subject": "验证持久化与重启行为",
+      "description": "执行相关测试、构建和诊断，验证重启后看板信息保留、在线状态准确、敏感凭证处理安全。",
+      "status": "pending",
+      "metadata": {},
+      "blocks": [],
+      "blockedBy": [],
+      "createdAt": 1793683584274,
+      "updatedAt": 1793683584274
+    }
+  ]
+}
