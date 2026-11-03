@@ -43,6 +43,8 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1440, height: 1100 });
   await page.goto(server.httpUrl + '/admin', { waitUntil: 'networkidle0' });
+  assert.equal(await page.$eval('.topbar-actions a', (element) => element.getAttribute('href')), '/docs/');
+  assert.equal(await page.$eval('.topbar-actions a', (element) => element.textContent), '文档站');
   await page.type('#admin-token', 'wrong-token');
   await page.click('#login-form button');
   await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('令牌无效'));

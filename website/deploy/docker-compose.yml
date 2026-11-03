@@ -1,0 +1,12 @@
+services:
+  agent-board-docs:
+    build: .
+    image: agent-board-docs:${DOCS_VERSION:-local}
+    container_name: agent-board-docs
+    restart: unless-stopped
+    networks: [npm]
+
+networks:
+  npm:
+    external: true
+    name: 1panel-network

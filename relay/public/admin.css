@@ -7,6 +7,9 @@ a { color: inherit; text-decoration: none; }
 .brand { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 650; }
 .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: white; background: #12756b; font-size: 20px; }
 .admin-label { margin-right: auto; padding-left: 24px; border-left: 1px solid #e2e8ea; color: #667d83; }
+.topbar-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; white-space: nowrap; }
+.docs-link { padding: 8px 12px; border: 1px solid #d7e1e5; border-radius: 7px; color: #12756b; font-size: 12px; font-weight: 600; }
+.docs-link:hover { background: #edf5f5; }
 main { max-width: 1280px; margin: 0 auto; padding: 36px 32px 16px; }
 h1 { font-size: 30px; line-height: 1.3; letter-spacing: -.7px; margin: 8px 0 12px; }
 h2 { font-size: 17px; margin: 0; }
@@ -63,4 +66,4 @@ button.link { background: transparent; border-color: transparent; color: #148273
 .login .hint { margin-bottom: 0; }
 footer { text-align: center; color: #91a2a8; font-size: 11px; margin: 32px 0 12px; }
 footer span { margin: 0 8px; }
-@media (max-width: 800px) { main { padding: 24px 16px 12px; } .stats { grid-template-columns: 1fr 1fr; } .actions-grid { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } .refresh { flex-direction: column; align-items: flex-end; } .admin-label { display: none; } .brand { margin-right: auto; } .topbar { padding: 0 16px; } th, td { padding: 14px 16px; } .stat { padding: 18px; } .login { padding: 28px; } }
+@media (max-width: 800px) { main { padding: 24px 16px 12px; } .stats { grid-template-columns: 1fr 1fr; } .actions-grid { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } .refresh { flex-direction: column; align-items: flex-end; } .admin-label { display: none; } .brand { margin-right: auto; } .topbar { padding: 0 16px; gap: 12px; flex-wrap: wrap; height: auto; min-height: 72px; padding-top: 12px; padding-bottom: 12px; } th, td { padding: 14px 16px; } .stat { padding: 18px; } .login { padding: 28px; } }

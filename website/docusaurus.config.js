@@ -4,8 +4,10 @@
 const config = {
   title: 'Agent Board',
   tagline: '本机 Agent 任务看板',
-  url: 'https://mengfei0053.github.io',
-  baseUrl: '/agent-board/',
+  favicon: 'img/favicon.svg',
+  url: 'https://relay.mengfei.tech',
+  baseUrl: '/docs/',
+  trailingSlash: true,
   organizationName: 'mengfei0053',
   projectName: 'agent-board',
   onBrokenLinks: 'throw',
@@ -25,6 +27,7 @@ const config = {
       items: [
         { to: '/', label: '文档', position: 'left' },
         { to: '/api/overview', label: 'API 参考', position: 'left' },
+        { href: 'https://relay.mengfei.tech/admin', label: '返回控制台', position: 'right', target: '_self' },
         { href: 'https://github.com/mengfei0053/agent-board', label: 'GitHub', position: 'right' },
       ],
     },
