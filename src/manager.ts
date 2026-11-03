@@ -1,4 +1,4 @@
-import { nanoid } from "nanoid";
+import { customAlphabet, nanoid } from "nanoid";
 import {
   appendLog,
   deleteTasks,
@@ -353,6 +353,15 @@ export function setNextTaskIdForTests(id: string | null): void {
   nextTaskIdForTests = id;
 }
 
+/**
+ * Alphanumeric only: task ids seed pi session ids (which must start/end
+ * alphanumeric) and appear in argv, so "-"/"_" edges are a footgun.
+ */
+const makeTaskId = customAlphabet(
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+  10,
+);
+
 function allocateTaskId(): string {
   const forced = nextTaskIdForTests;
   nextTaskIdForTests = null;
@@ -362,7 +371,7 @@ function allocateTaskId(): string {
     }
     return forced;
   }
-  return nanoid(10);
+  return makeTaskId();
 }
 
 /** Create a draft — do not spawn. */

@@ -1,10 +1,25 @@
-import { nanoid } from "nanoid";
+import { customAlphabet } from "nanoid";
 import { modelFromJsonLine } from "./modelFromEvent.js";
 import { sessionFromJsonLine } from "./sessionFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
 import { mergeContinueWithoutSession } from "./promptForRun.js";
+
+/** pi rejects session ids that do not start/end with an alphanumeric character. */
+const PI_SESSION_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+const ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const alnumSuffix = customAlphabet(ALNUM, 8);
+
+export function isValidPiSessionId(id: string): boolean {
+  return PI_SESSION_ID_RE.test(id);
+}
+
+/** `<taskId>-<suffix>` with punctuation-free edges, safe for pi's validator. */
+export function makePiSessionId(taskId: string): string {
+  const prefix = taskId.replace(/^[^A-Za-z0-9]+/, "").replace(/[^A-Za-z0-9]+$/, "");
+  return `${prefix || "task"}-${alnumSuffix()}`;
+}
 
 export type PiArgInput = {
   id: string;
@@ -19,22 +34,27 @@ export function buildPiArgs(
   opts?: { continuePrompt?: string; freshSessionId?: string },
 ): { args: string[]; prompt: string; sessionId: string; assignSession: boolean } {
   const isContinue = Boolean(opts?.continuePrompt?.trim());
+  // Legacy tasks may hold an id pi cannot load (e.g. leading "-"); treat it as absent.
+  const storedSessionId = task.sessionId?.trim();
+  const validSessionId =
+    storedSessionId && isValidPiSessionId(storedSessionId) ? storedSessionId : undefined;
   const prompt =
-    isContinue && !task.sessionId
+    isContinue && !validSessionId
       ? mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "")
       : opts?.continuePrompt?.trim() || task.prompt;
   // A fresh run must not reuse task.id — that session file would keep the previous chat.
-  const sessionId = task.sessionId || opts?.freshSessionId || `${task.id}-${nanoid(8)}`;
+  const sessionId = validSessionId ?? (opts?.freshSessionId || makePiSessionId(task.id));
   // --session-id creates a missing session; continuation must fail instead of losing history.
-  const sessionFlag = isContinue && task.sessionId ? "--session" : "--session-id";
+  const sessionFlag = isContinue && validSessionId ? "--session" : "--session-id";
   const args = ["-p", "--mode", "json", sessionFlag, sessionId];
   if (task.model) args.push("--model", task.model);
-  args.push(prompt);
+  // "--" so a prompt starting with "-" is a message, not an unknown option.
+  args.push("--", prompt);
   return {
     args,
     prompt,
     sessionId,
-    assignSession: !task.sessionId,
+    assignSession: !validSessionId,
   };
 }
 

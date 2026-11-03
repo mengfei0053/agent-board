@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPiArgs } from "./pi.js";
+import { buildPiArgs, isValidPiSessionId, makePiSessionId } from "./pi.js";
 import { buildClaudeArgs } from "./claude.js";
 import { approvalFlags, baseExecFlags, buildCodexArgs, resumeFlags } from "./codex.js";
 import { buildCursorArgs } from "./cursor.js";
@@ -22,6 +22,7 @@ describe("U16 runner buildArgs (no spawn)", () => {
         "t1-fresh-a",
         "--model",
         "gpt-x",
+        "--",
         "hello",
       ]);
       assert.equal(a.assignSession, true);
@@ -31,6 +32,32 @@ describe("U16 runner buildArgs (no spawn)", () => {
       assert.notEqual(b.sessionId, "t1");
       assert.notEqual(b.sessionId, c.sessionId);
       assert.ok(b.sessionId.startsWith("t1-"));
+    });
+
+    it("prompt starting with '-' is passed after -- as one message", () => {
+      const prompt = "-IjNP1tbRm\n看看这个任务报错";
+      const r = buildPiArgs({ id: "t1", prompt }, { freshSessionId: "t1-fresh-a" });
+      assert.deepEqual(r.args.slice(-2), ["--", prompt]);
+      assert.equal(r.args.at(-1), prompt);
+    });
+
+    it("sanitizes session ids pi would reject (legacy ids with '-' edges)", () => {
+      assert.equal(isValidPiSessionId("-IjNP1tbRm-DEea4QjF"), false);
+      const generated = makePiSessionId("-IjNP1tbRm");
+      assert.equal(isValidPiSessionId(generated), true);
+      assert.ok(generated.startsWith("IjNP1tbRm-"));
+      assert.equal(isValidPiSessionId(makePiSessionId("--")), true);
+
+      const r = buildPiArgs(
+        { id: "-IjNP1tbRm", prompt: "orig", sessionId: "-IjNP1tbRm-DEea4QjF" },
+        { continuePrompt: "继续" },
+      );
+      assert.equal(isValidPiSessionId(r.sessionId), true);
+      assert.ok(!r.args.includes("--session"));
+      assert.equal(r.args[r.args.indexOf("--session-id") + 1], r.sessionId);
+      assert.match(r.prompt, /orig/);
+      assert.match(r.prompt, /继续/);
+      assert.equal(r.assignSession, true);
     });
 
     it("continue without a session keeps the original prompt and the follow-up", () => {
