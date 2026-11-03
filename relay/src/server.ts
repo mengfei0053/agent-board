@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { AuthStore } from "./auth.js";
+import { serveAdmin } from "./admin.js";
 import { RelayHub, type BoardConn, type PhoneConn } from "./hub.js";
 import { log as defaultLog, type LogFields } from "./log.js";
 import { makeErr, PROTOCOL_VERSION, type Envelope } from "./protocol.js";
@@ -205,6 +206,22 @@ async function handleHttp(
   }
   const url = new URL(req.url ?? "/", "http://relay.local");
   const path = url.pathname;
+  if (serveAdmin(path, req.method, res)) return;
+  if (path === "/api/admin/state") {
+    if (req.method !== "GET") {
+      res.setHeader("allow", "GET");
+      sendJson(res, 405, { error: { code: "method_not_allowed", message: "method not allowed" } });
+      return;
+    }
+    if (!authorizeAdmin(req, res, ctx)) return;
+    sendJson(res, 200, {
+      service: "agent-board-relay",
+      protocol: PROTOCOL_VERSION,
+      uptimeSec: Math.round((Date.now() - ctx.startedAt) / 1000),
+      ...ctx.hub.adminState(),
+    });
+    return;
+  }
   if (req.method === "GET" && path === "/health") {
     sendJson(res, 200, {
       ok: true,
@@ -218,14 +235,7 @@ async function handleHttp(
 
   if (path === "/auth/pair/create" || path === "/auth/revoke/device" || path === "/auth/revoke/board" || path === "/auth/board/issue") {
     if (req.method !== "POST") return methodNotAllowed(res);
-    if (!ctx.adminLimiter.allow(clientIp(req))) {
-      sendJson(res, 429, { error: { code: "rate_limited", message: "too many admin requests" } });
-      return;
-    }
-    if (!ctx.auth.verifyAdmin(bearer(req))) {
-      sendJson(res, 401, { error: { code: "unauthorized", message: "admin token rejected" } });
-      return;
-    }
+    if (!authorizeAdmin(req, res, ctx)) return;
     const body = await readJson(req);
     if (!isRecord(body)) throw new HttpError(400, "bad_request", "JSON object required");
     if (path === "/auth/pair/create") return createPair(res, ctx, body);
@@ -278,6 +288,22 @@ async function handleHttp(
   }
 
   sendJson(res, 404, { error: { code: "not_found", message: "not found" } });
+}
+
+function authorizeAdmin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: { auth: AuthStore; adminLimiter: RateLimiter },
+): boolean {
+  if (!ctx.adminLimiter.allow(clientIp(req))) {
+    sendJson(res, 429, { error: { code: "rate_limited", message: "too many admin requests" } });
+    return false;
+  }
+  if (!ctx.auth.verifyAdmin(bearer(req))) {
+    sendJson(res, 401, { error: { code: "unauthorized", message: "admin token rejected" } });
+    return false;
+  }
+  return true;
 }
 
 function createPair(res: ServerResponse, ctx: { auth: AuthStore }, body: Record<string, unknown>): void {

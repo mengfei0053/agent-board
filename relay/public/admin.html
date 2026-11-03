@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relay 管理 · Agent Board</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/admin"><span class="mark">R</span><span>Agent Board <span class="muted">/ Relay</span></span></a>
+    <span class="admin-label">管理控制台</span>
+    <button id="logout" class="quiet" hidden>退出管理</button>
+  </header>
+  <main>
+    <section id="login" class="login panel">
+      <div class="eyebrow">RELAY CONSOLE</div>
+      <h1>管理你的中继服务</h1>
+      <p class="muted">连接看板与手机，安全地管理配对和访问权限。</p>
+      <form id="login-form">
+        <label for="admin-token">管理员令牌</label>
+        <input id="admin-token" name="token" type="password" required autocomplete="off" placeholder="输入 ADMIN_TOKEN" spellcheck="false">
+        <button type="submit">进入控制台 <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="hint">令牌仅用于当前页面，不写入 Cookie 或浏览器存储。刷新页面后需重新登录。</p>
+    </section>
+
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <div id="dashboard" hidden>
+      <div class="page-heading">
+        <div><div class="eyebrow">OVERVIEW</div><h1>中继服务</h1><p class="muted">连接状态与访问权限，一目了然。</p></div>
+        <div class="refresh"><span id="updated" class="hint"></span><button id="refresh" class="secondary">刷新状态</button></div>
+      </div>
+      <div class="stats">
+        <article class="panel stat"><span class="muted">在线看板</span><strong id="boards-count">0</strong><span class="hint">已注册的看板连接</span></article>
+        <article class="panel stat"><span class="muted">在线手机连接</span><strong id="phones-count">0</strong><span class="hint">有效设备会话</span></article>
+        <article class="panel stat"><span class="muted">已配对设备</span><strong id="devices-count">0</strong><span class="hint">未过期且未撤销</span></article>
+        <article class="panel stat"><span class="muted">服务运行时间</span><strong id="uptime">—</strong><span id="protocol" class="hint"></span></article>
+      </div>
+      <div class="notice info">当前为内存模式：服务重启会清空设备、配对码、动态令牌与撤销记录。这里只管理连接权限，不会执行或停止本机任务。</div>
+
+      <section class="panel table-panel">
+        <div class="section-heading"><div><h2>看板</h2><p class="hint">包含本次运行中连接过、已授权或已撤销的看板。</p></div><span id="boards-total" class="count"></span></div>
+        <div class="table-wrap"><table><thead><tr><th>看板</th><th>连接状态</th><th>凭证状态</th><th>连接时间</th><th>操作</th></tr></thead><tbody id="boards"></tbody></table></div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="section-heading"><div><h2>配对设备</h2><p class="hint">撤销后立即断开手机连接，设备需要重新配对。</p></div><span id="devices-total" class="count"></span></div>
+        <div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>授权看板</th><th>令牌到期</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div>
+      </section>
+
+      <div class="actions-grid">
+        <section class="panel action-panel">
+          <h2>生成手机配对码</h2>
+          <p class="hint">一次性使用，默认 5 分钟有效，实际有效期由服务配置决定。支持离线看板。</p>
+          <form id="pair-form">
+            <label for="pair-boards">授权看板 ID</label>
+            <input id="pair-boards" required placeholder="thinkbook-main" autocomplete="off" spellcheck="false" maxlength="1300">
+            <p class="hint">多个 ID 用英文逗号分隔，最多 20 个。</p>
+            <button type="submit">生成配对码</button>
+          </form>
+          <p id="pair-count" class="hint"></p>
+        </section>
+        <section class="panel action-panel">
+          <h2>签发 / 轮换看板令牌</h2>
+          <p class="hint">生成限定看板范围的 BOARD_TOKEN，需要在看板进程中更新配置。</p>
+          <form id="issue-form">
+            <label for="issue-boards">看板 ID</label>
+            <input id="issue-boards" required placeholder="thinkbook-main" autocomplete="off" spellcheck="false" maxlength="1300">
+            <p class="warning">会撤销通用初始令牌及覆盖任意所填 ID 的旧令牌，可能使其他看板一起断线。请先确认迁移计划。</p>
+            <button type="submit" class="secondary">签发新令牌…</button>
+          </form>
+        </section>
+      </div>
+      <section id="result" class="panel result" hidden>
+        <div class="section-heading"><h2 id="result-title"></h2><button id="clear-result" class="quiet">清除</button></div>
+        <p id="result-description" class="hint"></p>
+        <label for="result-secret">敏感凭证（仅此次显示，请妥善保存）</label>
+        <textarea id="result-secret" readonly rows="2" spellcheck="false"></textarea>
+        <button id="copy-result" class="secondary">复制凭证</button>
+      </section>
+    </div>
+    <footer>Agent Board Relay <span>·</span> 仅中继，不执行 CLI</footer>
+  </main>
+</body>
+</html>

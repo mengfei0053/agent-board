@@ -306,6 +306,37 @@ export class RelayHub {
     return { boardsOnline: this.boards.size, phonesOnline, pairedDevices: this.auth.deviceCount() };
   }
 
+  /** Only connection/auth metadata; task contents, logs and credentials stay private. */
+  adminState() {
+    const state = this.auth.adminState([...this.runtime.keys()]);
+    const connections = new Map<string, number>();
+    for (const phone of this.phones) {
+      if (phone.closed || !phone.token || !this.auth.verifyDevice(phone.token) || !phone.deviceId) continue;
+      connections.set(phone.deviceId, (connections.get(phone.deviceId) ?? 0) + 1);
+    }
+    return {
+      activePairCodes: state.activePairCodes,
+      boards: state.boards.map((board) => {
+        const live = this.boards.get(board.boardId);
+        const runtime = this.runtime.get(board.boardId);
+        return {
+          ...board,
+          online: Boolean(live),
+          label: live?.label ?? null,
+          connectedAt: live?.connectedAt ?? null,
+          capabilities: [...(live?.capabilities ?? [])],
+          generation: runtime?.generation ?? 0,
+          lastSeq: runtime?.lastSeq ?? 0,
+        };
+      }),
+      devices: state.devices.map((device) => ({
+        ...device,
+        online: connections.has(device.deviceId),
+        connections: connections.get(device.deviceId) ?? 0,
+      })).sort((left, right) => left.deviceId.localeCompare(right.deviceId)),
+    };
+  }
+
   private hello(conn: PhoneConn, parsed: Extract<Incoming, { kind: "client.hello" }>): void {
     if (conn.deviceId) {
       this.deliver(conn.send, makeErr(this.now(), "already authenticated", { code: "already_authenticated", ref: parsed.envelope.id, stage: "failed" }));

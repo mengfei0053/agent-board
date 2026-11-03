@@ -29,7 +29,15 @@ docker run --rm -p 127.0.0.1:8787:8787 \
   agent-board-relay
 ```
 
-A restart drops every pair code, device token, and socket.
+A restart drops every pair code, device token, and socket. It also drops dynamically issued board tokens and revocation records, restoring the environment `BOARD_TOKEN` as the bootstrap credential.
+
+## Admin console
+
+After deploying this build, open `https://relay.mengfei.tech/admin` and log in with `ADMIN_TOKEN`. No new environment variables, database, or separate frontend process is required. The existing proxy configuration below forwards `/admin`, `/admin/admin.js`, `/admin/admin.css`, and `/api/admin/state` along with the auth routes. If your proxy uses path allowlists, add these paths. Static admin files are public but contain no credentials or service metadata; the state API and all administrative actions require a Bearer admin token.
+
+For a non-Docker deployment, ship `public/` next to `dist/` (the Dockerfile already copies it). Validate that `/admin` loads, an unauthenticated `GET /api/admin/state` returns 401, and `ADMIN_TOKEN` unlocks the state view. Keep HTTPS and reverse-proxy rate limits enabled. Do not paste tokens into URLs.
+
+**Operational warning:** revoking or issuing a board credential invalidates the bootstrap credential and any credentials overlapping the target board IDs. Other boards sharing them may disconnect. Schedule credential changes, update each affected board's `BOARD_TOKEN`, and do not restart a busy local board. Revocations and dynamically issued tokens last only until the next relay restart; this console does not add persistent authorization.
 
 ## TLS later
 

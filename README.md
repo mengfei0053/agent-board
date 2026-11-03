@@ -143,6 +143,12 @@ pnpm dev
 
 发布 APK：在 GitHub 上 **Publish a release**。`.github/workflows/release-apk.yml` 会用 JDK 17 和 Android SDK 35 跑 `./gradlew :app:assembleDebug`（签 `android/keystore/debug.keystore`，带 APK Signature Block，可侧载，后续包可覆盖安装），并把 `agent-board-<tag>-<sha>-debug.apk` 挂到该 Release。手机上若已装着旧的、证书不同的 debug 包，需要先卸载一次。说明见 [android/README.md](./android/README.md)。
 
+### 中继后台管理
+
+中继服务提供 **`/admin`** 管理页面（本地默认 `http://127.0.0.1:8787/admin`），使用现有 `ADMIN_TOKEN` 登录。支持查看在线/离线看板、配对设备和服务状态，生成手机配对码，以及撤销设备、撤销/轮换看板令牌。令牌只保留在页面内存中，不写入浏览器存储。详情及令牌轮换影响范围见 [relay/README.md](./relay/README.md#web-admin-console)。
+
+后台沿用中继的内存模式：重启会清空配对、动态令牌和撤销记录。公网访问必须通过 HTTPS。此功能需重新部署中继版本后可用，不需要重启本机看板。
+
 ## 手机遥控 / Relay
 
 看板进程可以自己拨出公网中继，手机 APK 不再需要 ThinkBook 上另起一个 connector 进程。**默认关闭**。未设置中继环境变量时，看板仍只提供本机 HTTP/SSE。

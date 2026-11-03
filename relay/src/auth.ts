@@ -217,6 +217,31 @@ export class AuthStore {
     return this.tokensByDevice.size;
   }
 
+  /** Admin metadata only: never return tokens or pair-code hashes. */
+  adminState(knownBoardIds: string[] = []): {
+    devices: DeviceSession[];
+    boards: { boardId: string; revoked: boolean; credentialActive: boolean }[];
+    activePairCodes: number;
+  } {
+    this.deviceCount();
+    this.prunePairs();
+    const devices = [...new Map([...this.devices.values()].map((session) => [session.deviceId, session])).values()]
+      .map((session) => ({ ...session, boardIds: [...session.boardIds] }));
+    const boardIds = new Set([...knownBoardIds, ...this.revokedBoardIds]);
+    for (const credential of this.credentials) {
+      for (const boardId of credential.boardIds ?? []) boardIds.add(boardId);
+    }
+    for (const session of devices) for (const boardId of session.boardIds) boardIds.add(boardId);
+    for (const pair of this.pairs.values()) for (const boardId of pair.boardIds) boardIds.add(boardId);
+    const boards = [...boardIds].sort().map((boardId) => ({
+      boardId,
+      revoked: this.revokedBoardIds.has(boardId),
+      credentialActive: !this.revokedBoardIds.has(boardId) && this.credentials.some((credential) =>
+        !credential.revoked && (credential.boardIds === null || credential.boardIds.includes(boardId))),
+    }));
+    return { devices, boards, activePairCodes: this.pairs.size };
+  }
+
   private mint(deviceName: string, boardIds: string[], deviceId = `dev_${randomBytes(8).toString("hex")}`): Omit<PairSuccess, "ok"> {
     const deviceToken = `dt_${randomBytes(32).toString("base64url")}`;
     const expiresAt = this.now() + this.opts.tokenTtlMs;

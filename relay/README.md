@@ -44,6 +44,26 @@ npm run dev
 | `PAIR_WINDOW_MS` | `60000` | Window for the pair-attempt limit. |
 | `WS_MESSAGES_PER_SEC` | `40` | Inbound WebSocket frames per socket. |
 
+## Web admin console
+
+Open **http://127.0.0.1:8787/admin** (or `https://<relay-host>/admin` behind TLS) and enter `ADMIN_TOKEN`.
+
+- View uptime, protocol version, online boards/phone connections, paired devices, and the count of unused pair codes. Use **刷新状态** to reload; there is no background polling.
+- View online/offline boards known during this process lifetime, device names, allowed board IDs, and token expiration times. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
+- Create one-time phone pair codes for 1–20 board IDs (including offline boards); revoke devices and immediately disconnect their sockets.
+- Revoke a board or issue a replacement scoped `BOARD_TOKEN`, with confirmation. **These operations also revoke the bootstrap credential and any old credential overlapping the specified boards. Other boards sharing those credentials may disconnect too.** Update affected board configurations before reconnecting. These actions do not stop tasks on the local board.
+- The admin token is held only in page memory, not in cookies, localStorage, or sessionStorage. Reloading/closing the page or logging out requires logging in again. Generated secrets are shown only after their creation and can be cleared from the page.
+
+No database or account system is added. Restarting the relay clears paired devices, dynamic board tokens, pair codes, and revocations; `BOARD_TOKEN` from the environment becomes the bootstrap credential again. Do not treat a revocation as permanent across restarts. Serve the console over HTTPS and avoid shared browsers. Admin state reads and writes share the existing limit of 60 requests/minute per TCP peer.
+
+Static assets are in `public/`; distribute them alongside `dist/`. The Docker image includes both. Browser tests use the repository root's existing Puppeteer dependency and a real temporary relay:
+
+```bash
+# from the repository root; Chrome defaults to /usr/bin/google-chrome
+pnpm test:relay-admin
+# override with CHROME_PATH if needed
+```
+
 Create a pair code (it is not a long-lived env var):
 
 ```bash

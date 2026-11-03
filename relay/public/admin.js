@@ -1,0 +1,235 @@
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let adminToken = '';
+  let busy = false;
+
+  function notice(message, error = false) {
+    $('notice').textContent = message;
+    $('notice').className = error ? 'notice error' : 'notice';
+    $('notice').hidden = !message;
+  }
+
+  function clearResult() {
+    $('result-secret').value = '';
+    $('result').hidden = true;
+  }
+
+  function logout() {
+    adminToken = '';
+    $('admin-token').value = '';
+    $('dashboard').hidden = true;
+    $('login').hidden = false;
+    $('logout').hidden = true;
+    $('boards').replaceChildren();
+    $('devices').replaceChildren();
+    clearResult();
+  }
+
+  async function request(path, body) {
+    const response = await fetch(path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { authorization: `Bearer ${adminToken}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: AbortSignal.timeout(12000),
+    });
+    if (response.status === 401) {
+      logout();
+      throw new Error('管理员令牌无效，请重新输入 ADMIN_TOKEN。');
+    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(response.status === 429 ? '请求过于频繁，请稍后再试。' : result.error?.message || `请求失败 (${response.status})`);
+    return result;
+  }
+
+  async function run(action) {
+    if (busy) return;
+    busy = true;
+    notice('');
+    document.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    try {
+      await action();
+    } catch (error) {
+      notice(error.name === 'TimeoutError' ? '请求超时，请检查服务连接后重试。' : error.message || '请求失败，请检查网络连接。', true);
+    } finally {
+      busy = false;
+      document.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  function text(tag, value, className) {
+    const element = document.createElement(tag);
+    element.textContent = value;
+    if (className) element.className = className;
+    return element;
+  }
+
+  function cell(row, value, sub) {
+    const element = document.createElement('td');
+    if (value instanceof Node) element.append(value);
+    else element.textContent = value;
+    if (sub) element.append(text('span', sub, 'sub'));
+    row.append(element);
+    return element;
+  }
+
+  function badge(label, style = '') {
+    return text('span', label, `badge ${style}`);
+  }
+
+  function button(label, className, action) {
+    const element = text('button', label, className);
+    element.type = 'button';
+    element.disabled = busy;
+    element.addEventListener('click', () => { void run(action); });
+    return element;
+  }
+
+  function empty(tbody, message) {
+    const row = document.createElement('tr');
+    const element = cell(row, message);
+    element.colSpan = 5;
+    element.className = 'empty';
+    tbody.append(row);
+  }
+
+  function date(value) {
+    return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+  }
+
+  function boardRows(boards) {
+    const tbody = $('boards');
+    tbody.replaceChildren();
+    for (const board of boards) {
+      const row = document.createElement('tr');
+      cell(row, board.label || board.boardId, board.label ? board.boardId : `代次 ${board.generation} · 序号 ${board.lastSeq}`);
+      cell(row, badge(board.online ? '在线' : '离线', board.online ? 'live' : ''));
+      cell(row, badge(board.revoked ? '已撤销' : board.credentialActive ? '可用' : '需新令牌', board.revoked ? 'danger' : ''));
+      cell(row, date(board.connectedAt));
+      const actions = cell(row, '');
+      actions.append(button('配对', 'link', async () => {
+        $('pair-boards').value = board.boardId;
+        $('pair-boards').focus();
+        $('pair-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }));
+      if (!board.revoked) actions.append(button('撤销', 'danger', async () => {
+        if (!confirm(`撤销看板 ${board.boardId}？\n将断开连接，并撤销通用初始令牌及覆盖此 ID 的令牌，可能使其他看板一起断线。不会停止本机任务。\n恢复需要重新签发并配置令牌。`)) return;
+        await request('/auth/revoke/board', { boardId: board.boardId });
+        clearResult();
+        await refreshAfterAction('看板权限已撤销。');
+      }));
+      tbody.append(row);
+    }
+    if (!boards.length) empty(tbody, '暂无看板。连接一个看板，或在下方指定看板 ID 生成配对码。');
+  }
+
+  function deviceRows(devices) {
+    const tbody = $('devices');
+    tbody.replaceChildren();
+    for (const device of devices) {
+      const row = document.createElement('tr');
+      cell(row, device.deviceName, device.deviceId);
+      cell(row, badge(device.online ? `在线 · ${device.connections} 连接` : '离线', device.online ? 'live' : ''));
+      cell(row, device.boardIds.join(', '));
+      cell(row, date(device.expiresAt));
+      cell(row, button('撤销设备', 'danger', async () => {
+        if (!confirm(`撤销设备 ${device.deviceName} (${device.deviceId})？\n会立即断开手机连接，之后需要重新配对。`)) return;
+        await request('/auth/revoke/device', { deviceId: device.deviceId });
+        await refreshAfterAction('设备权限已撤销。');
+      }));
+      tbody.append(row);
+    }
+    if (!devices.length) empty(tbody, '暂无有效的配对设备。生成配对码后，可在手机上完成配对。');
+  }
+
+  async function refresh() {
+    const state = await request('/api/admin/state');
+    boardRows(state.boards);
+    deviceRows(state.devices);
+    $('boards-count').textContent = state.boards.filter((board) => board.online).length;
+    $('phones-count').textContent = state.devices.reduce((sum, device) => sum + device.connections, 0);
+    $('devices-count').textContent = state.devices.length;
+    const minutes = Math.floor(state.uptimeSec / 60);
+    $('uptime').textContent = minutes < 60 ? `${minutes} 分钟` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+    $('protocol').textContent = `协议 v${state.protocol}`;
+    $('boards-total').textContent = `${state.boards.length} 个看板`;
+    $('devices-total').textContent = `${state.devices.length} 台设备`;
+    $('pair-count').textContent = `当前有效待使用配对码：${state.activePairCodes} 个`;
+    $('updated').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+  }
+
+  async function refreshAfterAction(message) {
+    try {
+      await refresh();
+      notice(message);
+    } catch (error) {
+      notice(`${message} 列表刷新失败：${error.message}`, true);
+    }
+  }
+
+  function boardIds(id) {
+    const ids = [...new Set($(id).value.split(',').map((value) => value.trim()).filter(Boolean))];
+    if (!ids.length || ids.length > 20 || ids.some((value) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value))) {
+      throw new Error('请输入 1–20 个有效看板 ID：以字母或数字开头，只能包含字母、数字、点、下划线和短横线，最长 64 字符。');
+    }
+    return ids;
+  }
+
+  function showResult(title, secret, description) {
+    $('result-title').textContent = title;
+    $('result-secret').value = secret;
+    $('result-description').textContent = description;
+    $('result').hidden = false;
+    $('result').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  $('login-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void run(async () => {
+      adminToken = $('admin-token').value.trim();
+      $('admin-token').value = '';
+      try { await refresh(); } catch (error) { logout(); throw error; }
+      $('login').hidden = true;
+      $('dashboard').hidden = false;
+      $('logout').hidden = false;
+    });
+  });
+  $('logout').addEventListener('click', () => { logout(); notice('已退出管理。'); });
+  $('refresh').addEventListener('click', () => { void run(refresh); });
+  $('clear-result').addEventListener('click', clearResult);
+  $('pair-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void run(async () => {
+      const ids = boardIds('pair-boards');
+      clearResult();
+      const result = await request('/auth/pair/create', { boardIds: ids });
+      showResult('手机配对码', result.pairCode, `授权 ${result.boardIds.join(', ')} · 到期 ${date(result.expiresAt)} · 仅可使用一次`);
+      await refreshAfterAction('配对码已生成，请通过可信渠道发送到手机。');
+    });
+  });
+  $('issue-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void run(async () => {
+      const ids = boardIds('issue-boards');
+      if (!confirm(`为 ${ids.join(', ')} 签发新令牌？\n将撤销通用初始令牌和与这些 ID 有交集的旧令牌，相关看板会立即断线（包括令牌上其他 ID 的看板）。\n需要更新看板配置 BOARD_TOKEN，且中继重启后该动态令牌将失效。`)) return;
+      clearResult();
+      const result = await request('/auth/board/issue', { boardIds: ids });
+      showResult('新的看板令牌', result.boardToken, `授权 ${result.boardIds.join(', ')} · 请更新对应看板进程的 BOARD_TOKEN。仅在本次中继运行期间有效。`);
+      await refreshAfterAction('新令牌已签发，请妥善保存并更新看板配置。');
+    });
+  });
+  $('copy-result').addEventListener('click', () => {
+    void run(async () => {
+      try {
+        await navigator.clipboard.writeText($('result-secret').value);
+        notice('已复制到剪贴板，请勿发送到不可信渠道。');
+      } catch {
+        $('result-secret').select();
+        notice('无法自动复制，请手动复制已选中的凭证。', true);
+      }
+    });
+  });
+  window.addEventListener('pagehide', () => { logout(); });
+})();
