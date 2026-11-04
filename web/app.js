@@ -1218,6 +1218,7 @@ function paintDetail(task) {
   const showContinue = canContinue(task);
   continueRow.hidden = task.status === "draft" || task.status === "archived";
   const submitting = continuingTaskId === task.id;
+  continueBtn.hidden = task.status === "draft" || task.status === "archived";
   continueBtn.disabled = !showContinue || submitting;
   continueModel.disabled = !["succeeded", "failed", "stopped"].includes(task.status) || !task.sessionId || submitting;
   continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
