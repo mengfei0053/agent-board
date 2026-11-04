@@ -113,10 +113,20 @@ export function spawnLogged(
     workspaceMcp?: string;
     classifyLine?: (line: string, hooks: RunnerHooks) => void;
     getStatus: () => TaskStatus;
+    /**
+     * True for the agent's "this run is finished" line (e.g. pi's
+     * `agent_settled`). Arms the settle watchdog: if the child then stays
+     * silent but never exits, the board finishes the run instead of leaving
+     * the task stuck in `running` forever.
+     */
+    settleLine?: (line: string) => boolean;
+    /** Grace after the settle line before the child is reaped. */
+    settleExitGraceMs?: number;
   },
 ): RunnerHandle {
   let stoppedByUser = false;
   let endedByWatchdog = false;
+  let settledByWatchdog = false;
   let consecutive429 = 0;
   const env = childProcessEnv(opts.cliKind, { NO_COLOR: "1", FORCE_COLOR: "0" });
   let cleanupMcp = () => {};
@@ -192,6 +202,7 @@ export function spawnLogged(
   const markClosed = () => {
     if (closed) return;
     closed = true;
+    clearSettleTimer();
     cleanupMcp();
     if (killTimer) {
       clearTimeout(killTimer);
@@ -329,8 +340,50 @@ export function spawnLogged(
     hooks.onLog(stored, stream);
     // Trusted protocol (session id, result text) is stdout only.
     // stderr is logged and may still trip the 429 watchdog.
-    if (stream === "stdout") opts.classifyLine?.(line, hooks);
+    if (stream === "stdout") {
+      opts.classifyLine?.(line, hooks);
+      // Any new stdout line means the run is still working: only a silent
+      // settled process is a stuck one.
+      if (opts.settleLine?.(line)) armSettleTimer();
+      else clearSettleTimer();
+    }
     noteLineForRateLimit(line);
+  };
+
+  const settleExitGraceMs = opts.settleExitGraceMs ?? 30_000;
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearSettleTimer = () => {
+    if (!settleTimer) return;
+    clearTimeout(settleTimer);
+    settleTimer = null;
+  };
+  const armSettleTimer = () => {
+    if (settleTimer || closed || stoppedByUser || endedByWatchdog || settledByWatchdog) return;
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (closed || stoppedByUser || endedByWatchdog || settledByWatchdog) return;
+      const cur = opts.getStatus();
+      if (cur === "stopped" || cur === "failed" || cur === "succeeded") return;
+      settledByWatchdog = true;
+      hooks.onLog(
+        JSON.stringify({
+          type: "settle_exit_watchdog",
+          pid: child.pid,
+          graceMs: settleExitGraceMs,
+          reason: "agent settled but the process kept running",
+        }),
+      );
+      hooks.onStatus({
+        status: "succeeded",
+        exitCode: 0,
+        endedAt: new Date().toISOString(),
+        lastEvent: "settle_exit_watchdog",
+        pid: undefined,
+      });
+      // Status is already terminal; drop pipes so a late exit cannot re-open it.
+      cutPipesAndKill();
+    }, settleExitGraceMs);
+    settleTimer.unref?.();
   };
 
   const feed = (state: StreamLineState, stream: "stdout" | "stderr", chunk: Buffer) => {
@@ -383,6 +436,10 @@ export function spawnLogged(
     }
     if (endedByWatchdog) {
       hooks.onLog(JSON.stringify({ type: "exit", code, rateLimited: true }));
+      return;
+    }
+    if (settledByWatchdog) {
+      hooks.onLog(JSON.stringify({ type: "exit", code, settledReaped: true }));
       return;
     }
     drainTail(stdoutState, "stdout");

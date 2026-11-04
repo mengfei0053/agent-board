@@ -15,6 +15,21 @@ export function isValidPiSessionId(id: string): boolean {
   return PI_SESSION_ID_RE.test(id);
 }
 
+/**
+ * pi prints `{"type":"agent_settled",...}` once the run is done. Normally the
+ * CLI exits right after; the board arms its settle watchdog on this line.
+ */
+export function isAgentSettledLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return false;
+  if (trimmed.startsWith('{"type":"agent_settled"')) return true;
+  try {
+    return (JSON.parse(trimmed) as { type?: string }).type === "agent_settled";
+  } catch {
+    return false;
+  }
+}
+
 /** `<taskId>-<suffix>` with punctuation-free edges, safe for pi's validator. */
 export function makePiSessionId(taskId: string): string {
   const prefix = taskId.replace(/^[^A-Za-z0-9]+/, "").replace(/[^A-Za-z0-9]+$/, "");
@@ -68,6 +83,7 @@ export const piRunner: Runner = {
       cliKind: "pi",
       workspaceMcp: opts?.workspaceMcp,
       getStatus: () => status,
+      settleLine: isAgentSettledLine,
       classifyLine: (line, h) => {
         const detected = modelFromJsonLine(line);
         if (detected && !task.model) {
