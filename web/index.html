@@ -214,7 +214,7 @@
     </div>
   </div>
 
-  <div id="detail-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div id="detail-modal" class="modal drawer hidden" role="dialog" aria-modal="true">
     <div class="modal-card detail-card">
       <div class="detail-top">
         <div class="detail-top-main">
@@ -225,22 +225,16 @@
       </div>
 
       <div class="detail-body">
-        <details class="detail-meta-fold" id="detail-meta-fold">
-          <summary class="detail-meta-summary">
-            <span class="detail-meta-summary-label">任务信息</span>
+        <div class="detail-info-row">
+          <button type="button" class="secondary info-btn" id="btn-open-info">
+            <span>任务信息</span>
             <code class="detail-task-id" id="detail-task-id" title="任务 ID"></code>
-            <span class="detail-meta-summary-hint muted">点击展开</span>
-          </summary>
-          <section class="detail-meta-grid" id="detail-meta-grid" aria-label="任务信息"></section>
-        </details>
-
-        <section class="detail-sidejobs-section" id="detail-sidejobs-section" hidden>
-          <div class="section-head">
-            <h3>后台 / Monitor</h3>
+          </button>
+          <button type="button" class="secondary info-btn" id="btn-open-sidejobs">
+            <span>后台 / Monitor</span>
             <span class="muted" id="sidejobs-hint"></span>
-          </div>
-          <div id="detail-sidejobs" class="detail-sidejobs"></div>
-        </section>
+          </button>
+        </div>
 
         <section class="detail-output-section">
           <div class="section-head">
@@ -260,9 +254,6 @@
       <div class="detail-footer" id="detail-footer">
         <div class="detail-footer-actions">
           <button type="button" id="start-btn" class="primary" hidden>开始任务</button>
-          <button type="button" id="stop-btn" class="danger" hidden>停止</button>
-          <button type="button" id="delete-btn" class="secondary-danger" hidden>删除</button>
-          <button type="button" id="archive-btn" class="secondary" hidden>归档</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
           <label class="continue-model-label" for="continue-model">下一轮模型
@@ -284,11 +275,36 @@
           </div>
           <p id="continue-error" class="error" hidden></p>
         </div>
+        <div class="detail-stop-row">
+          <button type="button" id="stop-btn" class="danger" hidden>停止</button>
+          <button type="button" id="archive-btn" class="secondary" hidden>归档</button>
+          <button type="button" id="delete-btn" class="secondary-danger" hidden>删除</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <div id="log-viewer-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div id="info-viewer-modal" class="modal modal-stack hidden" role="dialog" aria-modal="true">
+    <div class="modal-card viewer-card">
+      <div class="modal-head">
+        <h2>任务信息</h2>
+        <button type="button" class="icon-btn" id="info-viewer-close" aria-label="关闭">×</button>
+      </div>
+      <section class="detail-meta-grid" id="detail-meta-grid" aria-label="任务信息"></section>
+    </div>
+  </div>
+
+  <div id="sidejobs-viewer-modal" class="modal modal-stack hidden" role="dialog" aria-modal="true">
+    <div class="modal-card viewer-card">
+      <div class="modal-head">
+        <h2>后台 / Monitor</h2>
+        <button type="button" class="icon-btn" id="sidejobs-viewer-close" aria-label="关闭">×</button>
+      </div>
+      <div id="detail-sidejobs" class="detail-sidejobs"></div>
+    </div>
+  </div>
+
+  <div id="log-viewer-modal" class="modal modal-stack hidden" role="dialog" aria-modal="true">
     <div class="modal-card viewer-card">
       <div class="modal-head">
         <h2>原始日志</h2>
@@ -299,7 +315,7 @@
     </div>
   </div>
 
-  <div id="meta-viewer-modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div id="meta-viewer-modal" class="modal modal-stack hidden" role="dialog" aria-modal="true">
     <div class="modal-card viewer-card">
       <div class="modal-head">
         <h2>原始元数据 JSON</h2>

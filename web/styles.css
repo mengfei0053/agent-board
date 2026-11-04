@@ -2535,3 +2535,48 @@ button.topbar-brand[aria-expanded="true"] {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* —— Task detail as right-side drawer —— */
+.modal.modal-stack { z-index: 50; }
+.modal.drawer {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+}
+.modal.drawer .modal-card.detail-card {
+  width: 50vw;
+  min-width: min(560px, 100vw);
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  border-right: none;
+  animation: drawerIn .18s ease;
+}
+@keyframes drawerIn {
+  from { transform: translateX(32px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.detail-info-row {
+  display: flex;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.detail-info-row .info-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+.detail-info-row .detail-task-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.detail-stop-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.detail-stop-row button { width: auto; }
+.modal-card.viewer-card .detail-meta-grid,
+.modal-card.viewer-card .detail-sidejobs { overflow: auto; margin: 12px 18px 18px; }

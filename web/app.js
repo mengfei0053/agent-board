@@ -15,7 +15,9 @@ const detailMetaGrid = document.getElementById("detail-meta-grid");
 const detailOutput = document.getElementById("detail-output");
 const detailError = document.getElementById("detail-error");
 const outputHint = document.getElementById("output-hint");
-const detailSidejobsSection = document.getElementById("detail-sidejobs-section");
+const sidejobsBtn = document.getElementById("btn-open-sidejobs");
+const infoViewerModal = document.getElementById("info-viewer-modal");
+const sidejobsViewerModal = document.getElementById("sidejobs-viewer-modal");
 const detailSidejobs = document.getElementById("detail-sidejobs");
 const sidejobsHint = document.getElementById("sidejobs-hint");
 const logCount = document.getElementById("log-count");
@@ -914,8 +916,6 @@ async function openDetail(id) {
   lastPaintedTaskId = null;
   clearContinuePrompt();
   applyQuickPromptsToUi();
-  const metaFold = document.getElementById("detail-meta-fold");
-  if (metaFold) metaFold.open = false;
   detailModal.classList.remove("hidden");
   const res = await fetch(`/api/tasks/${id}`);
   if (!res.ok) return;
@@ -1094,14 +1094,12 @@ const SIDE_STATUS_LABEL = {
 
 function paintSideJobs(task) {
   const jobs = Array.isArray(task.sideJobs) ? task.sideJobs : [];
-  if (!detailSidejobsSection || !detailSidejobs) return;
+  if (!detailSidejobs) return;
   if (!jobs.length) {
-    detailSidejobsSection.hidden = true;
-    detailSidejobs.innerHTML = "";
-    if (sidejobsHint) sidejobsHint.textContent = "";
+    detailSidejobs.innerHTML = '<p class="muted">暂无后台任务</p>';
+    if (sidejobsHint) sidejobsHint.textContent = "无";
     return;
   }
-  detailSidejobsSection.hidden = false;
   const running = jobs.filter((j) => j.status === "running").length;
   if (sidejobsHint) {
     sidejobsHint.textContent = running
@@ -1286,6 +1284,8 @@ function openMetaViewer() {
 }
 
 function closeDetail() {
+  infoViewerModal?.classList.add("hidden");
+  sidejobsViewerModal?.classList.add("hidden");
   closeLogViewer();
   closeMetaViewer();
   detailModal.classList.add("hidden");
@@ -1317,6 +1317,13 @@ document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
 document.getElementById("btn-open-log").onclick = () => void openLogViewer();
 document.getElementById("btn-open-meta").onclick = openMetaViewer;
+document.getElementById("btn-open-info").onclick = () => infoViewerModal.classList.remove("hidden");
+sidejobsBtn.onclick = () => sidejobsViewerModal.classList.remove("hidden");
+document.getElementById("info-viewer-close").onclick = () => infoViewerModal.classList.add("hidden");
+document.getElementById("sidejobs-viewer-close").onclick = () => sidejobsViewerModal.classList.add("hidden");
+for (const m of [infoViewerModal, sidejobsViewerModal]) {
+  m.addEventListener("click", (e) => { if (e.target === m) m.classList.add("hidden"); });
+}
 document.getElementById("log-viewer-close").onclick = closeLogViewer;
 document.getElementById("meta-viewer-close").onclick = closeMetaViewer;
 createModal.addEventListener("click", (e) => { if (e.target === createModal) closeCreate(); });
@@ -1693,6 +1700,9 @@ document.getElementById("ws-path-pick")?.addEventListener("click", async () => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!document.getElementById("folder-modal")?.classList.contains("hidden")) return closeFolderModal();
+  for (const m of [infoViewerModal, sidejobsViewerModal]) {
+    if (!m.classList.contains("hidden")) return m.classList.add("hidden");
+  }
   if (logViewerModal && !logViewerModal.classList.contains("hidden")) return closeLogViewer();
   if (metaViewerModal && !metaViewerModal.classList.contains("hidden")) return closeMetaViewer();
   if (!wsModal.classList.contains("hidden")) return closeWsModal();
