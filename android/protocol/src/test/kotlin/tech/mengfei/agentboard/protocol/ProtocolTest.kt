@@ -886,7 +886,7 @@ class ArchiveAndBoardSwitchTest {
         val more = RelayTask("task_02", "Next", ARCHIVED_STATUS, 8)
         val merged = mergeArchivePages(page!!.tasks, listOf(page.tasks.single(), more))
         assertEquals(listOf("task_01", "task_02"), merged.map { it.id })
-        assertFalse(canContinueStatus(ARCHIVED_STATUS))
+        assertTrue(canContinueStatus(ARCHIVED_STATUS))
         assertFalse(canStopStatus(ARCHIVED_STATUS))
     }
 

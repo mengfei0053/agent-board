@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { GitWorkspaceStatus } from "../gitStatus.js";
-import { createDraft } from "../manager.js";
+import { clearHandlesForTests, createDraft } from "../manager.js";
+import { runners } from "../runners/index.js";
+import type { Runner } from "../runners/types.js";
 import { childProcessEnv, _resetProxyEnvOverridesForTests } from "../proxyEnv.js";
 import { setSettingsMetaUpsertForTests } from "../settingsDocument.js";
 import {
@@ -21,14 +23,20 @@ const SECRET = "s3cret-pass";
 
 describe("facade settings and workspace cards", () => {
   let workspaceId = "";
+  const originalPi = runners.pi;
+  const quiet: Runner = { start: () => ({ stop() {} }) };
 
   beforeEach(() => {
     workspaceId = enableMemoryStoreForTests();
+    clearHandlesForTests();
+    runners.pi = quiet;
     setSettingsMetaUpsertForTests(async () => undefined);
     _resetProxyEnvOverridesForTests({});
   });
 
   afterEach(() => {
+    clearHandlesForTests();
+    runners.pi = originalPi;
     setSettingsMetaUpsertForTests(null);
     _resetProxyEnvOverridesForTests({});
     disableMemoryStoreForTests();
@@ -82,7 +90,7 @@ describe("facade settings and workspace cards", () => {
     assert.equal(JSON.stringify(card).includes("/secret/repo"), false);
   });
 
-  it("rejects a non-terminal archive and an archived continue", async () => {
+  it("rejects a non-terminal archive and continues an archived task", async () => {
     const draft = await createDraft({ kind: "pi", workspaceId, prompt: "p", title: "t" });
     const facade = createBoardFacade();
     const running = getTask(draft.id);
@@ -99,11 +107,14 @@ describe("facade settings and workspace cards", () => {
     assert.equal(getTask(draft.id)?.status, "archived");
     const again = await reject(facade.archive(draft.id));
     assert.equal(again.code, "archived_readonly");
-    const continued = await reject(facade.continue(draft.id, "more"));
-    assert.equal(continued.code, "archived_readonly");
     const stopped = await reject(facade.stop(draft.id));
     assert.equal(stopped.code, "archived_readonly");
     assert.equal(getTask(draft.id)?.status, "archived");
+    const continued = await facade.continue(draft.id, "more");
+    assert.equal(continued.status, "queued");
+    assert.equal(continued.iteration, 2);
+    assert.equal(continued.prompts?.[1]?.prompt, "more");
+    assert.equal(getTask(draft.id)?.status, "queued");
   });
 
   it("returns the redacted settings document and refuses clear", async () => {

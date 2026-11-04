@@ -87,7 +87,6 @@ describe("continue with a different model", () => {
       { status: "running" as const },
       { status: "queued" as const },
       { status: "blocked" as const },
-      { status: "archived" as const },
       { status: "draft" as const },
     ]) {
       const task = await seed("pi", patch);
@@ -96,6 +95,16 @@ describe("continue with a different model", () => {
       assert.deepEqual(getTask(task.id), before);
     }
     assert.equal(starts.length, 0);
+  });
+
+  it("switches model on an archived task using the original session", async () => {
+    const task = await seed("pi", { status: "archived" });
+    const continued = await continueTask(task.id, "follow up", "next-model");
+    assert.equal(continued.status, "queued");
+    assert.equal(continued.model, "next-model");
+    assert.equal(continued.sessionId, "original-session");
+    assert.deepEqual(continued.outputs, task.outputs);
+    assert.equal(starts.length, 1);
   });
 
   it("rejects empty and oversized model overrides without side effects", async () => {

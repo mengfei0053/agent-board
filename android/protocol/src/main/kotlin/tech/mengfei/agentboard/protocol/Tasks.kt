@@ -415,14 +415,11 @@ fun statusLabel(status: String, english: Boolean = false): String = if (english)
 
 fun canStopStatus(status: String): Boolean = status == "queued" || status == "running" || status == "paused"
 
-/** Web continue is hidden for draft and disabled while queued or running. Paused (blocked) can continue. */
+/** Terminal and archived tasks can continue. Queued and running tasks cannot. */
 fun canContinueStatus(status: String): Boolean =
-    status != "queued" && status != "running" && status != ARCHIVED_STATUS
+    status != "queued" && status != "running"
 
 fun continueHint(task: RelayTask, english: Boolean = false): String {
-    if (task.status == ARCHIVED_STATUS) {
-        return if (english) "Archived tasks are read-only." else "归档任务只读"
-    }
     if (!canContinueStatus(task.status)) {
         return if (english) "The task is running. Stop it before continuing." else "任务运行中，请先停止再继续"
     }

@@ -31,14 +31,14 @@ const server = createMockServer(state, async (req, res, url) => {
     req.on("close", () => streams.delete(res));
     return true;
   }
-  if (url.pathname === `/api/tasks/${first.id}/continue` && req.method === "POST") {
+  if (url.pathname.endsWith("/continue") && req.method === "POST") {
     lastBody = await readBody(req);
     if (failNext) {
       failNext = false;
       json(res, 409, { error: "目标模型无法续接原会话" });
       return true;
     }
-    const task = state.tasks.get(first.id);
+    const task = state.tasks.get(url.pathname.split("/")[3]);
     task.model = lastBody.model || task.model;
     task.iteration += 1;
     task.prompts.push({ iteration: task.iteration, prompt: lastBody.prompt || "请基于当前上下文继续完成任务" });
@@ -119,7 +119,14 @@ try {
   assert.equal(await page.$eval("#continue-btn", (el) => el.disabled), true);
   await page.click("#detail-close");
   await open("archived-task");
-  assert.equal(await page.$eval("#continue-row", (el) => el.hidden), true);
+  assert.equal(await page.$eval("#continue-row", (el) => el.hidden), false);
+  assert.equal(await page.$eval("#continue-btn", (el) => el.disabled), false);
+  assert.equal(await page.$eval("#continue-model", (el) => el.disabled), false);
+  await page.click("#continue-btn");
+  await page.waitForFunction(() => document.getElementById("detail-sub")?.textContent.includes("迭代 2"));
+  assert.equal(state.tasks.get("archived-task").sessionId, "archived-session");
+  assert.deepEqual(lastBody, {});
+  assert.equal(state.tasks.get("archived-task").prompts[1].prompt, "请基于当前上下文继续完成任务");
   assert.deepEqual(errors, []);
   console.log("[e2e-continue-model] model selection, history scoping, SSE, retry and safety guards passed");
 } finally {

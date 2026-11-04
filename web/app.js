@@ -928,7 +928,7 @@ async function openDetail(id) {
 }
 
 function canContinue(task) {
-  return !["draft", "queued", "running", "archived"].includes(task.status);
+  return !["draft", "queued", "running"].includes(task.status);
 }
 
 function metaItem(k, v, wide = false, opts = {}) {
@@ -1216,19 +1216,19 @@ function paintDetail(task) {
   }
 
   const showContinue = canContinue(task);
-  continueRow.hidden = task.status === "draft" || task.status === "archived";
+  continueRow.hidden = task.status === "draft";
   const submitting = continuingTaskId === task.id;
-  continueBtn.hidden = task.status === "draft" || task.status === "archived";
+  continueBtn.hidden = task.status === "draft";
   continueBtn.disabled = !showContinue || submitting;
-  continueModel.disabled = !["succeeded", "failed", "stopped"].includes(task.status) || !task.sessionId || submitting;
+  continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
   continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
   continueModelHint.textContent = !task.sessionId
     ? "缺少原会话，不能在保留上下文的情况下切换模型。"
-    : !["succeeded", "failed", "stopped"].includes(task.status)
+    : !canContinue(task)
       ? "请先停止任务，再选择下一轮模型。"
       : `仅切换 ${task.kind} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
   refreshModelSuggestions(task.kind, continueModelSuggestions);
-  continueHint.textContent = task.status === "draft" || task.status === "archived"
+  continueHint.textContent = task.status === "draft"
     ? ""
     : showContinue
       ? task.sessionId

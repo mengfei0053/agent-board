@@ -195,7 +195,7 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 }
 ```
 
-`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters.
+`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters. Terminal and archived tasks can continue. Continuing an archived task resumes its original session, queues the next iteration, removes it from the archive list, and returns it to the active board.
 
 `cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task. An archived task uses the same card with `status: "archived"`. That status is rejected on `evt.snapshot` and `evt.task`, so old phones never see it in the hot list.
 

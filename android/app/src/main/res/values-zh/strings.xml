@@ -74,7 +74,7 @@
     <string name="reply_pending">回复生成中…</string>
     <string name="no_round_reply">本轮暂无回复</string>
     <string name="reply_truncated">回复已截断</string>
-    <string name="archive_readonly">归档任务只读，不能停止或继续。</string>
+    <string name="archive_readonly">归档任务不能停止；可以继续任务。</string>
     <string name="stop">停止</string>
     <string name="continue_task">继续任务</string>
     <string name="continue_prompt_label">补充续跑说明</string>

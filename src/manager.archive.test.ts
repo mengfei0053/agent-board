@@ -43,15 +43,18 @@ describe("archived task mutations", () => {
     disableMemoryStoreForTests();
   });
 
-  it("rejects continue, stop, and start on an archived task", async () => {
+  it("continues an archived task and can stop the next run", async () => {
     const task = await archivedTask();
-    await assert.rejects(continueTask(task.id, "more"), (err) => err instanceof ArchivedReadonlyError);
-    await assert.rejects(stopTask(task.id), (err) => err instanceof ArchivedReadonlyError);
-    await assert.rejects(startTask(task.id), (err) => err instanceof ArchivedReadonlyError);
-    const after = getTask(task.id);
-    assert.equal(after?.status, "archived");
-    assert.equal(after?.output, "kept");
-    assert.equal(after?.prompts?.[0]?.prompt, "original");
+    const continued = await continueTask(task.id, "more");
+    assert.equal(continued.status, "queued");
+    assert.equal(continued.iteration, 2);
+    assert.equal(continued.sessionId, "original-session");
+    assert.equal(continued.outputs?.[0]?.text, "kept");
+    assert.equal(continued.prompts?.[0]?.prompt, "original");
+    assert.equal(continued.prompts?.[1]?.prompt, "more");
+    await assert.rejects(startTask(task.id), /task is already running/);
+    await stopTask(task.id);
+    assert.equal(getTask(task.id)?.status, "stopped");
   });
 
   it("still stores the omitted-prompt default for a stopped task", async () => {
@@ -102,7 +105,7 @@ describe("archived task mutations", () => {
     assert.notEqual(getTask(task.id)?.status, "archived");
   });
 
-  it("does not continue a task that was archived while continue waited on the lock", async () => {
+  it("continues a task that was archived while continue waited on the lock", async () => {
     const task = await stoppedTask();
     let starts = 0;
     runners.pi = {
@@ -125,9 +128,10 @@ describe("archived task mutations", () => {
     setDurableDelayForTests(null);
     release();
     await archived;
-    await assert.rejects(continued, (err) => err instanceof ArchivedReadonlyError);
-    assert.equal(getTask(task.id)?.status, "archived");
-    assert.equal(starts, 0);
+    const result = await continued;
+    assert.equal(result.status, "queued");
+    assert.equal(result.prompts?.[1]?.prompt, "too late");
+    assert.equal(starts, 1);
   });
 
   it("keeps the web move-to-archive path for a running card", async () => {
@@ -143,7 +147,14 @@ async function stoppedTask(title = "stopped"): Promise<{ id: string }> {
   const draft = await createDraft({ kind: "pi", workspaceId, prompt: "original", title });
   const stored = getTask(draft.id);
   if (!stored) throw new Error("missing draft");
-  upsertTask({ ...stored, status: "stopped", output: "kept", prompts: [{ iteration: 1, prompt: "original" }] });
+  upsertTask({
+    ...stored,
+    status: "stopped",
+    sessionId: "original-session",
+    output: "kept",
+    outputs: [{ iteration: 1, text: "kept" }],
+    prompts: [{ iteration: 1, prompt: "original" }],
+  });
   return draft;
 }
 

@@ -507,7 +507,6 @@ export function continueTask(id: string, prompt?: string, model?: string): Promi
 async function continueTaskBody(id: string, prompt?: string, model?: string): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
-  if (t.status === "archived") throw new ArchivedReadonlyError();
   if (t.status === "draft") {
     throw new Error("draft has no session yet; start it first (drag to Todo)");
   }

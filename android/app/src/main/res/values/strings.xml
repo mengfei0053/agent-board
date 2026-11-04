@@ -74,7 +74,7 @@
     <string name="reply_pending">Reply in progress…</string>
     <string name="no_round_reply">No reply for this round</string>
     <string name="reply_truncated">Reply was truncated</string>
-    <string name="archive_readonly">Archived tasks are read-only. Stop and continue are unavailable.</string>
+    <string name="archive_readonly">Archived tasks cannot be stopped; continue is available.</string>
     <string name="stop">Stop</string>
     <string name="continue_task">Continue</string>
     <string name="continue_prompt_label">Extra instruction</string>
