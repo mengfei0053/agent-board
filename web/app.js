@@ -39,6 +39,11 @@ const continueModelSuggestions = document.getElementById("continue-model-suggest
 let continuingTaskId = null;
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
+const followupQueueEl = document.getElementById("followup-queue");
+/** @type {Map<string, string[]>} Messages typed while a task is still running. */
+const followupQueues = new Map();
+/** @type {Set<string>} Tasks whose queued follow-up is being sent. */
+const followupDraining = new Set();
 const createQuickPromptsEl = document.getElementById("create-quick-prompts");
 const continueQuickPromptsEl = document.getElementById("continue-quick-prompts");
 /** @type {{ id: string, label: string, content: string }[]} */
@@ -248,10 +253,6 @@ const STATUS_LABEL = {
   archived: "已归档",
 };
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
-}
-
 const UPLOAD_IMG_RE = /!\[[^\]]*\]\((\/uploads\/[A-Za-z0-9._-]+)\)/g;
 
 function stripImageMarkdown(text) {
@@ -266,16 +267,29 @@ function collectPromptImages(prompt) {
   return out;
 }
 
-function promptCardHtml(prompt) {
+function appendPromptCard(parent, prompt) {
   const imgs = collectPromptImages(prompt).slice(0, 3);
   const text = stripImageMarkdown(prompt);
-  const thumbs = imgs.length
-    ? `<div class="card-prompt-thumbs">${imgs.map((src) =>
-        `<img class="card-prompt-thumb" src="${escapeHtml(src)}" alt="" loading="lazy" />`
-      ).join("")}</div>`
-    : "";
-  const body = text ? `<div class="card-prompt">${escapeHtml(text)}</div>` : (imgs.length ? "" : `<div class="card-prompt"></div>`);
-  return thumbs + body;
+  if (imgs.length) {
+    const thumbs = document.createElement("div");
+    thumbs.className = "card-prompt-thumbs";
+    for (const src of imgs) {
+      if (!src.startsWith("/uploads/")) continue;
+      const img = document.createElement("img");
+      img.className = "card-prompt-thumb";
+      img.src = src;
+      img.alt = "";
+      img.loading = "lazy";
+      thumbs.appendChild(img);
+    }
+    parent.appendChild(thumbs);
+  }
+  if (text || !imgs.length) {
+    const body = document.createElement("div");
+    body.className = "card-prompt";
+    body.textContent = text;
+    parent.appendChild(body);
+  }
 }
 
 async function uploadImageFile(file) {
@@ -431,15 +445,45 @@ function formatLocal(iso) {
   }
 }
 
-/** @param {any} t */
-function timeRowsHtml(t) {
-  const start = formatLocal(t.startedAt);
-  const end = formatLocal(t.endedAt);
-  const bits = [];
-  if (start) bits.push(`<span class="time-start" title="开始时间">开始 ${escapeHtml(start)}</span>`);
-  if (end) bits.push(`<span class="time-end" title="结束时间">结束 ${escapeHtml(end)}</span>`);
-  if (!bits.length) return "";
-  return `<div class="card-times">${bits.join("")}</div>`;
+/**
+ * Latest model reply time. outputs[].at is stamped when that turn's text last
+ * changed, so the highest iteration is the most recent reply.
+ * @param {any} t
+ * @returns {string}
+ */
+function lastReplyAt(t) {
+  const turns = Array.isArray(t.outputs) ? t.outputs : [];
+  let latest = "";
+  let iteration = -1;
+  for (const turn of turns) {
+    if (!turn?.at || !String(turn.text || "").trim()) continue;
+    const n = Number(turn.iteration);
+    if (!Number.isFinite(n) || n < iteration) continue;
+    if (n === iteration && String(turn.at) <= latest) continue;
+    iteration = n;
+    latest = String(turn.at);
+  }
+  return latest;
+}
+
+/** @param {HTMLElement} parent @param {any} t */
+function appendCardTimes(parent, t) {
+  const rows = [
+    ["time-start", "开始时间", "开始", formatLocal(t.startedAt)],
+    ["time-end", "结束时间", "结束", formatLocal(t.endedAt)],
+    ["time-reply", "最近一次模型输出的时间", "最后回复", formatLocal(lastReplyAt(t))],
+  ].filter((row) => row[3]);
+  if (!rows.length) return;
+  const box = document.createElement("div");
+  box.className = "card-times";
+  for (const [className, title, label, value] of rows) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.title = title;
+    span.textContent = `${label} ${value}`;
+    box.appendChild(span);
+  }
+  parent.appendChild(box);
 }
 
 function visibleTaskIds() {
@@ -480,48 +524,88 @@ function makeCard(t) {
   const iter = iterationOf(t);
   const statusText = STATUS_LABEL[t.status] || t.status;
   const preview = previewText(t);
-  const summaryHtml = preview.text
-    ? `<div class="card-summary ${preview.error ? "is-error" : "has-output"}">${escapeHtml(preview.text)}</div>`
-    : "";
-  const timesHtml = timeRowsHtml(t);
-  btn.innerHTML = `
-      <input type="checkbox" class="card-check" ${selected.has(t.id) ? "checked" : ""} aria-label="选择任务" />
-      <div class="card-top">
-        <div class="card-heading">
-          <span class="card-id" title="任务号">${escapeHtml(t.id)}</span>
-          <p class="card-title" title="${escapeHtml(t.prompt || "")}">${escapeHtml(displayTitleText(t))}</p>
-        </div>
-        <span class="badge ${t.status}">${escapeHtml(statusText)}</span>
-      </div>
-      <div class="card-meta">${escapeHtml(t.cwd)}</div>
-      ${timesHtml}
-      ${promptCardHtml(t.prompt)}
-      ${summaryHtml}
-      <div class="card-footer">
-        <span class="kind-pill">${escapeHtml(t.kind)}</span>
-        <span class="iter-pill" title="迭代次数">迭代 ${iter}</span>
-        ${(t.sideJobs && t.sideJobs.length) ? `<span class="sidejob-pill" title="后台 / Monitor / 子代理">${t.sideJobs.length} 后台</span>` : ""}
-        <span class="model-pill" title="${escapeHtml(t.model || "")}">${escapeHtml(t.model || "解析中…")}</span>
-        ${["succeeded", "failed", "stopped"].includes(t.status)
-          ? `<span class="card-archive-btn" role="button" tabindex="0" title="归档到归档列" data-archive="${escapeHtml(t.id)}">归档</span>`
-          : ""}
-      </div>`;
-  const check = btn.querySelector(".card-check");
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "card-check";
+  check.checked = selected.has(t.id);
+  check.setAttribute("aria-label", "选择任务");
+  const top = document.createElement("div");
+  top.className = "card-top";
+  const heading = document.createElement("div");
+  heading.className = "card-heading";
+  const idEl = document.createElement("span");
+  idEl.className = "card-id";
+  idEl.title = "任务号";
+  idEl.textContent = t.id || "";
+  const title = document.createElement("p");
+  title.className = "card-title";
+  title.title = t.prompt || "";
+  title.textContent = displayTitleText(t);
+  heading.append(idEl, title);
+  const badge = document.createElement("span");
+  badge.className = `badge ${t.status}`;
+  badge.textContent = statusText;
+  top.append(heading, badge);
+  const meta = document.createElement("div");
+  meta.className = "card-meta";
+  meta.textContent = t.cwd || "";
+  const footer = document.createElement("div");
+  footer.className = "card-footer";
+  const kind = document.createElement("span");
+  kind.className = "kind-pill";
+  kind.textContent = t.kind || "";
+  const iteration = document.createElement("span");
+  iteration.className = "iter-pill";
+  iteration.title = "迭代次数";
+  iteration.textContent = `迭代 ${iter}`;
+  footer.append(kind, iteration);
+  if (t.sideJobs?.length) {
+    const jobs = document.createElement("span");
+    jobs.className = "sidejob-pill";
+    jobs.title = "后台 / Monitor / 子代理";
+    jobs.textContent = `${t.sideJobs.length} 后台`;
+    footer.appendChild(jobs);
+  }
+  const model = document.createElement("span");
+  model.className = "model-pill";
+  model.title = t.model || "";
+  model.textContent = t.model || "解析中…";
+  footer.appendChild(model);
+  let archive = null;
+  if (["succeeded", "failed", "stopped"].includes(t.status)) {
+    archive = document.createElement("span");
+    archive.className = "card-archive-btn";
+    archive.setAttribute("role", "button");
+    archive.tabIndex = 0;
+    archive.title = "归档到归档列";
+    archive.dataset.archive = t.id;
+    archive.textContent = "归档";
+    footer.appendChild(archive);
+  }
+  btn.append(check, top, meta);
+  appendCardTimes(btn, t);
+  appendPromptCard(btn, t.prompt);
+  if (preview.text) {
+    const summary = document.createElement("div");
+    summary.className = `card-summary ${preview.error ? "is-error" : "has-output"}`;
+    summary.textContent = preview.text;
+    btn.appendChild(summary);
+  }
+  btn.appendChild(footer);
   check.addEventListener("click", (e) => e.stopPropagation());
   check.addEventListener("change", (e) => {
     e.stopPropagation();
     setSelected(t.id, check.checked);
     btn.classList.toggle("selected", check.checked);
   });
-  const archiveBtn = btn.querySelector(".card-archive-btn");
-  if (archiveBtn) {
+  if (archive) {
     const doArchive = (e) => {
       e.preventDefault();
       e.stopPropagation();
       void moveToLane(t.id, "archived");
     };
-    archiveBtn.addEventListener("click", doArchive);
-    archiveBtn.addEventListener("keydown", (e) => {
+    archive.addEventListener("click", doArchive);
+    archive.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") doArchive(e);
     });
   }
@@ -679,18 +763,78 @@ function clearContinuePrompt() {
   }
 }
 
+function taskIsActive(task) {
+  return Boolean(task && ["queued", "running", "blocked"].includes(task.status));
+}
+
+function followupsOf(taskId) {
+  return followupQueues.get(taskId) || [];
+}
+
+function renderFollowupQueue(taskId) {
+  if (!followupQueueEl) return;
+  const items = taskId ? followupsOf(taskId) : [];
+  followupQueueEl.replaceChildren();
+  if (!items.length) {
+    followupQueueEl.hidden = true;
+    return;
+  }
+  followupQueueEl.hidden = false;
+  for (const [index, text] of items.entries()) {
+    const item = document.createElement("li");
+    item.className = "followup-item";
+    const order = document.createElement("span");
+    order.className = "followup-index";
+    order.textContent = String(index + 1);
+    const body = document.createElement("span");
+    body.className = "followup-text";
+    body.textContent = text;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "followup-remove";
+    remove.dataset.followupIndex = String(index);
+    remove.setAttribute("aria-label", "移除排队消息");
+    remove.title = "移除";
+    remove.textContent = "×";
+    item.append(order, body, remove);
+    followupQueueEl.appendChild(item);
+  }
+}
+
+function queueFollowup(taskId, text) {
+  const prompt = String(text || "").trim();
+  if (!taskId || !prompt) return false;
+  const next = followupsOf(taskId).concat(prompt);
+  followupQueues.set(taskId, next);
+  if (selectedId === taskId) renderFollowupQueue(taskId);
+  return true;
+}
+
+function removeFollowup(taskId, index) {
+  const next = followupsOf(taskId).filter((_, i) => i !== index);
+  if (next.length) followupQueues.set(taskId, next);
+  else followupQueues.delete(taskId);
+  if (selectedId === taskId) renderFollowupQueue(taskId);
+}
+
 function renderQuickPromptButtons(container, targetId) {
   if (!container) return;
+  container.replaceChildren();
   if (!quickPrompts.length) {
-    container.innerHTML = "";
     container.hidden = true;
     return;
   }
   container.hidden = false;
-  container.innerHTML = quickPrompts.map((item) => {
-    const label = escapeHtml(item.label || "快捷");
-    return `<button type="button" class="secondary quick-prompt-btn" data-quick-id="${escapeHtml(item.id)}" data-target="${escapeHtml(targetId)}" title="${label}">${label}</button>`;
-  }).join("");
+  for (const item of quickPrompts) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary quick-prompt-btn";
+    button.dataset.quickId = item.id;
+    button.dataset.target = targetId;
+    button.title = item.label || "快捷";
+    button.textContent = item.label || "快捷";
+    container.appendChild(button);
+  }
 }
 
 function applyQuickPromptsToUi() {
@@ -752,19 +896,31 @@ function setAttachStatus(msg, isError = false) {
 function renderCreateAttachments() {
   const list = document.getElementById("create-attachments");
   if (!list) return;
+  list.replaceChildren();
   if (!pendingAttachments.length) {
     list.hidden = true;
-    list.innerHTML = "";
     return;
   }
   list.hidden = false;
-  list.innerHTML = pendingAttachments.map((a, idx) => `
-    <li class="attach-item" data-idx="${idx}">
-      <span class="attach-item-name" title="${escapeHtml(a.originalName)}">${escapeHtml(a.originalName)}</span>
-      <span class="attach-item-size">${escapeHtml(formatBytes(a.size))}</span>
-      <button type="button" class="secondary attach-item-remove" data-idx="${idx}">移除</button>
-    </li>
-  `).join("");
+  pendingAttachments.forEach((file, index) => {
+    const item = document.createElement("li");
+    item.className = "attach-item";
+    item.dataset.idx = String(index);
+    const name = document.createElement("span");
+    name.className = "attach-item-name";
+    name.title = file.originalName || "";
+    name.textContent = file.originalName || "";
+    const size = document.createElement("span");
+    size.className = "attach-item-size";
+    size.textContent = formatBytes(file.size);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary attach-item-remove";
+    remove.dataset.idx = String(index);
+    remove.textContent = "移除";
+    item.append(name, size, remove);
+    list.appendChild(item);
+  });
 }
 
 function clearPendingAttachments() {
@@ -816,20 +972,33 @@ function attachmentDownloadUrl(a) {
   return `${a.url}?download=1&filename=${name}`;
 }
 
-function attachmentsMetaHtml(task) {
+function appendAttachmentsMeta(grid, task) {
   const list = Array.isArray(task.attachments) ? task.attachments : [];
-  if (!list.length) return "";
-  const items = list.map((a) => {
-    const href = attachmentDownloadUrl(a);
-    return `<li class="attach-item">
-      <a class="attach-item-link attach-item-name" href="${escapeHtml(href)}" download="${escapeHtml(a.originalName || a.name)}" title="${escapeHtml(a.originalName || "")}">${escapeHtml(a.originalName || a.name)}</a>
-      <span class="attach-item-size">${escapeHtml(formatBytes(a.size))}</span>
-    </li>`;
-  }).join("");
-  return `<div class="meta-item meta-wide detail-attachments">
-    <span class="meta-k">附件（${list.length}）</span>
-    <ul class="attach-list">${items}</ul>
-  </div>`;
+  if (!list.length || !grid) return;
+  const item = document.createElement("div");
+  item.className = "meta-item meta-wide detail-attachments";
+  const label = document.createElement("span");
+  label.className = "meta-k";
+  label.textContent = `附件（${list.length}）`;
+  const ul = document.createElement("ul");
+  ul.className = "attach-list";
+  for (const file of list) {
+    const li = document.createElement("li");
+    li.className = "attach-item";
+    const link = document.createElement("a");
+    link.className = "attach-item-link attach-item-name";
+    link.href = attachmentDownloadUrl(file);
+    link.download = file.originalName || file.name || "file";
+    link.title = file.originalName || "";
+    link.textContent = file.originalName || file.name || "file";
+    const size = document.createElement("span");
+    size.className = "attach-item-size";
+    size.textContent = formatBytes(file.size);
+    li.append(link, size);
+    ul.appendChild(li);
+  }
+  item.append(label, ul);
+  grid.appendChild(item);
 }
 
 function openCreate(mode = "draft") {
@@ -932,17 +1101,35 @@ function canContinue(task) {
 }
 
 function metaItem(k, v, wide = false, opts = {}) {
+  const item = document.createElement("div");
+  item.className = wide ? "meta-item meta-wide" : "meta-item";
+  const label = document.createElement("span");
+  label.className = "meta-k";
+  label.textContent = k;
   let body;
   if (opts.markdown) {
-    body = `<div class="meta-v md-body prompt-md">${v ? renderMarkdown(v) : "—"}</div>`;
+    body = document.createElement("div");
+    body.className = "meta-v md-body prompt-md";
+    const rendered = v ? renderMarkdown(v) : "—";
+    const parsed = new DOMParser().parseFromString(rendered, "text/html");
+    body.append(...parsed.body.childNodes);
   } else if (opts.code && v) {
-    body = `<button type="button" class="meta-cmd-btn" data-copy-cmd="${escapeHtml(v)}" title="点击复制命令"><code class="meta-cmd">${escapeHtml(v)}</code></button>`;
-  } else if (opts.muted) {
-    body = `<span class="meta-v muted">${escapeHtml(v ?? "—")}</span>`;
+    body = document.createElement("button");
+    body.type = "button";
+    body.className = "meta-cmd-btn";
+    body.dataset.copyCmd = String(v);
+    body.title = "点击复制命令";
+    const code = document.createElement("code");
+    code.className = "meta-cmd";
+    code.textContent = String(v);
+    body.appendChild(code);
   } else {
-    body = `<span class="meta-v${k === "工作目录" ? " cwd" : ""}">${escapeHtml(v ?? "—")}</span>`;
+    body = document.createElement("span");
+    body.className = `meta-v${opts.muted ? " muted" : ""}${k === "工作目录" ? " cwd" : ""}`;
+    body.textContent = v || "—";
   }
-  return `<div class="meta-item${wide ? " meta-wide" : ""}"><span class="meta-k">${escapeHtml(k)}</span>${body}</div>`;
+  item.append(label, body);
+  return item;
 }
 
 function resumeMetaItem(task) {
@@ -1024,37 +1211,58 @@ function paintOutput(task) {
 
   if (rounds.length) {
     detailOutput.classList.remove("empty-output");
-    detailOutput.innerHTML = rounds.map((r) => {
-      const when = formatLocal(r.at || r.promptAt) || "";
-      const kind = r.iteration <= 1 ? "初始" : "继续";
-      const head = `第 ${r.iteration} 轮 · ${kind}${when ? " · " + when : ""}`;
-      const live = running && r.iteration === curIter ? ' <span class="turn-live">实时</span>' : "";
-      const promptBlock = r.prompt
-        ? `<div class="output-turn-prompt">
-            <div class="output-turn-prompt-label">提示词</div>
-            <div class="output-turn-prompt-body md-body prompt-md">${renderMarkdown(r.prompt)}</div>
-          </div>`
-        : (r.iteration <= 1 && task.prompt
-          ? `<div class="output-turn-prompt">
-            <div class="output-turn-prompt-label">提示词</div>
-            <div class="output-turn-prompt-body md-body prompt-md">${renderMarkdown(task.prompt)}</div>
-          </div>`
-          : `<div class="output-turn-prompt output-turn-prompt-empty"><div class="output-turn-prompt-label">提示词</div><div class="muted">（无记录）</div></div>`);
-      let body;
-      if (r.text && String(r.text).trim()) {
-        body = `<div class="output-turn-body md-body">${renderMarkdown(r.text)}</div>`;
-      } else if (running && r.iteration === curIter) {
-        body = `<div class="output-turn-body output-turn-pending muted">回复生成中…</div>`;
-      } else {
-        body = `<div class="output-turn-body output-turn-pending muted">本轮暂无回复</div>`;
+    detailOutput.replaceChildren();
+    for (const round of rounds) {
+      const when = formatLocal(round.at || round.promptAt) || "";
+      const kind = round.iteration <= 1 ? "初始" : "继续";
+      const article = document.createElement("article");
+      article.className = "output-turn";
+      const header = document.createElement("header");
+      header.className = "output-turn-head";
+      const heading = document.createElement("span");
+      heading.textContent = `第 ${round.iteration} 轮 · ${kind}${when ? " · " + when : ""}`;
+      header.appendChild(heading);
+      if (running && round.iteration === curIter) {
+        const live = document.createElement("span");
+        live.className = "turn-live";
+        live.textContent = "实时";
+        header.appendChild(live);
       }
-      return `<article class="output-turn">
-        <header class="output-turn-head"><span>${escapeHtml(head)}</span>${live}</header>
-        ${promptBlock}
-        <div class="output-turn-reply-label">回复</div>
-        ${body}
-      </article>`;
-    }).join("");
+      const promptText = round.prompt || (round.iteration <= 1 ? task.prompt : "");
+      const promptBox = document.createElement("div");
+      promptBox.className = promptText ? "output-turn-prompt" : "output-turn-prompt output-turn-prompt-empty";
+      const promptLabel = document.createElement("div");
+      promptLabel.className = "output-turn-prompt-label";
+      promptLabel.textContent = "提示词";
+      promptBox.appendChild(promptLabel);
+      if (promptText) {
+        const promptBody = document.createElement("div");
+        promptBody.className = "output-turn-prompt-body md-body prompt-md";
+        const parsed = new DOMParser().parseFromString(promptText ? renderMarkdown(promptText) : "—", "text/html");
+    promptBody.append(...parsed.body.childNodes);
+        promptBox.appendChild(promptBody);
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "muted";
+        empty.textContent = "（无记录）";
+        promptBox.appendChild(empty);
+      }
+      const replyLabel = document.createElement("div");
+      replyLabel.className = "output-turn-reply-label";
+      replyLabel.textContent = "回复";
+      const reply = document.createElement("div");
+      reply.className = "output-turn-body";
+      if (String(round.text || "").trim()) {
+        reply.classList.add("md-body");
+        const parsed = new DOMParser().parseFromString(round.text ? renderMarkdown(round.text) : "—", "text/html");
+    reply.append(...parsed.body.childNodes);
+      } else {
+        reply.classList.add("output-turn-pending", "muted");
+        reply.textContent = running && round.iteration === curIter ? "回复生成中…" : "本轮暂无回复";
+      }
+      article.append(header, promptBox, replyLabel, reply);
+      detailOutput.appendChild(article);
+    }
     outputHint.textContent = running
       ? `共 ${rounds.length} 轮 · 当前第 ${curIter} 轮更新中`
       : `共 ${rounds.length} 轮`;
@@ -1092,42 +1300,71 @@ const SIDE_STATUS_LABEL = {
   unknown: "未知",
 };
 
+function sideJobBadgeClass(status) {
+  if (status === "running" || status === "succeeded" || status === "failed") return status;
+  return "stopped";
+}
+
 function paintSideJobs(task) {
   const jobs = Array.isArray(task.sideJobs) ? task.sideJobs : [];
   if (!detailSidejobs) return;
+  detailSidejobs.replaceChildren();
   if (!jobs.length) {
-    detailSidejobs.innerHTML = '<p class="muted">暂无后台任务</p>';
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "暂无后台任务";
+    detailSidejobs.appendChild(empty);
     if (sidejobsHint) sidejobsHint.textContent = "无";
     return;
   }
-  const running = jobs.filter((j) => j.status === "running").length;
+  const running = jobs.filter((job) => job.status === "running").length;
   if (sidejobsHint) {
     sidejobsHint.textContent = running
       ? `${jobs.length} 项 · ${running} 进行中`
       : `${jobs.length} 项`;
   }
-  detailSidejobs.innerHTML = jobs.map((j) => {
-    const kind = SIDE_KIND_LABEL[j.kind] || j.kind || "其他";
-    const st = SIDE_STATUS_LABEL[j.status] || j.status || "";
-    const start = formatLocal(j.startedAt);
-    const end = formatLocal(j.endedAt);
-    const times = [
-      start ? `开始 ${escapeHtml(start)}` : "",
-      end ? `结束 ${escapeHtml(end)}` : "",
-    ].filter(Boolean).join(" · ");
-    return `<article class="sidejob-card status-${escapeHtml(j.status || "unknown")}">
-      <div class="sidejob-top">
-        <span class="sidejob-kind">${escapeHtml(kind)}</span>
-        <span class="badge ${escapeHtml(j.status === "running" ? "running" : j.status === "succeeded" ? "succeeded" : j.status === "failed" ? "failed" : "stopped")}">${escapeHtml(st)}</span>
-      </div>
-      <p class="sidejob-title">${escapeHtml(j.title || j.toolName || j.id)}</p>
-      ${j.summary ? `<p class="sidejob-summary">${escapeHtml(j.summary)}</p>` : ""}
-      <div class="sidejob-meta">
-        ${j.toolName ? `<span class="kind-pill">${escapeHtml(j.toolName)}</span>` : ""}
-        ${times ? `<span class="sidejob-times">${times}</span>` : ""}
-      </div>
-    </article>`;
-  }).join("");
+  for (const job of jobs) {
+    const card = document.createElement("article");
+    card.className = `sidejob-card status-${job.status || "unknown"}`;
+    const top = document.createElement("div");
+    top.className = "sidejob-top";
+    const kind = document.createElement("span");
+    kind.className = "sidejob-kind";
+    kind.textContent = SIDE_KIND_LABEL[job.kind] || job.kind || "其他";
+    const badge = document.createElement("span");
+    badge.className = `badge ${sideJobBadgeClass(job.status)}`;
+    badge.textContent = SIDE_STATUS_LABEL[job.status] || job.status || "";
+    top.append(kind, badge);
+    const title = document.createElement("p");
+    title.className = "sidejob-title";
+    title.textContent = job.title || job.toolName || job.id || "";
+    card.append(top, title);
+    if (job.summary) {
+      const summary = document.createElement("p");
+      summary.className = "sidejob-summary";
+      summary.textContent = job.summary;
+      card.appendChild(summary);
+    }
+    const meta = document.createElement("div");
+    meta.className = "sidejob-meta";
+    if (job.toolName) {
+      const tool = document.createElement("span");
+      tool.className = "kind-pill";
+      tool.textContent = job.toolName;
+      meta.appendChild(tool);
+    }
+    const start = formatLocal(job.startedAt);
+    const end = formatLocal(job.endedAt);
+    const times = [start ? `开始 ${start}` : "", end ? `结束 ${end}` : ""].filter(Boolean).join(" · ");
+    if (times) {
+      const time = document.createElement("span");
+      time.className = "sidejob-times";
+      time.textContent = times;
+      meta.appendChild(time);
+    }
+    if (meta.childNodes.length) card.appendChild(meta);
+    detailSidejobs.appendChild(card);
+  }
 }
 
 function buildMetaJson(task) {
@@ -1183,7 +1420,7 @@ function paintDetail(task) {
 
   const startLabel = formatLocal(task.startedAt) || "—";
   const endLabel = formatLocal(task.endedAt) || "—";
-  detailMetaGrid.innerHTML = [
+  detailMetaGrid.replaceChildren(
     metaItem("任务 ID", task.id || "—"),
     metaItem("状态", statusText),
     metaItem("迭代", String(iter)),
@@ -1199,7 +1436,8 @@ function paintDetail(task) {
     metaItem("工作目录", task.cwd, true),
     ...(task.worktree?.branch ? [metaItem("Git 分支", task.worktree.branch, true)] : []),
     metaItem("初始提示词", task.prompt, true, { markdown: true }),
-  ].join("");
+  );
+  appendAttachmentsMeta(detailMetaGrid, task);
 
   paintOutput(task);
   paintSideJobs(task);
@@ -1218,9 +1456,12 @@ function paintDetail(task) {
   const showContinue = canContinue(task);
   continueRow.hidden = task.status === "draft";
   const submitting = continuingTaskId === task.id;
+  const queued = followupsOf(task.id);
   continueBtn.hidden = task.status === "draft";
   continueBtn.disabled = !showContinue || submitting;
+  continueBtn.textContent = queued.length ? `继续任务（排队 ${queued.length}）` : "继续任务";
   continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
+  renderFollowupQueue(task.id);
   continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
   continueModelHint.textContent = !task.sessionId
     ? "缺少原会话，不能在保留上下文的情况下切换模型。"
@@ -1234,7 +1475,9 @@ function paintDetail(task) {
       ? task.sessionId
         ? `将续会话 ${task.sessionId}`
         : "无原会话：仅携带初始提示词和本轮指令重新执行，不恢复历史上下文"
-      : "任务运行中，请先停止再继续";
+      : queued.length
+        ? `任务运行中。已排队 ${queued.length} 条，结束后会按顺序继续`
+        : "任务运行中。输入内容后按回车，会加入排队";
 }
 
 function renderLogViewerFromCache() {
@@ -1296,6 +1539,7 @@ function closeDetail() {
   lastOutputSig = "";
   lastPaintedTaskId = null;
   clearContinuePrompt();
+  renderFollowupQueue(null);
 }
 
 document.getElementById("btn-new").onclick = () => openCreate("draft");
@@ -1401,7 +1645,9 @@ document.addEventListener("click", (e) => {
   if (!img?.src) return;
   e.preventDefault();
   e.stopPropagation();
-  window.open(img.src, "_blank", "noopener");
+  const target = new URL(img.src, location.origin);
+  if (!["http:", "https:"].includes(target.protocol)) return;
+  window.open(target.href, "_blank", "noopener");
 });
 
 detailModal.addEventListener("click", (e) => { if (e.target === detailModal) closeDetail(); });
@@ -1413,8 +1659,7 @@ searchEl.addEventListener("input", () => {
   renderList();
 });
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
+async function submitCreateTask() {
   formError.hidden = true;
   if (!selectedWorkspaceId) {
     formError.hidden = false;
@@ -1457,6 +1702,11 @@ form.addEventListener("submit", async (e) => {
   renderList();
   openDetail(data.task.id);
   form.reset();
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await submitCreateTask();
 });
 
 startBtn.addEventListener("click", async () => {
@@ -1529,12 +1779,73 @@ deleteBtn.addEventListener("click", async () => {
   if (warn) window.alert(warn);
 });
 
+/** @param {{ prompt?: string, model?: string }} body */
+async function postContinue(id, body) {
+  const res = await fetch(`/api/tasks/${id}/continue`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function showContinueError(id, err) {
+  if (selectedId !== id || !continueError) return;
+  continueError.hidden = false;
+  continueError.textContent = err?.message || "继续任务失败，请重试";
+}
+
+/**
+ * Send the oldest queued follow-up once the task is idle.
+ * One message per finished run, so later replies stay in order.
+ * @param {string} id
+ */
+async function drainFollowup(id) {
+  if (followupDraining.has(id) || continuingTaskId === id) return;
+  const task = tasks.get(id);
+  const queued = followupsOf(id);
+  if (!task || !queued.length || !canContinue(task)) return;
+  const prompt = queued[0];
+  followupDraining.add(id);
+  continuingTaskId = id;
+  if (selectedId === id) {
+    continueError.hidden = true;
+    continueBtn.disabled = true;
+  }
+  try {
+    const data = await postContinue(id, { prompt });
+    removeFollowup(id, 0);
+    if (data.task) {
+      tasks.set(data.task.id, data.task);
+      rememberModel(data.task.kind, data.task.model);
+      renderList();
+    }
+  } catch (err) {
+    showContinueError(id, err);
+  } finally {
+    followupDraining.delete(id);
+    continuingTaskId = null;
+    const latest = tasks.get(selectedId);
+    if (latest) paintDetail(latest);
+  }
+}
+
 continueBtn.addEventListener("click", async () => {
   if (!selectedId || continuingTaskId) return;
   const id = selectedId;
+  const task = tasks.get(id);
+  const typed = continuePrompt.value.trim();
+  if (task && taskIsActive(task)) {
+    if (!queueFollowup(id, typed)) return;
+    continuePrompt.value = "";
+    paintDetail(tasks.get(id) || task);
+    return;
+  }
   const model = continueModel.disabled ? "" : continueModel.value.trim();
   const body = {
-    prompt: continuePrompt.value.trim() || undefined,
+    prompt: typed || undefined,
     model: model || undefined,
   };
   continuingTaskId = id;
@@ -1542,13 +1853,7 @@ continueBtn.addEventListener("click", async () => {
   continueBtn.disabled = true;
   continueModel.disabled = true;
   try {
-    const res = await fetch(`/api/tasks/${id}/continue`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || res.statusText);
+    const data = await postContinue(id, body);
     if (data.task) {
       tasks.set(data.task.id, data.task);
       rememberModel(data.task.kind, data.task.model);
@@ -1556,10 +1861,7 @@ continueBtn.addEventListener("click", async () => {
       renderList();
     }
   } catch (err) {
-    if (selectedId === id) {
-      continueError.hidden = false;
-      continueError.textContent = err?.message || "继续任务失败，请重试";
-    }
+    showContinueError(id, err);
   } finally {
     continuingTaskId = null;
     const task = tasks.get(selectedId);
@@ -1698,6 +2000,33 @@ document.getElementById("ws-path-pick")?.addEventListener("click", async () => {
   await loadFolder(wsPathInput.value.trim() || undefined);
 });
 
+function promptEnterSubmits(e) {
+  return e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229;
+}
+
+document.getElementById("create-prompt")?.addEventListener("keydown", (e) => {
+  if (!promptEnterSubmits(e)) return;
+  if (createModal.classList.contains("hidden")) return;
+  e.preventDefault();
+  if (!form.reportValidity()) return;
+  void submitCreateTask();
+});
+
+continuePrompt?.addEventListener("keydown", (e) => {
+  if (!promptEnterSubmits(e)) return;
+  if (!selectedId || detailModal.classList.contains("hidden")) return;
+  e.preventDefault();
+  continueBtn.click();
+});
+
+followupQueueEl?.addEventListener("click", (e) => {
+  const btn = e.target?.closest?.(".followup-remove");
+  if (!btn || !selectedId) return;
+  const index = Number(btn.dataset.followupIndex);
+  if (!Number.isInteger(index)) return;
+  removeFollowup(selectedId, index);
+});
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!document.getElementById("folder-modal")?.classList.contains("hidden")) return closeFolderModal();
@@ -1776,35 +2105,53 @@ function updateWorkspaceCounts() {
 
 function renderWorkspaces() {
   if (!wsListEl) return;
-  wsListEl.innerHTML = "";
+  wsListEl.replaceChildren();
   const list = [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   if (wsEmptyEl) wsEmptyEl.hidden = list.length > 0;
-  for (const w of list) {
+  for (const workspace of list) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "ws-item" + (w.id === selectedWorkspaceId ? " active" : "");
-    btn.dataset.workspaceId = w.id;
-    btn.innerHTML = `<span class="ws-item-name">${escapeHtml(w.name)}</span>
-      <span class="ws-item-path">${escapeHtml(w.path)}</span>
-      <span class="ws-item-count">0 个任务</span>
-      <span class="ws-item-stats">${LANES.map((lane) =>
-        `<span class="ws-lane-stat" data-lane="${lane}">${LANE_LABEL[lane]} <b class="ws-lane-count" data-lane="${lane}">0</b></span>`
-      ).join("")}</span>`;
-    btn.onclick = () => selectWorkspace(w.id);
+    btn.className = "ws-item" + (workspace.id === selectedWorkspaceId ? " active" : "");
+    btn.dataset.workspaceId = workspace.id;
+    const name = document.createElement("span");
+    name.className = "ws-item-name";
+    name.textContent = workspace.name;
+    const path = document.createElement("span");
+    path.className = "ws-item-path";
+    path.textContent = workspace.path;
+    const count = document.createElement("span");
+    count.className = "ws-item-count";
+    count.textContent = "0 个任务";
+    const stats = document.createElement("span");
+    stats.className = "ws-item-stats";
+    for (const lane of LANES) {
+      const stat = document.createElement("span");
+      stat.className = "ws-lane-stat";
+      stat.dataset.lane = lane;
+      stat.append(document.createTextNode(`${LANE_LABEL[lane]} `));
+      const value = document.createElement("b");
+      value.className = "ws-lane-count";
+      value.dataset.lane = lane;
+      value.textContent = "0";
+      stat.appendChild(value);
+      stats.appendChild(stat);
+    }
+    btn.append(name, path, count, stats);
+    btn.onclick = () => selectWorkspace(workspace.id);
     btn.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openWsContextMenu(e.clientX, e.clientY, w.id);
+      openWsContextMenu(e.clientX, e.clientY, workspace.id);
     });
     li.appendChild(btn);
     wsListEl.appendChild(li);
   }
   updateWorkspaceCounts();
-  const cur = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
-  if (wsBannerName) wsBannerName.textContent = cur ? cur.name : "未选择工作区";
-  if (wsBannerPath) wsBannerPath.textContent = cur ? cur.path : "请在左侧新建或选择工作区";
-  const canMutate = Boolean(cur);
+  const current = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
+  if (wsBannerName) wsBannerName.textContent = current ? current.name : "未选择工作区";
+  if (wsBannerPath) wsBannerPath.textContent = current ? current.path : "请在左侧新建或选择工作区";
+  const canMutate = Boolean(current);
   document.getElementById("ws-edit").disabled = !canMutate;
   document.getElementById("ws-delete").disabled = !canMutate;
   void loadGitStatus(false);
@@ -1940,7 +2287,9 @@ function ensureWsContextMenu() {
     const ws = workspaces.get(id);
     if (!ws) return;
     if (action === "settings") {
-      location.href = `/workspaces/${encodeURIComponent(id)}/settings`;
+      const target = new URL(`/workspaces/${encodeURIComponent(id)}/settings`, location.origin);
+      if (target.origin !== location.origin) return;
+      location.assign(target.pathname);
       return;
     }
     if (action === "edit") {
@@ -2057,7 +2406,8 @@ function scheduleDetailRefresh(id) {
 function connectEvents() {
   const es = new EventSource("/api/events");
   es.addEventListener("hello", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     tasks.clear();
     for (const t of data.tasks || []) tasks.set(t.id, t);
     workspaces.clear();
@@ -2067,25 +2417,31 @@ function connectEvents() {
     renderList();
   });
   es.addEventListener("workspace_upsert", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     if (data.workspace) {
       workspaces.set(data.workspace.id, data.workspace);
       renderWorkspaces();
     }
   });
   es.addEventListener("workspace_delete", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     for (const id of data.workspaceIds || []) workspaces.delete(id);
     ensureSelectedWorkspace();
     renderWorkspaces();
     renderList();
   });
   es.addEventListener("task_upsert", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     const prev = tasks.get(data.task.id);
     const merged = mergeBoardTask(prev, data.task);
     tasks.set(data.task.id, merged);
     scheduleRenderList();
+    if (canContinue(merged) && followupsOf(data.task.id).length) {
+      void drainFollowup(data.task.id);
+    }
     if (data.task.id === selectedId && !detailModal.classList.contains("hidden")) {
       schedulePaintDetail(merged);
       if (data.task.boardSummary && (data.task.outputTruncated || data.task.promptTruncated)) {
@@ -2094,7 +2450,8 @@ function connectEvents() {
     }
   });
   es.addEventListener("task_delete", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     for (const id of data.taskIds || []) {
       tasks.delete(id);
       selected.delete(id);
@@ -2134,7 +2491,8 @@ function connectEvents() {
     }
   };
   es.addEventListener("task_log", (ev) => {
-    const data = JSON.parse(ev.data);
+    let data;
+    try { data = JSON.parse(ev.data); } catch { return; }
     if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
     logBuf.push(data.line);
     if (logBuf.length > 200) {

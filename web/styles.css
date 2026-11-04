@@ -933,7 +933,8 @@ a.btn-link.secondary { background: var(--panel-2); }
   font-variant-numeric: tabular-nums;
 }
 .card-times .time-start,
-.card-times .time-end { white-space: nowrap; }
+.card-times .time-end,
+.card-times .time-reply { white-space: nowrap; }
 
 .card-prompt {
   margin-top: 8px;
@@ -1860,6 +1861,49 @@ textarea { resize: vertical; min-height: 96px; }
 }
 .continue-row.footer-continue .quick-prompts {
   margin: 0 0 8px;
+}
+.followup-queue {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow: auto;
+}
+.followup-queue[hidden] { display: none !important; }
+.followup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.followup-index {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.followup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.followup-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
 }
 .continue-row.footer-continue textarea {
   margin-top: 0;
