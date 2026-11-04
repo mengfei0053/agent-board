@@ -2601,3 +2601,5 @@ button.topbar-brand[aria-expanded="true"] {
 .detail-info-row .info-btn:hover,
 .detail-extra-actions button:hover { background: none; text-decoration: underline; }
 .detail-extra-actions { gap: 18px; }
+.detail-info-row { flex-wrap: wrap; gap: 8px 18px; }
+.detail-info-row .detail-task-id { max-width: 140px; }

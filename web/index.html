@@ -234,6 +234,8 @@
             <span>后台 / Monitor</span>
             <span class="muted" id="sidejobs-hint"></span>
           </button>
+          <button type="button" class="secondary info-btn" id="btn-open-log">原始日志 <span class="muted" id="log-count"></span></button>
+          <button type="button" class="secondary info-btn" id="btn-open-meta">原始元数据 JSON</button>
         </div>
 
         <section class="detail-output-section">
@@ -244,11 +246,6 @@
           <div id="detail-output" class="detail-output-list"></div>
           <div id="detail-error" class="detail-error" hidden></div>
         </section>
-
-        <div class="detail-extra-actions">
-          <button type="button" class="secondary" id="btn-open-log">原始日志 <span class="muted" id="log-count"></span></button>
-          <button type="button" class="secondary" id="btn-open-meta">原始元数据 JSON</button>
-        </div>
       </div>
 
       <div class="detail-footer" id="detail-footer">
