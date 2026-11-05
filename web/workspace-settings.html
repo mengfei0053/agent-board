@@ -28,7 +28,7 @@
     <header class="topbar">
       <div class="topbar-brand">
         <div class="brand-mark" aria-hidden="true">ab</div>
-        <div>
+        <div class="topbar-brand-text">
           <h1>空间设置</h1>
           <p class="muted" id="ws-subtitle">加载中…</p>
         </div>
@@ -40,84 +40,135 @@
     </header>
 
     <main class="docs-main settings-main">
-      <form id="ws-settings-form" class="settings-form" autocomplete="off">
-        <section class="settings-card" aria-labelledby="ws-basic-title">
-          <header class="settings-block-head">
-            <h2 id="ws-basic-title">基本信息</h2>
-            <p class="settings-block-desc">名称与路径；任务 cwd 取自工作区路径。</p>
-          </header>
-          <label class="settings-row">
-            <span class="settings-label"><strong>名称</strong></span>
-            <input type="text" id="ws-name" name="name" required placeholder="工作区名称" />
-          </label>
-          <label class="settings-row">
-            <span class="settings-label"><strong>路径</strong></span>
-            <input type="text" id="ws-path" name="path" required placeholder="/绝对/路径" spellcheck="false" />
-          </label>
-        </section>
+      <div class="settings-shell">
+        <aside class="settings-sidebar" aria-label="空间设置分区导航">
+          <nav class="settings-nav">
+            <div class="settings-nav-label">空间配置</div>
+            <a class="settings-nav-item active" href="#ws-basic-section">
+              <span class="settings-nav-dot"></span>
+              <span>基本信息</span>
+            </a>
+            <a class="settings-nav-item" href="#ws-git-section">
+              <span class="settings-nav-dot"></span>
+              <span>Git 状态</span>
+            </a>
+            <a class="settings-nav-item" href="#ws-prompt-section">
+              <span class="settings-nav-dot"></span>
+              <span>空间提示词</span>
+            </a>
+            <a class="settings-nav-item" href="#ws-skills-section">
+              <span class="settings-nav-dot"></span>
+              <span>Skills</span>
+            </a>
+            <a class="settings-nav-item" href="#ws-mcp-section">
+              <span class="settings-nav-dot"></span>
+              <span>工作区 MCP</span>
+            </a>
+          </nav>
+          <div class="settings-sidebar-note">
+            <strong>作用域说明</strong>
+            <p>空间设置仅对当前工作区内新建或续跑的任务生效，点击底部「保存」持久化配置。</p>
+          </div>
+        </aside>
 
-        <section class="settings-card" aria-labelledby="ws-prompt-title">
-          <header class="settings-block-head">
-            <h2 id="ws-prompt-title">空间提示词</h2>
-            <p class="settings-block-desc">首次启动本空间任务时，会自动前置拼到用户 prompt（有 session 的续跑不再重复注入）。</p>
-          </header>
-          <label class="settings-label" for="ws-system-prompt"><strong>系统 / 空间指令</strong></label>
-          <textarea id="ws-system-prompt" name="systemPrompt" rows="8" placeholder="例如：本仓库用 pnpm；改完跑 typecheck；提交信息用中文……"></textarea>
-        </section>
+        <div class="settings-content">
+          <form id="ws-settings-form" class="settings-form" autocomplete="off">
+            <section class="settings-card" id="ws-basic-section" aria-labelledby="ws-basic-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="ws-basic-title">基本信息</h2>
+                  <span class="settings-section-pill">工作区目录</span>
+                </div>
+                <p class="settings-block-desc">工作区显示名称与本机目录路径；任务默认运行目录（cwd）取自此处。</p>
+              </header>
+              <div class="settings-grid-2">
+                <label class="settings-row">
+                  <span class="settings-label"><strong>名称</strong></span>
+                  <input type="text" id="ws-name" name="name" required placeholder="工作区名称" />
+                </label>
+                <label class="settings-row">
+                  <span class="settings-label"><strong>路径</strong></span>
+                  <input type="text" id="ws-path" name="path" required placeholder="/绝对/路径" spellcheck="false" />
+                </label>
+              </div>
+            </section>
 
-        <section class="settings-card" aria-labelledby="ws-skills-title">
-          <header class="settings-block-head">
-            <h2 id="ws-skills-title">Skills</h2>
-            <p class="settings-block-desc">每行一个 skill 名称或路径。启动任务时写入 prompt 提示；原生 skill 目录注入视各 Agent CLI 能力而定。</p>
-          </header>
-          <textarea id="ws-skills" name="skills" rows="6" placeholder="code-review&#10;docs/skills/deploy.md" spellcheck="false"></textarea>
-        </section>
+            <section class="settings-card git-status-card" id="ws-git-section" aria-labelledby="ws-git-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="ws-git-title">Git 状态</h2>
+                  <span class="settings-section-pill">只读探测</span>
+                </div>
+                <p class="settings-block-desc">只读查看此路径下的全部 Git 仓库（工作区根目录、嵌套仓库及子模块），不会提交、推送或切换分支。</p>
+              </header>
+              <label class="settings-row settings-row-toggle">
+                <span class="settings-label">
+                  <strong>读取 Git 仓库状态</strong>
+                  <span class="muted settings-default">默认开启</span>
+                </span>
+                <span class="settings-toggle-line">
+                  <input
+                    type="checkbox"
+                    id="ws-git-status-enabled"
+                    name="gitStatusEnabled"
+                    checked
+                  />
+                  <span class="settings-toggle-hint muted" id="ws-git-status-hint">开启：扫描并展示此工作区下的 Git 仓库状态</span>
+                </span>
+              </label>
+              <div id="ws-git-status-content">
+                <div class="git-panel-actions">
+                  <p class="git-panel-summary muted" id="git-status-summary">加载中…</p>
+                  <button type="button" class="secondary settings-compact-btn" id="git-refresh">刷新</button>
+                </div>
+                <div id="git-status-body" class="git-status-body"></div>
+              </div>
+            </section>
 
-        <section class="settings-card git-status-card" aria-labelledby="ws-git-title">
-          <header class="settings-block-head">
-            <h2 id="ws-git-title">Git 状态</h2>
-            <p class="settings-block-desc">只读查看此路径下的全部 Git 仓库（工作区根目录，以及嵌套仓库、子模块）。不会提交、推送或切换分支。</p>
-          </header>
-          <label class="settings-row settings-row-toggle">
-            <span class="settings-label">
-              <strong>读取 Git 仓库状态</strong>
-              <span class="muted settings-default">默认开启</span>
-            </span>
-            <span class="settings-toggle-line">
-              <input
-                type="checkbox"
-                id="ws-git-status-enabled"
-                name="gitStatusEnabled"
-                checked
-              />
-              <span class="settings-toggle-hint muted" id="ws-git-status-hint">开启：扫描并展示此工作区下的 Git 仓库状态</span>
-            </span>
-          </label>
-          <div id="ws-git-status-content">
-            <div class="git-panel-actions">
-              <p class="git-panel-summary muted" id="git-status-summary">加载中…</p>
-              <button type="button" class="secondary" id="git-refresh">刷新</button>
+            <section class="settings-card" id="ws-prompt-section" aria-labelledby="ws-prompt-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="ws-prompt-title">空间提示词</h2>
+                  <span class="settings-section-pill">首轮注入</span>
+                </div>
+                <p class="settings-block-desc">首次启动本空间任务时自动前置拼接到用户 prompt（已有会话的续跑不重复注入）。</p>
+              </header>
+              <label class="settings-label" for="ws-system-prompt"><strong>系统 / 空间指令</strong></label>
+              <textarea id="ws-system-prompt" name="systemPrompt" rows="6" placeholder="例如：本仓库用 pnpm；改完跑 typecheck；提交信息用中文……"></textarea>
+            </section>
+
+            <section class="settings-card" id="ws-skills-section" aria-labelledby="ws-skills-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="ws-skills-title">Skills</h2>
+                  <span class="settings-section-pill">按行配置</span>
+                </div>
+                <p class="settings-block-desc">每行填写一个 skill 名称或路径。启动任务时写入 prompt 提示；原生 skill 目录注入视各 Agent CLI 能力而定。</p>
+              </header>
+              <textarea id="ws-skills" name="skills" rows="5" placeholder="code-review&#10;docs/skills/deploy.md" spellcheck="false"></textarea>
+            </section>
+
+            <section class="settings-card" id="ws-mcp-section" aria-labelledby="ws-mcp-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="ws-mcp-title">MCP</h2>
+                  <span class="settings-section-pill">覆盖全局同名配置</span>
+                </div>
+                <p class="settings-block-desc">填写 <code>mcpServers</code> JSON，保存后在各 Agent 下次新建或继续任务时加载。支持 command/args/env 和 url/headers；纯文本仅作为提示词说明。</p>
+              </header>
+              <textarea id="ws-mcp" name="mcp" rows="7" placeholder='{"mcpServers":{"example":{"command":"npx","args":["-y","…"]}}}' spellcheck="false"></textarea>
+            </section>
+
+            <div class="settings-sticky-bar" id="settings-sticky">
+              <p class="settings-status muted" id="ws-settings-status" role="status">加载中…</p>
+              <div class="settings-actions">
+                <button type="button" class="secondary" id="btn-clear-ws-settings">清空空间配置</button>
+                <button type="submit" id="btn-save-ws-settings">保存</button>
+              </div>
             </div>
-            <div id="git-status-body" class="git-status-body"></div>
-          </div>
-        </section>
-
-        <section class="settings-card" aria-labelledby="ws-mcp-title">
-          <header class="settings-block-head">
-            <h2 id="ws-mcp-title">MCP</h2>
-            <p class="settings-block-desc">填写 mcpServers JSON，保存后在各 Agent 下次新建或继续任务时加载。支持 command/args/env 和 url/headers；OAuth 服务需在各 CLI 分别登录。Pi 需要 pi-mcp-adapter。纯文本仅作为提示词说明。</p>
-          </header>
-          <textarea id="ws-mcp" name="mcp" rows="8" placeholder='{"mcpServers":{"example":{"command":"npx","args":["-y","…"]}}}' spellcheck="false"></textarea>
-        </section>
-
-        <div class="settings-sticky-bar" id="settings-sticky">
-          <p class="settings-status muted" id="ws-settings-status" role="status">加载中…</p>
-          <div class="settings-actions">
-            <button type="submit" id="btn-save-ws-settings">保存</button>
-            <button type="button" class="secondary" id="btn-clear-ws-settings">清空空间配置</button>
-          </div>
+          </form>
         </div>
-      </form>
+      </div>
     </main>
   </div>
   <script src="/workspace-settings.js" type="module"></script>

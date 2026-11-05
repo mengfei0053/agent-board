@@ -28,9 +28,9 @@
     <header class="topbar">
       <div class="topbar-brand">
         <div class="brand-mark" aria-hidden="true">ab</div>
-        <div>
-          <h1>设置</h1>
-          <p class="muted">MCP 与 Skills 统一管理 · Agent 配置 · 快捷输入</p>
+        <div class="topbar-brand-text">
+          <h1>全局设置</h1>
+          <p class="muted">扩展分发 · Agent 运行环境 · 快捷输入 · 手机配对</p>
         </div>
       </div>
       <div class="topbar-actions">
@@ -40,102 +40,211 @@
     </header>
 
     <main class="docs-main settings-main">
-      <section class="settings-card extensions-card" id="extensions-manager" aria-labelledby="extensions-title">
-        <header class="settings-block-head">
-          <h2 id="extensions-title">MCP 与 Skills</h2>
-          <p class="settings-block-desc">统一保存，按 Agent 分发到本机全局配置。更改自动保存，对之后启动的 CLI 生效；工作区配置仍可覆盖全局 MCP。</p>
-        </header>
-        <div class="extensions-toolbar">
-          <div role="tablist" aria-label="扩展类型">
-            <button type="button" id="extensions-tab-mcp" class="settings-kind-tab active" role="tab" aria-selected="true" aria-controls="extensions-list">MCP</button>
-            <button type="button" id="extensions-tab-skills" class="settings-kind-tab" role="tab" aria-selected="false" aria-controls="extensions-list">Skills</button>
+      <div class="settings-shell">
+        <aside class="settings-sidebar" aria-label="设置分区导航">
+          <nav class="settings-nav">
+            <div class="settings-nav-label">设置目录</div>
+            <a class="settings-nav-item active" href="#extensions-manager">
+              <span class="settings-nav-dot"></span>
+              <span>MCP 与 Skills</span>
+            </a>
+            <a class="settings-nav-item" href="#agent-config-section">
+              <span class="settings-nav-dot"></span>
+              <span>Agent 运行环境</span>
+            </a>
+            <a class="settings-nav-item" href="#quick-prompts-section">
+              <span class="settings-nav-dot"></span>
+              <span>快捷输入模板</span>
+            </a>
+            <a class="settings-nav-item" href="#pair-code-section">
+              <span class="settings-nav-dot"></span>
+              <span>手机端配对</span>
+            </a>
+          </nav>
+          <div class="settings-sidebar-note">
+            <strong>配置说明</strong>
+            <p>MCP 与 Skills 修改后立即同步至本机各 Agent；Agent 路径、代理、环境变量及快捷输入需点击底部「保存」生效。</p>
           </div>
-          <button type="button" class="secondary" id="extensions-reload">重新加载</button>
-          <button type="button" class="secondary" id="extensions-sync">重新同步</button>
+        </aside>
+
+        <div class="settings-content">
+          <section class="settings-card extensions-card" id="extensions-manager" aria-labelledby="extensions-title">
+            <header class="settings-card-header">
+              <div class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="extensions-title">MCP 与 Skills</h2>
+                  <span class="settings-section-pill">自动保存并分发</span>
+                </div>
+                <p class="settings-block-desc">统一管理本机 MCP 服务器与 Skills，勾选即可分发到对应 Agent 全局配置；工作区级配置仍可覆盖全局 MCP。</p>
+              </div>
+              <div class="extensions-header-controls">
+                <div class="settings-segmented" role="tablist" aria-label="扩展类型">
+                  <button type="button" id="extensions-tab-mcp" class="settings-kind-tab active" role="tab" aria-selected="true" aria-controls="extensions-list">MCP</button>
+                  <button type="button" id="extensions-tab-skills" class="settings-kind-tab" role="tab" aria-selected="false" aria-controls="extensions-list">Skills</button>
+                </div>
+                <div class="extensions-sync-btns">
+                  <button type="button" class="secondary settings-compact-btn" id="extensions-reload">重新加载</button>
+                  <button type="button" class="secondary settings-compact-btn" id="extensions-sync">重新同步</button>
+                </div>
+              </div>
+            </header>
+
+            <div class="extensions-toolbar">
+              <div class="extensions-search-box">
+                <input type="search" id="extensions-search" placeholder="搜索名称、命令、URL 或来源…" aria-label="搜索扩展" />
+              </div>
+              <div class="extensions-action-group">
+                <select id="extensions-import-agent" aria-label="导入来源 Agent">
+                  <option value="cursor">Cursor</option>
+                  <option value="devin">Devin</option>
+                  <option value="claude">Claude</option>
+                  <option value="codex">Codex</option>
+                  <option value="pi">pi</option>
+                </select>
+                <button type="button" class="secondary" id="extensions-import">从应用导入 MCP</button>
+                <button type="button" id="extensions-add">＋ 添加 MCP</button>
+              </div>
+            </div>
+
+            <div class="extensions-status-bar">
+              <p id="extensions-status" class="settings-status muted" role="status">加载中…</p>
+            </div>
+
+            <div id="extensions-list" class="extensions-table-wrap" role="tabpanel" aria-labelledby="extensions-tab-mcp"></div>
+
+            <details class="extensions-footnote">
+              <summary>查看本机配置文件路径与同步规则</summary>
+              <div class="extensions-footnote-body">
+                <div id="extensions-paths" class="settings-block-desc extensions-paths"></div>
+                <p class="settings-block-desc">Skills 存在同名目录时自动勾选；勾选直接覆盖目标 Agent 的同名技能，取消勾选直接删除，管理中心主副本保留。MCP 写入前备份为 <code>.agent-board.bak</code>；凭据在页面隐藏，保留占位符即可沿用。Pi MCP 需支持 MCP 的版本或适配器；OAuth 需在各 CLI 分别登录。</p>
+              </div>
+            </details>
+          </section>
+
+          <form id="settings-form" class="settings-form" autocomplete="off">
+            <section class="settings-card settings-agent-section" id="agent-config-section" aria-labelledby="agent-section-title">
+              <header class="settings-card-header">
+                <div class="settings-block-head">
+                  <div class="settings-title-row">
+                    <h2 id="agent-section-title">Agent 运行环境</h2>
+                    <span class="settings-section-pill">按编码代理独立配置</span>
+                  </div>
+                  <p class="settings-block-desc">配置各 Agent 的 CLI 可执行文件路径、独立网络代理、自定义进程环境变量与沙箱策略。</p>
+                </div>
+                <div class="settings-kind-tabs" id="agent-tabs" role="tablist" aria-label="选择 Agent"></div>
+              </header>
+
+              <div id="agent-panels" class="settings-agent-panels"></div>
+            </section>
+
+            <section class="settings-card settings-quick-card" id="quick-prompts-section" aria-labelledby="quick-prompts-title">
+              <header class="settings-card-header">
+                <div class="settings-block-head">
+                  <div class="settings-title-row">
+                    <h2 id="quick-prompts-title">快捷输入模板</h2>
+                    <span class="settings-section-pill">新建与续跑通用</span>
+                  </div>
+                  <p class="settings-block-desc">自定义常用提示词快捷按钮；会显示在新建任务与任务详情续跑输入框上方，点击即可一键填入。</p>
+                </div>
+                <div class="quick-prompt-actions">
+                  <button type="button" class="secondary" id="btn-add-quick-prompt">＋ 添加快捷输入</button>
+                </div>
+              </header>
+              <div id="quick-prompts-list" class="quick-prompt-list"></div>
+            </section>
+
+            <section class="settings-card settings-pair-card" id="pair-code-section" aria-labelledby="pair-code-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="pair-code-title">手机端配对</h2>
+                  <span class="settings-section-pill">一次性配对码</span>
+                </div>
+                <p class="settings-block-desc">输入中继服务的管理员令牌（<code>ADMIN_TOKEN</code>）为当前看板生成一次性配对码。令牌仅用于本次请求，不会保存在本地。</p>
+              </header>
+              <div class="pair-input-bar">
+                <label class="pair-token-field" for="pair-admin-token">
+                  <span class="pair-token-label">中继管理员令牌</span>
+                  <input id="pair-admin-token" type="password" placeholder="输入 ADMIN_TOKEN…" autocomplete="off" />
+                </label>
+                <button type="button" id="btn-create-pair-code">生成配对码</button>
+              </div>
+              <p id="pair-code-status" class="settings-status muted" role="status"></p>
+              <div id="pair-code-result" class="pair-result-box" hidden>
+                <div class="pair-result-row">
+                  <label for="pair-code-value">配对码</label>
+                  <input id="pair-code-value" type="text" readonly />
+                  <button type="button" class="secondary" id="btn-copy-pair-code">复制配对码</button>
+                </div>
+                <p id="pair-code-expiry" class="settings-block-desc"></p>
+              </div>
+            </section>
+
+            <div class="settings-sticky-bar" id="settings-sticky">
+              <p class="settings-status muted" id="settings-status" role="status">加载中…</p>
+              <div class="settings-actions">
+                <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
+                <button type="submit" id="btn-save-settings">保存设置</button>
+              </div>
+            </div>
+          </form>
         </div>
-        <div class="extensions-toolbar">
-          <input type="search" id="extensions-search" placeholder="搜索名称或来源" aria-label="搜索扩展" />
-          <button type="button" id="extensions-add">＋ 添加 MCP</button>
-          <select id="extensions-import-agent" aria-label="导入来源 Agent">
-            <option value="cursor">Cursor</option><option value="devin">Devin</option><option value="claude">Claude</option><option value="codex">Codex</option><option value="pi">pi</option>
-          </select>
-          <button type="button" class="secondary" id="extensions-import">从应用导入 MCP</button>
-        </div>
-        <p id="extensions-status" class="settings-status muted" role="status">加载中…</p>
-        <div id="extensions-list" class="extensions-table-wrap" role="tabpanel" aria-labelledby="extensions-tab-mcp"></div>
-        <details>
-          <summary>配置位置与同步说明</summary>
-          <div id="extensions-paths" class="settings-block-desc extensions-paths"></div>
-          <p class="settings-block-desc">Skills 存在同名目录时自动勾选；勾选直接覆盖目标 Agent 的同名技能，取消勾选直接删除，管理中心主副本保留。MCP 写入前备份为 .agent-board.bak；凭据在页面隐藏，保留占位符即可沿用。Pi MCP 需支持 MCP 的版本或适配器；OAuth 需在各 CLI 分别登录。其他工具的自动导入也可能让未勾选的技能或 MCP 可见。</p>
-        </details>
-      </section>
+      </div>
+
       <dialog id="extension-editor" class="extension-dialog" aria-labelledby="extension-editor-title">
         <form id="extension-editor-form" autocomplete="off">
           <h2 id="extension-editor-title">添加 MCP</h2>
-          <label class="settings-row">名称<input id="extension-name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,79}" maxlength="80" /></label>
+          <label class="settings-row">
+            <span class="settings-label"><strong>名称</strong></span>
+            <input id="extension-name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,79}" maxlength="80" placeholder="例如：memory / github" />
+          </label>
           <div id="extension-mcp-fields">
-            <label class="settings-row">服务器配置（JSON）<textarea id="extension-config" rows="9" spellcheck="false" aria-label="MCP 服务器 JSON 配置"></textarea></label>
+            <label class="settings-row">
+              <span class="settings-label"><strong>服务器配置（JSON）</strong></span>
+              <textarea id="extension-config" rows="9" spellcheck="false" aria-label="MCP 服务器 JSON 配置"></textarea>
+            </label>
             <p class="settings-block-desc">支持 command / args / env 或 url / headers；粘贴单个服务器对象。隐藏值 •••••••• 保存时保持原凭据。</p>
           </div>
           <div id="extension-skill-fields" hidden>
-            <label class="settings-row">本地技能目录<input id="extension-skill-path" placeholder="/绝对路径/skill-name" /></label>
+            <label class="settings-row">
+              <span class="settings-label"><strong>本地技能目录</strong></span>
+              <input id="extension-skill-path" placeholder="/绝对路径/skill-name" />
+            </label>
             <p class="settings-block-desc">或从 GitHub 安装（目录必须含 SKILL.md，会保留脚本和参考资料）：</p>
-            <label class="settings-row">GitHub 仓库<input id="extension-skill-url" type="url" placeholder="https://github.com/owner/repo" /></label>
-            <label class="settings-row">分支（可选）<input id="extension-skill-ref" placeholder="使用默认分支" /></label>
-            <label class="settings-row">仓库内技能目录<input id="extension-skill-subdir" placeholder="skills/my-skill" /></label>
+            <label class="settings-row">
+              <span class="settings-label"><strong>GitHub 仓库</strong></span>
+              <input id="extension-skill-url" type="url" placeholder="https://github.com/owner/repo" />
+            </label>
+            <div class="extension-grid-2">
+              <label class="settings-row">
+                <span class="settings-label"><strong>分支（可选）</strong></span>
+                <input id="extension-skill-ref" placeholder="使用默认分支" />
+              </label>
+              <label class="settings-row">
+                <span class="settings-label"><strong>仓库内技能目录</strong></span>
+                <input id="extension-skill-subdir" placeholder="skills/my-skill" />
+              </label>
+            </div>
           </div>
-          <fieldset class="extension-targets"><legend>启用到</legend><div id="extension-apps"></div></fieldset>
+          <fieldset class="extension-targets">
+            <legend>启用到目标 Agent</legend>
+            <div id="extension-apps"></div>
+          </fieldset>
           <p id="extension-editor-status" class="settings-status bad" role="status"></p>
-          <div class="settings-actions"><button type="submit" id="extension-editor-save">保存并分发</button><button type="button" class="secondary" id="extension-editor-cancel">取消</button></div>
+          <div class="settings-actions">
+            <button type="button" class="secondary" id="extension-editor-cancel">取消</button>
+            <button type="submit" id="extension-editor-save">保存并分发</button>
+          </div>
         </form>
       </dialog>
+
       <dialog id="extension-local-skills" class="extension-dialog" aria-labelledby="extension-local-title">
         <h2 id="extension-local-title">导入本机 Skill</h2>
         <p class="settings-block-desc">选择后复制到管理中心，再选择分发目标。Agent 目录存在同名技能时自动勾选。</p>
         <div id="extension-local-list"></div>
-        <button type="button" class="secondary" id="extension-local-close">关闭</button>
+        <div class="settings-actions">
+          <button type="button" class="secondary" id="extension-local-close">关闭</button>
+        </div>
       </dialog>
-      <section class="settings-card settings-pair-card" aria-labelledby="pair-code-title">
-        <header class="settings-block-head">
-          <h2 id="pair-code-title">手机配对</h2>
-          <p class="settings-block-desc">为当前看板生成一次性配对码。管理员令牌仅用于本次请求，不会保存。</p>
-        </header>
-        <div class="settings-row">
-          <label for="pair-admin-token">中继管理员令牌</label>
-          <input id="pair-admin-token" type="password" autocomplete="off" />
-        </div>
-        <button type="button" id="btn-create-pair-code">生成配对码</button>
-        <p id="pair-code-status" class="settings-status muted" role="status"></p>
-        <div id="pair-code-result" hidden>
-          <div class="settings-row"><label for="pair-code-value">配对码</label><input id="pair-code-value" type="text" readonly /></div>
-          <button type="button" class="secondary" id="btn-copy-pair-code">复制配对码</button>
-          <p id="pair-code-expiry" class="settings-block-desc"></p>
-        </div>
-      </section>
-      <form id="settings-form" class="settings-form" autocomplete="off">
-        <section class="settings-card settings-quick-card" aria-labelledby="quick-prompts-title">
-          <header class="settings-block-head">
-            <h2 id="quick-prompts-title">快捷输入</h2>
-            <p class="settings-block-desc">自定义提示词按钮；会出现在新建任务与详情续跑输入框上方，点击后填入内容。</p>
-          </header>
-          <div id="quick-prompts-list" class="quick-prompt-list"></div>
-          <div class="quick-prompt-actions">
-            <button type="button" class="secondary" id="btn-add-quick-prompt">＋ 添加快捷输入</button>
-          </div>
-        </section>
-
-        <div class="settings-kind-tabs" id="agent-tabs" role="tablist" aria-label="选择 Agent"></div>
-
-        <div id="agent-panels" class="settings-agent-panels"></div>
-
-        <div class="settings-sticky-bar" id="settings-sticky">
-          <p class="settings-status muted" id="settings-status" role="status">加载中…</p>
-          <div class="settings-actions">
-            <button type="submit" id="btn-save-settings">保存</button>
-            <button type="button" class="secondary" id="btn-clear-settings">全部恢复默认</button>
-          </div>
-        </div>
-      </form>
     </main>
   </div>
   <script src="/settings.js" type="module"></script>

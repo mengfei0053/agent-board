@@ -179,4 +179,12 @@ document.getElementById("git-refresh")?.addEventListener("click", () => {
   void loadGitStatus(true);
 });
 
+for (const navLink of document.querySelectorAll(".settings-nav-item")) {
+  navLink.addEventListener("click", () => {
+    for (const item of document.querySelectorAll(".settings-nav-item")) {
+      item.classList.toggle("active", item === navLink);
+    }
+  });
+}
+
 load();

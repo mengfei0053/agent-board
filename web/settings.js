@@ -148,24 +148,22 @@ function renderCliBlock(kind, cliRow) {
 
   return `
     <section class="settings-block" aria-labelledby="cli-title-${escapeHtml(kind)}">
-      <header class="settings-block-head">
-        <h2 id="cli-title-${escapeHtml(kind)}">CLI 路径</h2>
-        <p class="settings-block-desc">填写可执行文件路径；留空则使用默认命令名（系统 PATH）。</p>
-      </header>
+      <div class="settings-block-inline-head">
+        <div>
+          <h3 id="cli-title-${escapeHtml(kind)}" class="settings-sub-title">CLI 可执行文件</h3>
+          <p class="settings-block-desc">指定 ${escapeHtml(row.label || KIND_LABELS[kind] || kind)} 命令路径；留空则从系统 PATH 查找默认命令 <code>${escapeHtml(row.default || kind)}</code>。</p>
+        </div>
+        <span class="settings-resolved-line">${resolvedBadge}</span>
+      </div>
       <label class="settings-row settings-row-cli">
-        <span class="settings-label">
-          <strong>${escapeHtml(row.label || KIND_LABELS[kind] || kind)}</strong>
-          <span class="muted settings-default">默认 <code>${escapeHtml(row.default || kind)}</code></span>
-        </span>
         <input
           type="text"
           name="cli-${escapeHtml(kind)}"
           data-cli-key="${escapeHtml(kind)}"
           value="${escapeHtml(row.override || "")}"
-          placeholder="${escapeHtml(row.default || kind)}"
+          placeholder="默认：${escapeHtml(row.default || kind)}"
           spellcheck="false"
         />
-        <span class="settings-resolved-line">${resolvedBadge}</span>
       </label>
     </section>`;
 }
@@ -176,13 +174,16 @@ function renderProxyBlock(kind, kindMap) {
     const row = map[key] || { override: "", effective: "", inherited: false };
     const fillBtn =
       key === "HTTP_PROXY" || key === "HTTPS_PROXY"
-        ? `<button type="button" class="settings-mini-btn" data-fill-both="${escapeHtml(kind)}" data-from-key="${escapeHtml(key)}">填到 HTTP &amp; HTTPS</button>`
+        ? `<button type="button" class="settings-mini-btn" data-fill-both="${escapeHtml(kind)}" data-from-key="${escapeHtml(key)}">同步到 HTTP/HTTPS</button>`
         : "";
     return `
       <label class="settings-row settings-proxy-cell">
-        <span class="settings-label">
-          <strong>${escapeHtml(PROXY_LABELS[key] || key)}</strong>
-          <span class="muted settings-default"><code>${escapeHtml(key)}</code></span>
+        <span class="settings-label settings-proxy-label">
+          <span>
+            <strong>${escapeHtml(PROXY_LABELS[key] || key)}</strong>
+            <span class="muted settings-default"><code>${escapeHtml(key)}</code></span>
+          </span>
+          ${fillBtn}
         </span>
         <input
           type="text"
@@ -197,7 +198,6 @@ function renderProxyBlock(kind, kindMap) {
         />
         <span class="settings-cell-foot">
           ${proxyHint(row)}
-          ${fillBtn}
         </span>
       </label>`;
   }).join("");
@@ -205,8 +205,8 @@ function renderProxyBlock(kind, kindMap) {
   return `
     <section class="settings-block" aria-labelledby="proxy-title-${escapeHtml(kind)}">
       <header class="settings-block-head">
-        <h2 id="proxy-title-${escapeHtml(kind)}">进程代理</h2>
-        <p class="settings-block-desc">仅影响本 Agent 新开的任务进程；留空不覆盖看板环境。</p>
+        <h3 id="proxy-title-${escapeHtml(kind)}" class="settings-sub-title">进程网络代理</h3>
+        <p class="settings-block-desc">仅作用于本 Agent 新启动的任务子进程；留空则继承看板服务环境。</p>
       </header>
       <div class="settings-proxy-grid">${cells}</div>
     </section>`;
@@ -215,16 +215,13 @@ function renderProxyBlock(kind, kindMap) {
 function processEnvRowHtml(row, idx) {
   return `
       <div class="process-env-row settings-row" data-process-env-row>
-        <div class="quick-prompt-item-head">
-          <span class="muted settings-default">第 ${idx + 1} 个变量</span>
-          <button type="button" class="settings-mini-btn danger-ish" data-remove-process-env>删除</button>
-        </div>
-        <div class="process-env-fields">
+        <div class="process-env-inline">
+          <span class="process-env-index muted">#${idx + 1}</span>
           <input
             type="text"
             data-process-env-key
             value="${escapeHtml(row.key || "")}"
-            placeholder="变量名，如 OPENAI_BASE_URL"
+            placeholder="变量名（如 OPENAI_BASE_URL）"
             spellcheck="false"
             autocomplete="off"
           />
@@ -232,12 +229,12 @@ function processEnvRowHtml(row, idx) {
             type="text"
             data-process-env-value
             value="${escapeHtml(row.value || "")}"
-            placeholder="变量值"
+            placeholder="变量值（留空保存将移除）"
             spellcheck="false"
             autocomplete="off"
           />
+          <button type="button" class="settings-mini-btn danger-ish" data-remove-process-env>删除</button>
         </div>
-        <span class="settings-hint muted">同名变量会覆盖从看板继承的值；值留空保存后删除该项。</span>
       </div>`;
 }
 
@@ -245,7 +242,7 @@ function processEnvListHtml(kind) {
   const rows = lastProcessEnv[kind] || [];
   return rows.length
     ? rows.map(processEnvRowHtml).join("")
-    : `<p class="muted process-env-empty">暂无自定义变量。</p>`;
+    : `<p class="muted process-env-empty">暂无自定义环境变量。</p>`;
 }
 
 function processEnvListEl(kind) {
@@ -277,14 +274,14 @@ function renderProcessEnvBlock(kind) {
   const body = processEnvListHtml(kind);
   return `
     <section class="settings-block" aria-labelledby="process-env-title-${escapeHtml(kind)}">
-      <header class="settings-block-head">
-        <h2 id="process-env-title-${escapeHtml(kind)}">其他环境变量</h2>
-        <p class="settings-block-desc">为 ${escapeHtml(label)} 新开的任务进程补充环境变量；代理变量请用上方「进程代理」，控制面密钥不可在此设置。</p>
-      </header>
-      <div class="process-env-list" data-process-env-list="${escapeHtml(kind)}">${body}</div>
-      <div class="quick-prompt-actions">
-        <button type="button" class="secondary" data-add-process-env="${escapeHtml(kind)}">＋ 添加环境变量</button>
+      <div class="settings-block-inline-head">
+        <div>
+          <h3 id="process-env-title-${escapeHtml(kind)}" class="settings-sub-title">自定义环境变量</h3>
+          <p class="settings-block-desc">为 ${escapeHtml(label)} 任务进程注入额外变量（同名覆盖继承值，控制面密钥不可设置）。</p>
+        </div>
+        <button type="button" class="secondary settings-compact-btn" data-add-process-env="${escapeHtml(kind)}">＋ 添加环境变量</button>
       </div>
+      <div class="process-env-list" data-process-env-list="${escapeHtml(kind)}">${body}</div>
     </section>`;
 }
 
@@ -293,8 +290,8 @@ function renderCodexSandboxBlock() {
   return `
     <section class="settings-block" aria-labelledby="codex-sandbox-title">
       <header class="settings-block-head">
-        <h2 id="codex-sandbox-title">Codex 沙箱</h2>
-        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），权限更大；仅影响新开任务（含无 session 的续跑），resume 沿用会话策略。关沙箱时，若本机 <code>~/.codex/hooks</code> 已配置危险删除拦截，<code>rm -rf</code> / <code>git clean -fdx</code> 可能被拒绝。看板不检查 hook 是否存在，提示词前缀和关沙箱都不是执行安全边界。</p>
+        <h3 id="codex-sandbox-title" class="settings-sub-title">Codex 沙箱策略</h3>
+        <p class="settings-block-desc">控制 Codex 执行命令时是否启用沙箱。关闭后可访问内网 GitLab（如 192.168.x），仅影响新开任务。</p>
       </header>
       <label class="settings-row settings-row-toggle">
         <span class="settings-label">
@@ -332,7 +329,7 @@ function renderPanels() {
         aria-labelledby="agent-tab-${escapeHtml(kind)}"
         ${hidden ? "hidden" : ""}
       >
-        <div class="settings-card settings-agent-card">
+        <div class="settings-agent-card">
           ${renderCliBlock(kind, lastCli[kind])}
           ${renderProxyBlock(kind, lastProxy[kind])}
           ${renderProcessEnvBlock(kind)}
@@ -362,35 +359,39 @@ function showKind(kind) {
 function renderQuickPrompts() {
   if (!quickListEl) return;
   if (!lastQuick.length) {
-    setElementHtml(quickListEl, `<p class="muted quick-prompt-empty">暂无快捷输入。点击下方添加后，会出现在新建任务与续跑输入框上方。</p>`);
+    setElementHtml(quickListEl, `<p class="muted quick-prompt-empty">暂无快捷输入。点击右上角「＋ 添加快捷输入」即可创建常用提示词模板。</p>`);
     return;
   }
   const html = lastQuick.map((item, idx) => `
     <div class="quick-prompt-item settings-row" data-quick-idx="${idx}">
-      <div class="quick-prompt-item-head">
-        <label class="settings-label">
-          <strong>按钮名称</strong>
-          <span class="muted settings-default">第 ${idx + 1} 条</span>
-        </label>
-        <button type="button" class="settings-mini-btn danger-ish" data-remove-quick="${idx}">删除</button>
+      <div class="quick-prompt-meta">
+        <div class="quick-prompt-item-head">
+          <span class="settings-label">
+            <strong>按钮名称</strong>
+            <span class="muted settings-default">#${idx + 1}</span>
+          </span>
+          <button type="button" class="settings-mini-btn danger-ish" data-remove-quick="${idx}">删除</button>
+        </div>
+        <input
+          type="text"
+          data-quick-field="label"
+          data-quick-idx="${idx}"
+          value="${escapeHtml(item.label || "")}"
+          placeholder="如：分析禅道 Bug"
+          maxlength="40"
+          spellcheck="false"
+        />
       </div>
-      <input
-        type="text"
-        data-quick-field="label"
-        data-quick-idx="${idx}"
-        value="${escapeHtml(item.label || "")}"
-        placeholder="如：分析禅道 Bug"
-        maxlength="40"
-        spellcheck="false"
-      />
-      <label class="settings-label" style="margin-top:4px"><strong>提示词内容</strong></label>
-      <textarea
-        data-quick-field="content"
-        data-quick-idx="${idx}"
-        rows="3"
-        placeholder="点击快捷按钮后填入输入框的完整内容"
-        spellcheck="false"
-      >${escapeHtml(item.content || "")}</textarea>
+      <div class="quick-prompt-body">
+        <label class="settings-label"><strong>提示词内容</strong></label>
+        <textarea
+          data-quick-field="content"
+          data-quick-idx="${idx}"
+          rows="2"
+          placeholder="点击快捷按钮后填入输入框的完整内容"
+          spellcheck="false"
+        >${escapeHtml(item.content || "")}</textarea>
+      </div>
     </div>
   `).join("");
   setElementHtml(quickListEl, html);
@@ -651,5 +652,13 @@ btnClear.addEventListener("click", async () => {
     setStatus(`恢复失败：${err}`, false);
   }
 });
+
+for (const navLink of document.querySelectorAll(".settings-nav-item")) {
+  navLink.addEventListener("click", () => {
+    for (const item of document.querySelectorAll(".settings-nav-item")) {
+      item.classList.toggle("active", item === navLink);
+    }
+  });
+}
 
 load().catch((err) => setStatus(`加载失败：${err}`, false));
