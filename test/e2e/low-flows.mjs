@@ -8,6 +8,7 @@ import {
   createMockServer,
   listen,
   launchBrowser,
+  makeTask,
 } from "./harness.mjs";
 
 async function main() {
@@ -65,6 +66,86 @@ async function main() {
     assert.equal(persisted.pref, "light");
     assert.equal(persisted.theme, "light");
     console.log("[e2e-low] E8 theme toggle ok");
+
+    // —— Long URL card wrapping (no horizontal overflow) ——
+    const longPrompt =
+      "http://192.168.3.15:8090/pages/viewpage.action?pageId=3080562 是否可以读取，有没有相关的 mcp 或skill";
+    state.tasks.set(
+      "oW4WvAUoFJ",
+      makeTask({
+        id: "oW4WvAUoFJ",
+        workspaceId: "ws_default",
+        cwd: "/home/menghongfei/projects/qt-projects",
+        title: longPrompt.slice(0, 48),
+        prompt: longPrompt,
+        status: "succeeded",
+        summary:
+          "### 一、工作区指令已确认并记入准则 1. **Worklog 格式检查**: 完成 http://192.168.3.15:8090/pages/viewpage.action?pageId=3080562",
+      }),
+    );
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.card[data-id="oW4WvAUoFJ"]');
+    const cardMetrics = await page.evaluate(() => {
+      const card = document.querySelector('.card[data-id="oW4WvAUoFJ"]');
+      const heading = card.querySelector(".card-heading");
+      const title = card.querySelector(".card-title");
+      const badge = card.querySelector(".badge");
+      const prompt = card.querySelector(".card-prompt");
+      const summary = card.querySelector(".card-summary");
+      const cardRect = card.getBoundingClientRect();
+      const headingRect = heading.getBoundingClientRect();
+      const titleRect = title.getBoundingClientRect();
+      const badgeRect = badge.getBoundingClientRect();
+      return {
+        cardOverflow: card.scrollWidth - card.clientWidth,
+        titleOverflow: title.scrollWidth - title.clientWidth,
+        promptOverflow: prompt.scrollWidth - prompt.clientWidth,
+        summaryOverflow: summary.scrollWidth - summary.clientWidth,
+        titleFitsHeading: titleRect.right <= headingRect.right + 1,
+        headingBeforeBadge: headingRect.right <= badgeRect.left + 1,
+        titleInsideCard: titleRect.right <= cardRect.right,
+      };
+    });
+    assert.equal(cardMetrics.cardOverflow, 0, "card should not overflow horizontally");
+    assert.equal(cardMetrics.titleOverflow, 0, "card-title should wrap without horizontal overflow");
+    assert.equal(cardMetrics.promptOverflow, 0, "card-prompt should wrap without horizontal overflow");
+    assert.equal(cardMetrics.summaryOverflow, 0, "card-summary should wrap without horizontal overflow");
+    assert.ok(cardMetrics.titleFitsHeading, "card-title should stay within card-heading");
+    assert.ok(cardMetrics.headingBeforeBadge, "card-heading should stay to the left of badge");
+    assert.ok(cardMetrics.titleInsideCard, "card-title should stay inside card bounds");
+
+    // Seed many archived tasks to ensure flex column does not vertically squash cards
+    for (let i = 0; i < 20; i++) {
+      const id = `arch_${i}`;
+      state.tasks.set(
+        id,
+        makeTask({
+          id,
+          workspaceId: "ws_default",
+          cwd: "/home/menghongfei/projects/qt-projects",
+          title: `归档任务 ${i}`,
+          prompt: longPrompt,
+          status: "archived",
+          summary: "已完成归档",
+        }),
+      );
+    }
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('#list-archived .card[data-id="arch_0"]');
+    const archiveMetrics = await page.evaluate(() => {
+      const laneBody = document.getElementById("list-archived");
+      const firstCard = laneBody.querySelector(".card");
+      const rect = firstCard.getBoundingClientRect();
+      return {
+        cardHeight: rect.height,
+        verticalClip: firstCard.scrollHeight - firstCard.clientHeight,
+        laneScrollable: laneBody.scrollHeight > laneBody.clientHeight,
+      };
+    });
+    assert.ok(archiveMetrics.cardHeight > 100, `archived card should keep full height, got ${archiveMetrics.cardHeight}`);
+    assert.equal(archiveMetrics.verticalClip, 0, "archived card should not clip vertically");
+    assert.ok(archiveMetrics.laneScrollable, "archived lane should scroll vertically when overflowing");
+    console.log("[e2e-low] long URL card wrapping & archived lane height ok");
 
     // —— E9 docs page ——
     await page.goto(`${base}/docs`, { waitUntil: "networkidle2" });
