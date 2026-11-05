@@ -2647,3 +2647,13 @@ button.topbar-brand[aria-expanded="true"] {
 .detail-extra-actions { gap: 18px; }
 .detail-info-row { flex-wrap: wrap; gap: 8px 18px; }
 .detail-info-row .detail-task-id { max-width: 140px; }
+.detail-info-row .detail-last-reply {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

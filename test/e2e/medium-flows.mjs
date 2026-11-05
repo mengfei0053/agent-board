@@ -106,6 +106,11 @@ async function main() {
     await page.click('.card[data-id="task_done_1"]');
     await page.waitForSelector("#detail-modal:not(.hidden)");
     await page.waitForSelector("#continue-row:not([hidden])");
+    const lastReplyShown = await page.$eval(
+      "#detail-last-reply-at",
+      (el) => el.textContent?.trim() || "",
+    );
+    assert.equal(lastReplyShown, "2026/01/01 09:00:00");
 
     await page.waitForFunction(() => {
       const el = document.querySelector("#detail-meta-grid [data-copy-cmd]");

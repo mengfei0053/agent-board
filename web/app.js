@@ -21,6 +21,7 @@ const sidejobsViewerModal = document.getElementById("sidejobs-viewer-modal");
 const detailSidejobs = document.getElementById("detail-sidejobs");
 const sidejobsHint = document.getElementById("sidejobs-hint");
 const logCount = document.getElementById("log-count");
+const detailLastReplyAt = document.querySelector("#detail-last-reply-at");
 const logViewerModal = document.getElementById("log-viewer-modal");
 const logViewerBody = document.getElementById("log-viewer-body");
 const logViewerHint = document.getElementById("log-viewer-hint");
@@ -445,13 +446,44 @@ function formatLocal(iso) {
   }
 }
 
+const BOARD_LIFECYCLE_EVENTS = new Set([
+  "start",
+  "continue",
+  "move_draft",
+  "move_done",
+  "spawn_error",
+  "launch_failed",
+  "rate_limit_kill",
+  "settle_exit_watchdog",
+  "interrupted",
+]);
+/** @type {Map<string, string>} Latest agent stdout timestamp observed over SSE per task. */
+const lastAgentLogAt = new Map();
+
+function isAgentStdoutLogLine(line) {
+  const s = String(line || "").trim();
+  if (!s.startsWith("{")) return false;
+  if (s.includes('"type":"agent_stream"') && s.includes('"stream":"stdout"')) return true;
+  if (s.includes('\\"type\\":\\"agent_stream\\"') && s.includes('\\"stream\\":\\"stdout\\"')) return true;
+  return false;
+}
+
+function isAgentEventName(lastEvent) {
+  const ev = String(lastEvent || "").trim();
+  if (!ev) return false;
+  if (ev.startsWith("archive:")) return false;
+  return !BOARD_LIFECYCLE_EVENTS.has(ev);
+}
+
 /**
- * Latest model reply time. outputs[].at is stamped when that turn's text last
- * changed, so the highest iteration is the most recent reply.
+ * Latest agent return / model reply time.
+ * Uses the newest outputs[].at, plus live agent stdout event timestamps while
+ * a run is active (or before prose output is extracted).
  * @param {any} t
  * @returns {string}
  */
 function lastReplyAt(t) {
+  if (!t) return "";
   const turns = Array.isArray(t.outputs) ? t.outputs : [];
   let latest = "";
   let iteration = -1;
@@ -463,7 +495,27 @@ function lastReplyAt(t) {
     iteration = n;
     latest = String(turn.at);
   }
+  const liveLogAt = t.id ? lastAgentLogAt.get(t.id) : "";
+  if (liveLogAt && (!latest || liveLogAt > latest)) {
+    latest = liveLogAt;
+  }
+  if (
+    ["running", "blocked"].includes(t.status) &&
+    t.updatedAt &&
+    isAgentEventName(t.lastEvent) &&
+    (!latest || String(t.updatedAt) > latest)
+  ) {
+    latest = String(t.updatedAt);
+  }
+  if (!latest && isAgentEventName(t.lastEvent)) {
+    latest = String(t.endedAt || t.updatedAt || "");
+  }
   return latest;
+}
+
+function paintLastReply(task) {
+  if (!detailLastReplyAt) return;
+  detailLastReplyAt.textContent = formatLocal(lastReplyAt(task)) || "—";
 }
 
 /** @param {HTMLElement} parent @param {any} t */
@@ -1420,12 +1472,15 @@ function paintDetail(task) {
 
   const startLabel = formatLocal(task.startedAt) || "—";
   const endLabel = formatLocal(task.endedAt) || "—";
+  const replyLabel = formatLocal(lastReplyAt(task)) || "—";
+  paintLastReply(task);
   detailMetaGrid.replaceChildren(
     metaItem("任务 ID", task.id || "—"),
     metaItem("状态", statusText),
     metaItem("迭代", String(iter)),
     metaItem("开始时间", startLabel),
     metaItem("结束时间", endLabel),
+    metaItem("最后回复", replyLabel),
     metaItem("Agent", task.kind),
     metaItem("模型", task.model || "—"),
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),
@@ -1771,6 +1826,7 @@ deleteBtn.addEventListener("click", async () => {
   }
   for (const id of data.deleted || []) {
     tasks.delete(id);
+    lastAgentLogAt.delete(id);
     selected.delete(id);
   }
   closeDetail();
@@ -1909,6 +1965,7 @@ document.getElementById("bulk-delete").onclick = async () => {
   }
   for (const id of data.deleted || []) {
     tasks.delete(id);
+    lastAgentLogAt.delete(id);
     selected.delete(id);
     if (selectedId === id) closeDetail();
   }
@@ -2454,6 +2511,7 @@ function connectEvents() {
     try { data = JSON.parse(ev.data); } catch { return; }
     for (const id of data.taskIds || []) {
       tasks.delete(id);
+      lastAgentLogAt.delete(id);
       selected.delete(id);
       if (selectedId === id) closeDetail();
     }
@@ -2493,6 +2551,13 @@ function connectEvents() {
   es.addEventListener("task_log", (ev) => {
     let data;
     try { data = JSON.parse(ev.data); } catch { return; }
+    if (data.taskId && data.at && isAgentStdoutLogLine(data.line)) {
+      lastAgentLogAt.set(data.taskId, String(data.at));
+      scheduleRenderList();
+      if (data.taskId === selectedId && !detailModal.classList.contains("hidden")) {
+        paintLastReply(tasks.get(selectedId));
+      }
+    }
     if (data.taskId !== selectedId || detailModal.classList.contains("hidden")) return;
     logBuf.push(data.line);
     if (logBuf.length > 200) {
