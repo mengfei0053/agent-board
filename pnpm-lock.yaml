@@ -23,6 +23,9 @@ importers:
       pg:
         specifier: ^8.23.1
         version: 8.23.1
+      smol-toml:
+        specifier: ^1.9.1
+        version: 1.9.1
       ws:
         specifier: ^8.18.0
         version: 8.22.0
@@ -5616,6 +5619,10 @@ packages:
   smart-buffer@4.2.0:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
     engines: {node: '>= 6.0.0', npm: '>= 3.0.0'}
+
+  smol-toml@1.9.1:
+    resolution: {integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==}
+    engines: {node: '>= 18'}
 
   snake-case@3.0.4:
     resolution: {integrity: sha512-LAOh4z89bGQvl9pFfNF8V146i7o7/CqFPbqzYgP+yYzDIDeS9HaNFtXABamRW+AQzEVODcvE79ljJ+8a9YSdMg==}
@@ -13554,6 +13561,8 @@ snapshots:
   slash@4.0.0: {}
 
   smart-buffer@4.2.0: {}
+
+  smol-toml@1.9.1: {}
 
   snake-case@3.0.4:
     dependencies:

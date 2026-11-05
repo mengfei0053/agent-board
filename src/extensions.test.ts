@@ -1,0 +1,222 @@
+import { afterEach, test } from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { parse } from "smol-toml";
+import { ExtensionManager, type ExtensionCatalog } from "./extensions.js";
+import { extensionPaths, syncNativeMcp, syncNativeSkills } from "./extensionFiles.js";
+
+const roots: string[] = [];
+afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
+function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "board-extensions-"));
+  roots.push(root);
+  const paths = extensionPaths(join(root, "home"), {});
+  const store = join(root, "store");
+  let saved: ExtensionCatalog = { revision: 0, mcp: [], skills: [] };
+  let failSave = false;
+  const deps = {
+    paths, store,
+    async load() { return structuredClone(saved); },
+    async save(value: ExtensionCatalog) { if (failSave) throw new Error("private-database-url"); saved = structuredClone(value); },
+  };
+  const manager = new ExtensionManager(deps);
+  return { root, paths, store, manager, deps, get catalog() { return saved; }, failSave() { failSave = true; } };
+}
+function write(path: string, value: unknown) { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, JSON.stringify(value)); }
+function read(path: string) { return JSON.parse(readFileSync(path, "utf8")); }
+function makeSkill(root: string) {
+  mkdirSync(join(root, "scripts"), { recursive: true });
+  writeFileSync(join(root, "SKILL.md"), "---\nname: review\ndescription: Review code\n---\nUse scripts/review.sh\n");
+  writeFileSync(join(root, "scripts", "review.sh"), "#!/bin/sh\necho review\n", { mode: 0o755 });
+}
+
+test("native paths include Cursor and XDG Devin and honor tool environment overrides", () => {
+  const paths = extensionPaths("/example", { XDG_CONFIG_HOME: "/xdg", CODEX_HOME: "/codex", PI_CODING_AGENT_DIR: "/pi" });
+  assert.equal(paths.cursor.mcp, "/example/.cursor/mcp.json");
+  assert.equal(paths.devin.skills, "/xdg/devin/skills");
+  assert.equal(paths.codex.mcp, "/codex/config.toml");
+  assert.equal(paths.pi.mcp, "/pi/mcp.json");
+});
+
+test("MCP CRUD distributes to all five formats, preserves other settings, masks credentials and survives reload", async () => {
+  const f = fixture();
+  write(f.paths.cursor.mcp, { otherSetting: true, mcpServers: { manual: { command: "keep" } } });
+  mkdirSync(join(f.paths.codex.mcp, ".."), { recursive: true });
+  writeFileSync(f.paths.codex.mcp, 'model = "keep-model"\n[mcp_servers.manual]\ncommand = "keep"\n');
+  const apps = ["pi", "claude", "cursor", "devin", "codex"];
+  let result = await f.manager.mutate("save-mcp", { revision: 0, name: "tools", config: { url: "https://example.com/mcp", headers: { Authorization: "secret" } }, apps });
+  assert.ok(result.syncResults.every(r => r.ok));
+  assert.equal(result.mcp[0].config.headers!.Authorization, "••••••••");
+  assert.equal(read(f.paths.devin.mcp).mcpServers.tools.transport, "http");
+  assert.equal(read(f.paths.claude.mcp).mcpServers.tools.type, "http");
+  assert.equal(read(f.paths.cursor.mcp).otherSetting, true);
+  const codex = parse(readFileSync(f.paths.codex.mcp, "utf8")) as any;
+  assert.equal(codex.model, "keep-model");
+  assert.equal(codex.mcp_servers.tools.http_headers.Authorization, "secret");
+  assert.equal(read(f.paths.cursor.mcp + ".agent-board.bak").mcpServers.manual.command, "keep");
+  result = await f.manager.mutate("save-mcp", { revision: 1, name: "tools", config: result.mcp[0].config, apps });
+  assert.ok(result.syncResults.every(r => r.ok));
+  assert.equal(f.catalog.mcp[0].config.headers!.Authorization, "secret");
+  assert.equal((await new ExtensionManager(f.deps).document()).mcp[0].name, "tools");
+  await assert.rejects(f.manager.mutate("delete", { revision: 0, resource: "mcp", name: "tools" }), /其他页面/);
+  await f.manager.mutate("set-apps", { revision: 2, resource: "mcp", name: "tools", apps: ["devin"] });
+  assert.equal(read(f.paths.cursor.mcp).mcpServers.tools, undefined);
+  assert.ok(read(f.paths.devin.mcp).mcpServers.tools);
+  await f.manager.mutate("delete", { revision: 3, resource: "mcp", name: "tools" });
+  assert.deepEqual(read(f.paths.cursor.mcp).mcpServers, { manual: { command: "keep" } });
+  assert.equal(read(f.paths.devin.mcp).mcpServers.tools, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(parse(readFileSync(f.paths.codex.mcp, "utf8")))).mcp_servers, { manual: { command: "keep" } });
+});
+
+test("MCP conflict and malformed file leave that agent intact, report partial failure, and allow retry", async () => {
+  const f = fixture();
+  write(f.paths.cursor.mcp, { mcpServers: { tools: { command: "mine" } } });
+  const result = await f.manager.mutate("save-mcp", { revision: 0, name: "tools", config: { command: "managed" }, apps: ["cursor", "devin"] });
+  assert.ok(result.syncResults.some(r => r.agent === "cursor" && !r.ok));
+  assert.equal(read(f.paths.cursor.mcp).mcpServers.tools.command, "mine");
+  assert.equal(read(f.paths.devin.mcp).mcpServers.tools.command, "managed");
+  assert.ok((await new ExtensionManager(f.deps).document()).syncResults.some(r => r.agent === "cursor" && !r.ok), "sync failures remain visible after server restart");
+  write(f.paths.cursor.mcp, { mcpServers: {} });
+  assert.ok((await f.manager.mutate("sync", { revision: 1 })).syncResults.every(r => r.ok));
+  write(f.paths.cursor.mcp, { mcpServers: { tools: { command: "external-edit" } } });
+  assert.ok((await f.manager.mutate("sync", { revision: 1 })).syncResults.some(r => !r.ok));
+  assert.equal(read(f.paths.cursor.mcp).mcpServers.tools.command, "external-edit");
+  await f.manager.mutate("delete", { revision: 1, resource: "mcp", name: "tools" });
+  assert.equal(read(f.paths.cursor.mcp).mcpServers.tools.command, "external-edit");
+  writeFileSync(f.paths.cursor.mcp, "invalid JSON");
+  const failed = await f.manager.mutate("save-mcp", { revision: 2, name: "valid", config: { command: "echo" }, apps: ["cursor"] });
+  assert.ok(failed.syncResults.some(r => !r.ok));
+  assert.equal(readFileSync(f.paths.cursor.mcp, "utf8"), "invalid JSON");
+});
+
+test("import adopts equivalent native entries without losing credentials and rejects conflicting imports atomically", async () => {
+  const f = fixture();
+  write(f.paths.claude.mcp, { mcpServers: { fetch: { command: "uvx", args: ["fetch"] } } });
+  await f.manager.mutate("import-mcp", { revision: 0, agent: "claude" });
+  assert.ok(read(f.paths.claude.mcp).mcpServers.fetch);
+  await f.manager.mutate("set-apps", { revision: 1, resource: "mcp", name: "fetch", apps: [] });
+  assert.equal(read(f.paths.claude.mcp).mcpServers.fetch, undefined);
+  write(f.paths.devin.mcp, { mcpServers: { first: { command: "ok" }, fetch: { command: "conflict" } } });
+  await assert.rejects(f.manager.mutate("import-mcp", { revision: 2, agent: "devin" }), /配置不同/);
+  assert.equal(f.catalog.mcp.length, 1);
+});
+
+test("MCP validation and failed persistence do not write native config or echo secrets", async () => {
+  const f = fixture();
+  for (const body of [
+    { name: "../bad", config: { command: "x" }, apps: [] },
+    { name: "bad", config: { command: "x", url: "https://example.com" }, apps: [] },
+    { name: "bad", config: { command: "x" }, apps: ["unknown"] },
+  ]) await assert.rejects(f.manager.mutate("save-mcp", { revision: 0, ...body }));
+  f.failSave();
+  await assert.rejects(f.manager.mutate("save-mcp", { revision: 0, name: "test", config: { command: "x" }, apps: ["cursor"] }), /扩展配置保存失败/);
+  assert.equal(existsSync(f.paths.cursor.mcp), false);
+});
+
+test("MCP interrupted update journal recovers both before and after native write", () => {
+  const f = fixture();
+  const path = f.paths.cursor.mcp;
+  syncNativeMcp(path, { tools: { command: "old" } });
+  write(path + ".agent-board.json", { tools: { applied: { command: "old" }, pending: { command: "new" } } });
+  syncNativeMcp(path, { tools: { command: "new" } });
+  assert.equal(read(path).mcpServers.tools.command, "new");
+  write(path + ".agent-board.json", { tools: { applied: { command: "old" }, pending: { command: "new" } } });
+  syncNativeMcp(path, {});
+  assert.deepEqual(read(path).mcpServers, {});
+});
+
+test("skill packages retain scripts, distribute independently, preserve originals, uninstall and restore", async () => {
+  const f = fixture();
+  const source = join(f.root, "review");
+  makeSkill(source);
+  const result = await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor", "devin"] });
+  assert.ok(result.syncResults.every(r => r.ok));
+  assert.equal(readlinkSync(join(f.paths.devin.skills, "review")), join(f.store, "review"));
+  assert.ok(lstatSync(join(f.store, "review", "scripts", "review.sh")).mode & 0o111);
+  assert.equal(existsSync(join(source, "SKILL.md")), true);
+  await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: ["devin"] });
+  assert.equal(existsSync(join(f.paths.cursor.skills, "review")), false);
+  await f.manager.mutate("delete", { revision: 2, resource: "skills", name: "review" });
+  assert.equal(existsSync(join(f.paths.devin.skills, "review")), false);
+  assert.equal(existsSync(join(f.store, "review", "SKILL.md")), true);
+  assert.ok((await f.manager.discoverSkills()).some(entry => entry.agent === "board" && entry.name === "review"));
+  await f.manager.mutate("install-skill", { revision: 3, name: "review", path: join(f.store, "review"), apps: ["cursor"] });
+  assert.ok(existsSync(join(f.paths.cursor.skills, "review", "scripts", "review.sh")));
+});
+
+test("identical imported skill directory is backed up and restored; different existing files and symlinks are preserved", async () => {
+  const f = fixture();
+  const source = join(f.paths.cursor.skills, "review");
+  makeSkill(source);
+  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] });
+  assert.equal(lstatSync(source).isSymbolicLink(), true);
+  assert.ok(existsSync(join(f.store, ".originals")));
+  assert.deepEqual(readdirSync(f.paths.cursor.skills), ["review"], "backups must not appear as extra skills");
+  await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: [] });
+  assert.equal(lstatSync(source).isSymbolicLink(), false);
+  const root = join(f.root, "target");
+  mkdirSync(root);
+  symlinkSync(source, join(root, "unmanaged"));
+  syncNativeSkills(root, {}, f.store);
+  assert.ok(lstatSync(join(root, "unmanaged")).isSymbolicLink());
+});
+
+test("skill import rejects traversal, external symlinks and invalid packages", async () => {
+  const f = fixture();
+  const source = join(f.root, "bad");
+  makeSkill(source);
+  symlinkSync("/etc/passwd", join(source, "outside"));
+  await assert.rejects(f.manager.mutate("install-skill", { revision: 0, name: "bad", path: source, apps: [] }), /目录外/);
+  assert.equal(existsSync(join(f.store, "bad")), false);
+  await assert.rejects(f.manager.mutate("install-skill", { revision: 0, name: "../bad", path: source, apps: [] }), /名称/);
+  await assert.rejects(f.manager.mutate("install-skill", { revision: 0, name: "bad", url: "file:///etc", apps: [] }), /GitHub HTTPS/);
+});
+
+test("skill installation rolls back private files if catalog persistence fails", async () => {
+  const f = fixture();
+  const source = join(f.root, "review");
+  makeSkill(source);
+  f.failSave();
+  await assert.rejects(f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] }), /保存失败/);
+  assert.equal(existsSync(join(f.store, "review")), false);
+  assert.equal(existsSync(f.paths.cursor.skills), false);
+});
+
+test("interrupted skill original backup is restored on the next sync even after disabling", async () => {
+  const f = fixture();
+  const source = join(f.paths.cursor.skills, "review");
+  makeSkill(source);
+  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] });
+  rmSync(source); // Simulate interruption after link removal, before restoring the original.
+  await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: [] });
+  assert.equal(lstatSync(source).isDirectory(), true);
+  assert.ok(existsSync(join(source, "scripts", "review.sh")));
+});
+
+test("GitHub skill installation passes a branch safely and validates repository subdirectories", async () => {
+  const f = fixture();
+  const bin = join(f.root, "bin");
+  mkdirSync(bin);
+  const capture = join(f.root, "git-args.json");
+  writeFileSync(join(bin, "git"), `#!${process.execPath}\nconst fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args));
+const dir = path.join(args.at(-1), 'skills', 'review');
+fs.mkdirSync(dir, {recursive:true});
+fs.writeFileSync(path.join(dir,'SKILL.md'), '---\\nname: review\\ndescription: Review code\\n---\\nReview.\\n');
+`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  try {
+    const result = await f.manager.mutate("install-skill", { revision: 0, name: "review", url: "https://github.com/example/skills", ref: "release/v1", subdir: "skills/review", apps: ["devin"] });
+    assert.ok(result.syncResults.every(entry => entry.ok));
+    assert.ok(existsSync(join(f.paths.devin.skills, "review", "SKILL.md")));
+    const args = JSON.parse(readFileSync(capture, "utf8"));
+    assert.deepEqual(args.slice(0, -1), ["-c", "core.hooksPath=/dev/null", "clone", "--depth", "1", "--single-branch", "--branch", "release/v1", "--", "https://github.com/example/skills"]);
+    await assert.rejects(f.manager.mutate("install-skill", { revision: 1, name: "bad", url: "https://github.com/example/skills", subdir: "../../outside", apps: [] }), /仓库内/);
+    await assert.rejects(f.manager.mutate("install-skill", { revision: 1, name: "bad", url: "https://github.com/example/skills", ref: "--upload-pack=bad", apps: [] }), /分支/);
+  } finally { process.env.PATH = previousPath; }
+});

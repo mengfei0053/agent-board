@@ -1,4 +1,5 @@
 import { prepareWorkspaceMcp } from "./workspaceMcp.js";
+import { hasManagedCursorMcp } from "../extensionFiles.js";
 import { spawn } from "node:child_process";
 import { isBoardMetaLine } from "../extractOutput.js";
 import { childProcessEnv, lastInjectedProxyKeys } from "../proxyEnv.js";
@@ -155,6 +156,9 @@ export function spawnLogged(
     cleanupMcp = prepared.cleanup;
     mcpArgCount = prepared.args.length;
     args = [...prepared.args, ...args];
+    if (opts.cliKind === "agent" && !prepared.args.includes("--approve-mcps") && hasManagedCursorMcp()) {
+      args = ["--approve-mcps", ...args];
+    }
     if (prepared.serverNames.length) hooks.onLog(JSON.stringify({
       type: "workspace_mcp_applied", servers: prepared.serverNames,
     }));

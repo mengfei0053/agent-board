@@ -85,6 +85,7 @@ import {
 import { resolveAllowedDirectory } from "./paths.js";
 import { maybeStartEmbeddedRelay, type EmbeddedRelay } from "./relay/index.js";
 import { createBoardPairCode } from "./relay/pairCode.js";
+import { extensionManager } from "./extensions.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const webRoot = join(root, "web");
@@ -750,6 +751,24 @@ app.post("/api/model-history/import", async (c) => {
 });
 
 app.get("/api/settings", async (c) => c.json(await readSettingsDocument()));
+
+app.get("/api/settings/extensions", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json(await extensionManager().document()); }
+  catch (e) { return errorJson(c, e, 500); }
+});
+
+app.get("/api/settings/extensions/local-skills", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json({ skills: await extensionManager().discoverSkills() }); }
+  catch (e) { return errorJson(c, e, 500); }
+});
+
+app.post("/api/settings/extensions/:action", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json(await extensionManager().mutate(c.req.param("action"), await readJsonObject(c))); }
+  catch (e) { return errorJson(c, e, 500); }
+});
 
 app.post("/api/settings/pair-code", async (c) => {
   c.header("Cache-Control", "no-store");

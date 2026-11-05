@@ -23,7 +23,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 工作区 | 左侧增删改查；右键菜单（设置 / 编辑 / 删除）；空间设置页可配提示词 / skills / MCP；cwd = 工作区 path。选中工作区后显示该路径下全部 Git 仓库的分支、领先/落后与变更文件（只读） |
-| 设置 | `/settings` 按 Agent 配置 CLI 路径、进程代理、自定义环境变量与 Codex 沙箱，并提供全局快捷输入和手机配对 |
+| 设置 | `/settings` 统一管理并分发 MCP / Skills（支持 pi、Claude、Cursor、Devin、Codex），按 Agent 配置 CLI 路径、进程代理、自定义环境变量与 Codex 沙箱，并提供全局快捷输入和手机配对 |
 | 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态。工作区是带可用 HEAD 的 git 根目录时，新建弹窗可选「在 git worktree 中启动」（默认关） |
 | Git worktree | 勾选后在 `<工作区>/.agent-board/worktrees/<任务 id>` 创建分支 `agent-board/<任务 id>`，任务 cwd 指向该目录。删除任务时移除干净的 worktree 目录；有未提交改动则保留并提示。请自行将 `.agent-board/` 写入 `.gitignore` 或本机 excludesfile，看板不会修改仓库的 ignore 文件 |
 | 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
@@ -32,6 +32,20 @@
 | 存储 | Postgres（`DATABASE_URL`） |
 
 整体架构及多端通信图解见文档站的 [项目架构](./website/docs/architecture.md)，本机功能细节见 [ARCHITECTURE.md](./ARCHITECTURE.md)，HTTP 接口见运行中的 [/docs](http://127.0.0.1:8791/docs)。
+
+在「设置 → MCP 与 Skills」中，每行可以独立选择目标 Agent，更改自动保存并分发到**看板进程所在机器**的用户级配置；下次启动 CLI 生效。MCP 支持 stdio 和 HTTP，可编辑单个服务器 JSON，或从应用已有的全局配置导入；`env` / `headers` 在页面隐藏，保留占位符即可沿用凭据。Skill 可从本机目录或 GitHub HTTPS 仓库安装（填写分支和技能子目录），会复制整个目录，包括脚本、参考资料和可执行权限，再通过符号链接分发。
+
+| Agent | MCP 全局配置 | Skills 目录 |
+| --- | --- | --- |
+| pi | `~/.pi/agent/mcp.json` | `~/.pi/agent/skills/` |
+| Claude | `~/.claude.json` | `~/.claude/skills/` |
+| Cursor | `~/.cursor/mcp.json` | `~/.cursor/skills/` |
+| Devin CLI | `~/.config/devin/mcp_config.json` | `~/.config/devin/skills/` |
+| Codex | `~/.codex/config.toml` | `~/.codex/skills/` |
+
+会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。卸载保留主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复；导入前已有的同内容技能目录也会保留，停用后恢复原目录。未纳管配置保持原样；同名不同内容会显示冲突，其他 Agent 仍可完成分发，处理后点「重新同步」。MCP 修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
+
+工作区 MCP 继续按原有规则覆盖全局设置；全局 Skill 开关控制看板创建的链接，各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
 
 ## 要求
 
