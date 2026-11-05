@@ -10,3 +10,4 @@ coverage/
 coverage-full/
 website/.docusaurus/
 website/build/
+.pi/tasks/*.json
