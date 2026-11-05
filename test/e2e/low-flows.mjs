@@ -40,6 +40,8 @@ async function main() {
 
     const initial = await readTheme();
     assert.equal(initial.pref, "system");
+    const topbarHeight = await page.$eval(".topbar", (el) => el.getBoundingClientRect().height);
+    assert.ok(topbarHeight <= 52, `topbar should be compact (<= 52px), got ${topbarHeight}`);
 
     await page.click("#theme-toggle");
     const after1 = await readTheme();
