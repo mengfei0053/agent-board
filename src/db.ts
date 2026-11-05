@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
   name TEXT NOT NULL,
   path TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL
+  updated_at TIMESTAMPTZ NOT NULL,
+  sort_order INT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -231,6 +232,7 @@ export async function ensureSchema(): Promise<void> {
   await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worktree JSONB`);
   await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS thinking_effort TEXT`);
   await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS settings JSONB`);
+  await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS sort_order INT`);
   // Recover models used before model history was introduced.
   await p.query(`
     INSERT INTO model_history (kind, model, last_used_at)

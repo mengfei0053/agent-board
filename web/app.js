@@ -2541,10 +2541,85 @@ document.addEventListener("keydown", (e) => {
 
 
 
+const WS_ORDER_KEY = "agent-board.workspaceOrder";
+let dragWorkspaceId = null;
+
+function readWorkspaceOrder() {
+  try {
+    const raw = localStorage.getItem(WS_ORDER_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWorkspaceOrder(ids) {
+  try {
+    localStorage.setItem(WS_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+}
+
+function workspaceOrderRank(ws, savedIndex) {
+  if (typeof ws.sortOrder === "number" && Number.isFinite(ws.sortOrder)) {
+    return ws.sortOrder;
+  }
+  if (savedIndex.has(ws.id)) {
+    return savedIndex.get(ws.id);
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function orderedWorkspaces() {
+  const savedOrder = readWorkspaceOrder();
+  const savedIndex = new Map(savedOrder.map((id, idx) => [id, idx]));
+  return [...workspaces.values()].sort((a, b) => {
+    const ao = workspaceOrderRank(a, savedIndex);
+    const bo = workspaceOrderRank(b, savedIndex);
+    if (ao !== bo) return ao - bo;
+    return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+  });
+}
+
+function clearWsDragIndicators() {
+  if (!wsListEl) return;
+  for (const el of wsListEl.querySelectorAll(".ws-item.drag-over, .ws-item.drag-over-above, .ws-item.drag-over-below")) {
+    el.classList.remove("drag-over", "drag-over-above", "drag-over-below");
+  }
+}
+
+async function reorderWorkspacesTo(sourceId, targetId) {
+  if (!sourceId || !workspaces.has(sourceId)) return;
+  const ids = orderedWorkspaces().map((w) => w.id);
+  const fromIdx = ids.indexOf(sourceId);
+  if (fromIdx === -1) return;
+  const toIdx = targetId ? ids.indexOf(targetId) : ids.length - 1;
+  if (toIdx === -1 || fromIdx === toIdx) return;
+  const nextIds = ids.filter((id) => id !== sourceId);
+  nextIds.splice(toIdx, 0, sourceId);
+  nextIds.forEach((id, idx) => {
+    const ws = workspaces.get(id);
+    if (ws) ws.sortOrder = idx;
+  });
+  writeWorkspaceOrder(nextIds);
+  renderWorkspaces();
+  try {
+    await fetch("/api/workspaces/reorder", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: nextIds }),
+    });
+  } catch {
+    /* keep local order */
+  }
+}
+
 function ensureSelectedWorkspace(fallbackId) {
   if (selectedWorkspaceId && workspaces.has(selectedWorkspaceId)) return;
   const prefer = fallbackId && workspaces.has(fallbackId) ? fallbackId : null;
-  selectedWorkspaceId = prefer || [...workspaces.keys()][0] || null;
+  selectedWorkspaceId = prefer || orderedWorkspaces()[0]?.id || null;
   if (selectedWorkspaceId) localStorage.setItem("agent-board.workspaceId", selectedWorkspaceId);
 }
 
@@ -2605,7 +2680,7 @@ function updateWorkspaceCounts() {
 function renderWorkspaces() {
   if (!wsListEl) return;
   wsListEl.replaceChildren();
-  const list = [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const list = orderedWorkspaces();
   if (wsEmptyEl) wsEmptyEl.hidden = list.length > 0;
   for (const workspace of list) {
     const li = document.createElement("li");
@@ -2613,6 +2688,7 @@ function renderWorkspaces() {
     btn.type = "button";
     btn.className = "ws-item" + (workspace.id === selectedWorkspaceId ? " active" : "");
     btn.dataset.workspaceId = workspace.id;
+    btn.draggable = true;
     const name = document.createElement("span");
     name.className = "ws-item-name";
     name.textContent = workspace.name;
@@ -2642,6 +2718,47 @@ function renderWorkspaces() {
       e.preventDefault();
       e.stopPropagation();
       openWsContextMenu(e.clientX, e.clientY, workspace.id);
+    });
+    btn.addEventListener("dragstart", (e) => {
+      closeWsContextMenu();
+      dragWorkspaceId = workspace.id;
+      btn.classList.add("dragging");
+      if (e.dataTransfer) {
+        e.dataTransfer.setData("text/plain", workspace.id);
+        e.dataTransfer.effectAllowed = "move";
+      }
+    });
+    btn.addEventListener("dragend", () => {
+      dragWorkspaceId = null;
+      btn.classList.remove("dragging");
+      clearWsDragIndicators();
+    });
+    btn.addEventListener("dragover", (e) => {
+      const sourceId = dragWorkspaceId || e.dataTransfer?.getData("text/plain");
+      if (!sourceId || !workspaces.has(sourceId)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      clearWsDragIndicators();
+      if (sourceId === workspace.id) return;
+      const ids = orderedWorkspaces().map((w) => w.id);
+      const fromIdx = ids.indexOf(sourceId);
+      const toIdx = ids.indexOf(workspace.id);
+      const placeAfter = fromIdx < toIdx;
+      btn.classList.add("drag-over", placeAfter ? "drag-over-below" : "drag-over-above");
+    });
+    btn.addEventListener("dragleave", (e) => {
+      if (btn.contains(e.relatedTarget)) return;
+      btn.classList.remove("drag-over", "drag-over-above", "drag-over-below");
+    });
+    btn.addEventListener("drop", (e) => {
+      const sourceId = dragWorkspaceId || e.dataTransfer?.getData("text/plain");
+      if (!sourceId || !workspaces.has(sourceId)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragWorkspaceId = null;
+      clearWsDragIndicators();
+      void reorderWorkspacesTo(sourceId, workspace.id);
     });
     li.appendChild(btn);
     wsListEl.appendChild(li);

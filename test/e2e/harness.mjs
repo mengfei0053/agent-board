@@ -213,6 +213,34 @@ export function createMockServer(state, extra) {
       return json(res, 201, { workspace: ws });
     }
 
+    if (pathname === "/api/workspaces/reorder" && req.method === "POST") {
+      const body = await readBody(req);
+      const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+      const current = [...state.workspaces.values()];
+      const seen = new Set();
+      const ordered = [];
+      for (const id of ids) {
+        if (seen.has(id) || !state.workspaces.has(id)) continue;
+        seen.add(id);
+        ordered.push(state.workspaces.get(id));
+      }
+      for (const ws of current) {
+        if (!seen.has(ws.id)) {
+          seen.add(ws.id);
+          ordered.push(ws);
+        }
+      }
+      state.workspaces.clear();
+      ordered.forEach((ws, idx) => {
+        ws.sortOrder = idx;
+        state.workspaces.set(ws.id, ws);
+      });
+      return json(res, 200, {
+        workspaces: [...state.workspaces.values()],
+        defaultWorkspaceId: state.defaultWorkspaceId,
+      });
+    }
+
     const wsOne = pathname.match(/^\/api\/workspaces\/([^/]+)$/);
     if (wsOne) {
       const id = decodeURIComponent(wsOne[1]);

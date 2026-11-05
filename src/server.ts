@@ -5,7 +5,7 @@ import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, readSync } from "node:fs";
+import { createReadStream, readFileSync, readSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { subscribe } from "./bus.js";
@@ -36,6 +36,7 @@ import {
   flushPersist,
   isPersistDegraded,
   persistFailureMessage,
+  reorderWorkspaces,
   upsertWorkspace,
 } from "./store.js";
 import { redactDatabaseUrl } from "./db.js";
@@ -44,8 +45,6 @@ import type {
   BoardLane,
   CreateTaskInput,
   BoardEvent,
-  CreateWorkspaceInput,
-  UpdateWorkspaceInput,
   Workspace,
 } from "./types.js";
 import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
@@ -66,7 +65,6 @@ import {
   isSafeUploadName,
   MAX_ATTACHMENT_BYTES,
   MAX_UPLOAD_BYTES,
-  mimeForStoredName,
   normalizeAttachmentsInput,
   openUploadNoFollow,
   saveAttachmentFile,
@@ -199,19 +197,6 @@ function secretsEqual(a: string, b: string): boolean {
   if (ba.length !== bb.length) return false;
   return timingSafeEqual(ba, bb);
 }
-
-type HookBody = {
-  prompt?: string;
-  agent?: string;
-  kind?: string;
-  cwd?: string;
-  workspaceId?: string;
-  model?: string;
-  title?: string;
-  start?: boolean;
-  lane?: string;
-  mode?: string;
-};
 
 function resolveHookStart(body: Record<string, unknown>): boolean {
   if ("start" in body && body.start != null) {
@@ -355,6 +340,25 @@ app.post("/api/workspaces", async (c) => {
     await upsertWorkspace(ws);
     publish({ type: "workspace_upsert", workspace: ws });
     return c.json({ workspace: ws }, 201);
+  } catch (e) {
+    return errorJson(c, e, 500);
+  }
+});
+
+app.post("/api/workspaces/reorder", async (c) => {
+  try {
+    const body = await readJsonObject(c);
+    if (!Array.isArray(body.ids) || body.ids.some((x) => typeof x !== "string")) {
+      return c.json({ error: "ids must be an array of strings" }, 400);
+    }
+    const list = await reorderWorkspaces(body.ids as string[]);
+    for (const ws of list) {
+      publish({ type: "workspace_upsert", workspace: ws });
+    }
+    return c.json({
+      workspaces: list,
+      defaultWorkspaceId: getDefaultWorkspaceId(),
+    });
   } catch (e) {
     return errorJson(c, e, 500);
   }
@@ -849,6 +853,7 @@ app.get("/uploads/:name", async (c) => {
     c.header("Cache-Control", "private, no-store");
   }
   const nodeStream = createReadStream(abs!, { fd: opened.fd, autoClose: true, start: 0 });
+  // SAFETY: Node's stream/web ReadableStream is runtime-compatible with the WHATWG ReadableStream expected by Hono.
   const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
   return c.body(webStream);
 });

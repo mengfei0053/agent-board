@@ -460,6 +460,21 @@ a.btn-link.secondary { background: var(--panel-2); }
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 28%, transparent);
 }
+.ws-item[draggable="true"] { cursor: grab; }
+.ws-item.dragging {
+  opacity: .5;
+  cursor: grabbing;
+}
+.ws-item.drag-over {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.ws-item.drag-over-above {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+.ws-item.drag-over-below {
+  box-shadow: 0 2px 0 0 var(--accent);
+}
 .ws-item-name {
   font-weight: 600;
   font-size: 13px;

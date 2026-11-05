@@ -92,6 +92,8 @@ export type Workspace = {
   path: string;
   createdAt: string;
   updatedAt: string;
+  /** Display order in the workspace sidebar (0-based; lower first) */
+  sortOrder?: number;
   /** Optional space-level prompt / skills / mcp */
   settings?: WorkspaceSettings;
 };

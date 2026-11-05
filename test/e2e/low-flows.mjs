@@ -147,6 +147,47 @@ async function main() {
     assert.ok(archiveMetrics.laneScrollable, "archived lane should scroll vertically when overflowing");
     console.log("[e2e-low] long URL card wrapping & archived lane height ok");
 
+    // —— Workspace drag-and-drop reorder ——
+    await page.evaluate(() => localStorage.removeItem("agent-board.workspaceOrder"));
+    state.workspaces.set("ws_third", {
+      id: "ws_third",
+      name: "第三个工作区",
+      path: "/tmp/agent-board-third",
+      createdAt: "2026-01-01T00:02:00.000Z",
+      updatedAt: "2026-01-01T00:02:00.000Z",
+    });
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.ws-item[data-workspace-id="ws_third"]');
+
+    const readWsOrder = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll("#ws-list .ws-item")].map((el) => el.dataset.workspaceId),
+      );
+    assert.deepEqual(await readWsOrder(), ["ws_default", "ws_extra", "ws_third"]);
+
+    // Drag ws_third onto ws_default (move to first position)
+    await page.evaluate(() => {
+      const from = document.querySelector('.ws-item[data-workspace-id="ws_third"]');
+      const to = document.querySelector('.ws-item[data-workspace-id="ws_default"]');
+      const dt = new DataTransfer();
+      dt.setData("text/plain", "ws_third");
+      from.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      from.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer: dt }));
+    });
+    await page.waitForFunction(() => {
+      const ids = [...document.querySelectorAll("#ws-list .ws-item")].map((el) => el.dataset.workspaceId);
+      return ids[0] === "ws_third";
+    });
+    assert.deepEqual(await readWsOrder(), ["ws_third", "ws_default", "ws_extra"]);
+
+    // Persist across reload
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.ws-item[data-workspace-id="ws_third"]');
+    assert.deepEqual(await readWsOrder(), ["ws_third", "ws_default", "ws_extra"]);
+    console.log("[e2e-low] workspace drag reorder ok");
+
     // —— E9 docs page ——
     await page.goto(`${base}/docs`, { waitUntil: "networkidle2" });
     await page.waitForSelector(".docs-main");

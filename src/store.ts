@@ -352,6 +352,7 @@ type WorkspaceRow = {
   path: string;
   created_at: Date | string;
   updated_at: Date | string;
+  sort_order?: number | null;
   settings?: unknown;
 };
 
@@ -388,6 +389,9 @@ function rowToWorkspace(row: WorkspaceRow): Workspace {
     path: row.path,
     createdAt: iso(row.created_at)!,
     updatedAt: iso(row.updated_at)!,
+    ...(typeof row.sort_order === "number" && Number.isFinite(row.sort_order)
+      ? { sortOrder: row.sort_order }
+      : {}),
     settings: normalizeWorkspaceSettings(row.settings),
   };
 }
@@ -475,15 +479,20 @@ async function persistWorkspace(ws: Workspace): Promise<void> {
   consumePersistFault("workspace");
   const p = getPool();
   const settingsJson = ws.settings ? JSON.stringify(ws.settings) : null;
+  const sortOrder =
+    typeof ws.sortOrder === "number" && Number.isFinite(ws.sortOrder)
+      ? Math.trunc(ws.sortOrder)
+      : null;
   await p.query(
-    `INSERT INTO workspaces (id, name, path, created_at, updated_at, settings)
-     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz, $6::jsonb)
+    `INSERT INTO workspaces (id, name, path, created_at, updated_at, settings, sort_order)
+     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz, $6::jsonb, $7)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        path = EXCLUDED.path,
        updated_at = EXCLUDED.updated_at,
-       settings = EXCLUDED.settings`,
-    [ws.id, ws.name, ws.path, ws.createdAt, ws.updatedAt, settingsJson],
+       settings = EXCLUDED.settings,
+       sort_order = EXCLUDED.sort_order`,
+    [ws.id, ws.name, ws.path, ws.createdAt, ws.updatedAt, settingsJson, sortOrder],
   );
 }
 
@@ -1040,8 +1049,60 @@ export async function initStore(): Promise<void> {
 }
 
 
+function compareWorkspaces(a: Workspace, b: Workspace): number {
+  const ao =
+    typeof a.sortOrder === "number" && Number.isFinite(a.sortOrder)
+      ? a.sortOrder
+      : Number.MAX_SAFE_INTEGER;
+  const bo =
+    typeof b.sortOrder === "number" && Number.isFinite(b.sortOrder)
+      ? b.sortOrder
+      : Number.MAX_SAFE_INTEGER;
+  if (ao !== bo) return ao - bo;
+  return a.createdAt.localeCompare(b.createdAt);
+}
+
 export function listWorkspaces(): Workspace[] {
-  return [...workspaces.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return [...workspaces.values()].sort(compareWorkspaces);
+}
+
+export async function reorderWorkspaces(ids: string[]): Promise<Workspace[]> {
+  const current = listWorkspaces();
+  const seen = new Set<string>();
+  const ordered: Workspace[] = [];
+  for (const rawId of ids) {
+    const id = String(rawId || "").trim();
+    if (!id || seen.has(id)) continue;
+    const ws = workspaces.get(id);
+    if (!ws) continue;
+    seen.add(id);
+    ordered.push(ws);
+  }
+  for (const ws of current) {
+    if (!seen.has(ws.id)) {
+      seen.add(ws.id);
+      ordered.push(ws);
+    }
+  }
+  const prevMap = new Map(workspaces);
+  const updated: Workspace[] = ordered.map((ws, idx) => ({
+    ...ws,
+    sortOrder: idx,
+  }));
+  for (const ws of updated) {
+    workspaces.set(ws.id, ws);
+  }
+  try {
+    await enqueuePersist(async () => {
+      for (const ws of updated) {
+        await persistWorkspace(ws);
+      }
+    });
+  } catch (err) {
+    workspaces = prevMap;
+    throw asPersistError(err);
+  }
+  return listWorkspaces();
 }
 
 export function getWorkspace(id: string): Workspace | undefined {
