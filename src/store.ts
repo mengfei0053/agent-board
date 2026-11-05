@@ -363,6 +363,7 @@ type TaskRow = {
   workspace_id: string | null;
   prompt: string;
   model: string | null;
+  thinking_effort?: string | null;
   session_id: string | null;
   iteration: number;
   status: string;
@@ -448,6 +449,7 @@ function rowToTask(
     cwd: row.cwd,
     prompt: row.prompt,
     model: row.model ?? undefined,
+    thinkingEffort: row.thinking_effort ?? undefined,
     sessionId: row.session_id ?? undefined,
     iteration: row.iteration,
     status: row.status as Task["status"],
@@ -499,13 +501,13 @@ async function persistTask(task: Task): Promise<void> {
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO tasks (
-        id, title, kind, cwd, workspace_id, prompt, model, session_id, iteration, status,
+        id, title, kind, cwd, workspace_id, prompt, model, thinking_effort, session_id, iteration, status,
         created_at, updated_at, started_at, ended_at, pid, summary, output,
         last_event, error, exit_code, attachments, worktree
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-        $11::timestamptz,$12::timestamptz,$13::timestamptz,$14::timestamptz,$15,$16,$17,
-        $18,$19,$20,$21::jsonb,$22::jsonb
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+        $12::timestamptz,$13::timestamptz,$14::timestamptz,$15::timestamptz,$16,$17,$18,
+        $19,$20,$21,$22::jsonb,$23::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
@@ -514,6 +516,7 @@ async function persistTask(task: Task): Promise<void> {
         workspace_id = EXCLUDED.workspace_id,
         prompt = EXCLUDED.prompt,
         model = EXCLUDED.model,
+        thinking_effort = EXCLUDED.thinking_effort,
         session_id = EXCLUDED.session_id,
         iteration = EXCLUDED.iteration,
         status = EXCLUDED.status,
@@ -537,6 +540,7 @@ async function persistTask(task: Task): Promise<void> {
         task.workspaceId || null,
         task.prompt,
         task.model ?? null,
+        task.thinkingEffort ?? null,
         task.sessionId ?? null,
         task.iteration,
         task.status,

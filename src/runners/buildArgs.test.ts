@@ -284,6 +284,32 @@ describe("U16 runner buildArgs (no spawn)", () => {
     }
   });
 
+  describe("thinkingEffort flags", () => {
+    it("passes --thinking for pi, --effort for claude, and -c model_reasoning_effort for codex", () => {
+      const piRes = buildPiArgs(
+        { id: "t1", prompt: "hello", model: "wb/cn:glm-5.3", thinkingEffort: "high" },
+        { freshSessionId: "t1-fresh" },
+      );
+      assert.equal(piRes.args[piRes.args.indexOf("--thinking") + 1], "high");
+
+      const claudeRes = buildClaudeArgs({
+        prompt: "hello",
+        model: "sonnet",
+        thinkingEffort: "max",
+      });
+      assert.equal(claudeRes.args[claudeRes.args.indexOf("--effort") + 1], "max");
+
+      const codexRes = buildCodexArgs(
+        { prompt: "hello", model: "gpt-6.1-terra", thinkingEffort: "xhigh" },
+        undefined,
+        true,
+      );
+      const cIdx = codexRes.args.indexOf("-c");
+      assert.ok(cIdx >= 0);
+      assert.equal(codexRes.args[cIdx + 1], 'model_reasoning_effort="xhigh"');
+    });
+  });
+
   describe("runners index", () => {
     it("maps all agent kinds", () => {
       assert.deepEqual(Object.keys(runners).sort(), [

@@ -428,17 +428,20 @@ async function main() {
       console.log("[e2e-board] E5 worktree checkbox ok");
     }
 
-    // E6: database model picker with fuzzy search, thinking efforts, and Agent linkage in Create Draft & Create Todo.
+    // E6: database model picker with fuzzy search, thinking effort select (with default value), and Agent linkage in Create Draft & Create Todo.
     {
       const dropdownModels = () =>
         page.$$eval("#create-model-dropdown .model-option:not(.model-option-default)", (els) =>
           els.map((el) => el.dataset.value),
         );
+      const effortOptions = () =>
+        page.$$eval("#create-thinking-effort option", (els) => els.map((el) => el.value));
       await selectWorkspace(page, "ws_default");
 
-      // Open New Draft: loads pi models from database and shows thinking efforts
+      // Open New Draft: loads pi models from database, does not show efforts in model dropdown, and defaults thinking effort to medium
       await page.click("#btn-new");
       await page.waitForSelector("#create-modal:not(.hidden)");
+      assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "medium");
       await page.click("#create-model");
       await page.waitForSelector("#create-model-dropdown:not(.hidden)");
       assert.deepEqual(await dropdownModels(), [
@@ -446,21 +449,24 @@ async function main() {
         "wb/cn:glm-5.3",
         "api/claude-haiku-4-5",
       ]);
-      const effortsText = await page.$eval(
-        '#create-model-dropdown .model-option[data-value="wb/cn:deepseek-v4.1-flash"] .model-option-efforts',
-        (el) => el.textContent,
+      assert.equal(
+        await page.$('#create-model-dropdown .model-option-efforts'),
+        null,
       );
-      assert.match(effortsText, /high/);
 
       // Fuzzy search filters options and clicking selects the model
       await page.type("#create-model", "glm");
       assert.deepEqual(await dropdownModels(), ["wb/cn:glm-5.3"]);
       await page.click('#create-model-dropdown .model-option[data-value="wb/cn:glm-5.3"]');
       assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:glm-5.3");
+      assert.deepEqual(await effortOptions(), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+      assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "medium");
 
-      // Switching Agent updates model list and clears incompatible model selection
+      // Switching Agent updates model list and thinking effort options, keeping a default value
       await page.select('#create-form select[name="kind"]', "claude");
       assert.equal(await page.$eval("#create-model", (el) => el.value), "");
+      assert.deepEqual(await effortOptions(), ["low", "medium", "high", "xhigh", "max"]);
+      assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "medium");
       await page.click("#create-model");
       assert.deepEqual(await dropdownModels(), ["sonnet", "opus", "haiku"]);
 
@@ -469,13 +475,14 @@ async function main() {
       await page.click('input[name="title"]');
       await page.waitForFunction(() => document.getElementById("create-model")?.value === "");
 
-      // Switch back to pi and create a draft with fuzzy-searched model via Enter
+      // Switch back to pi and create a draft with fuzzy-searched model and selected thinking effort
       await page.select('#create-form select[name="kind"]', "pi");
       await page.click("#create-model");
       await page.type("#create-model", "dpv41");
       assert.deepEqual(await dropdownModels(), ["wb/cn:deepseek-v4.1-flash"]);
       await page.keyboard.press("Enter");
       assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:deepseek-v4.1-flash");
+      await page.select("#create-thinking-effort", "high");
       await page.type('input[name="title"]', "数据库模型草稿");
       await page.type("#create-prompt", "use db model in draft");
       await Promise.all([
@@ -484,12 +491,14 @@ async function main() {
       ]);
       const createdDraft = [...state.tasks.values()].find((t) => t.title === "数据库模型草稿");
       assert.equal(createdDraft?.model, "wb/cn:deepseek-v4.1-flash");
+      assert.equal(createdDraft?.thinkingEffort, "high");
       await closeDetailIfOpen(page);
 
-      // New Todo also uses the database model picker with Agent linkage
+      // New Todo also uses the database model picker and defaults thinking effort
       await page.click("#btn-new-todo");
       await page.waitForSelector("#create-modal:not(.hidden)");
       await page.select('#create-form select[name="kind"]', "codex");
+      assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "medium");
       await page.click("#create-model");
       assert.deepEqual(await dropdownModels(), ["gpt-6.1-terra", "gpt-6.1-sol"]);
       await page.click('#create-model-dropdown .model-option[data-value="gpt-6.1-terra"]');
@@ -502,8 +511,9 @@ async function main() {
       const createdTodo = [...state.tasks.values()].find((t) => t.title === "数据库模型Todo");
       assert.equal(createdTodo?.kind, "codex");
       assert.equal(createdTodo?.model, "gpt-6.1-terra");
+      assert.equal(createdTodo?.thinkingEffort, "medium");
       await closeDetailIfOpen(page);
-      console.log("[e2e-board] E6 database model picker, fuzzy search and Agent filtering ok");
+      console.log("[e2e-board] E6 database model picker, thinking effort default, fuzzy search and Agent filtering ok");
     }
 
     // E7: sidebar counts group every status and follow SSE across workspaces.

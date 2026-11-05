@@ -38,6 +38,7 @@ const continueModel = document.getElementById("continue-model");
 const continueModelHint = document.getElementById("continue-model-hint");
 const continueModelDropdown = document.getElementById("continue-model-dropdown");
 const continueModelClear = document.getElementById("continue-model-clear");
+const continueThinkingEffort = document.getElementById("continue-thinking-effort");
 let continuingTaskId = null;
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
@@ -101,9 +102,28 @@ const createSubmit = document.getElementById("create-submit");
 const createModelInput = document.getElementById("create-model");
 const createModelDropdown = document.getElementById("create-model-dropdown");
 const createModelClear = document.getElementById("create-model-clear");
+const createThinkingEffortSelect = document.getElementById("create-thinking-effort");
 const createKindSelect = form?.elements?.namedItem?.("kind") || form?.querySelector?.('select[name="kind"]');
 
 const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex"];
+const EFFORT_CANONICAL_ORDER = [
+  "none",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
+const DEFAULT_EFFORTS_BY_KIND = {
+  pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  cursor: ["low", "medium", "high", "xhigh", "max"],
+  devin: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["low", "medium", "high", "xhigh", "max"],
+};
 /** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
 let agentModelsByKind = {
   pi: [],
@@ -113,6 +133,7 @@ let agentModelsByKind = {
   codex: [],
 };
 let agentModelsLoad = null;
+let agentModelsLoaded = false;
 
 function normalizeModelItem(raw) {
   if (typeof raw === "string") {
@@ -193,14 +214,53 @@ function createModelOptionEl(item, isSelected, isActive) {
   nameSpan.className = "model-option-name";
   nameSpan.textContent = item.model;
   btn.appendChild(nameSpan);
-  if (Array.isArray(item.thinkingEfforts) && item.thinkingEfforts.length) {
-    const effortsSpan = document.createElement("span");
-    effortsSpan.className = "model-option-efforts";
-    effortsSpan.title = `支持的思考强度：${item.thinkingEfforts.join(", ")}`;
-    effortsSpan.textContent = item.thinkingEfforts.join(" / ");
-    btn.appendChild(effortsSpan);
-  }
   return btn;
+}
+
+function getSupportedEffortsForSelection(kind, modelName) {
+  const k = String(kind || "").trim();
+  const list = getAgentModelsForKind(k);
+  const trimmedModel = String(modelName || "").trim();
+  if (trimmedModel) {
+    const matched = list.find((m) => m.model === trimmedModel)
+      || list.find((m) => m.model.toLowerCase() === trimmedModel.toLowerCase());
+    if (matched && Array.isArray(matched.thinkingEfforts) && matched.thinkingEfforts.length) {
+      return matched.thinkingEfforts;
+    }
+  }
+  const aggregated = new Set();
+  for (const item of list) {
+    for (const e of item.thinkingEfforts || []) {
+      aggregated.add(e);
+    }
+  }
+  if (aggregated.size) {
+    const ordered = EFFORT_CANONICAL_ORDER.filter((e) => aggregated.has(e));
+    for (const e of aggregated) {
+      if (!ordered.includes(e)) ordered.push(e);
+    }
+    return ordered;
+  }
+  return DEFAULT_EFFORTS_BY_KIND[k] || DEFAULT_EFFORTS_BY_KIND.claude;
+}
+
+function pickDefaultThinkingEffort(efforts, preferred = "") {
+  if (!Array.isArray(efforts) || !efforts.length) return "medium";
+  if (preferred && efforts.includes(preferred)) return preferred;
+  if (efforts.includes("medium")) return "medium";
+  if (efforts.includes("high")) return "high";
+  const nonOff = efforts.find((e) => e !== "off" && e !== "none");
+  return nonOff || efforts[0];
+}
+
+function syncThinkingEffortSelect(selectEl, kind, modelName, preferredEffort = "") {
+  if (!selectEl) return;
+  const efforts = getSupportedEffortsForSelection(kind, modelName);
+  const chosen = pickDefaultThinkingEffort(efforts, preferredEffort);
+  selectEl.replaceChildren(
+    ...efforts.map((effort) => new Option(effort, effort, effort === chosen, effort === chosen)),
+  );
+  selectEl.value = chosen;
 }
 
 function createSearchableModelPicker({
@@ -209,6 +269,7 @@ function createSearchableModelPicker({
   clearBtn,
   getKind,
   emptyLabel,
+  onChange,
 }) {
   let selectedModel = "";
   let isSearching = false;
@@ -299,10 +360,12 @@ function createSearchableModelPicker({
     inputEl.dataset.selectedModel = selectedModel;
     updateClearBtn();
     closeDropdown();
+    onChange?.(selectedModel);
   };
 
   const commitOrRevert = () => {
     if (!inputEl) return "";
+    const prev = selectedModel;
     if (isSearching) {
       const raw = inputEl.value.trim();
       if (!raw) {
@@ -322,6 +385,7 @@ function createSearchableModelPicker({
     }
     updateClearBtn();
     closeDropdown();
+    if (selectedModel !== prev) onChange?.(selectedModel);
     return selectedModel;
   };
 
@@ -451,6 +515,7 @@ function createSearchableModelPicker({
     syncWithKind,
     commitOrRevert,
     closeDropdown,
+    getSelectedModel: () => selectedModel,
     isOpen: () => isOpen,
     refreshUi: () => {
       updateClearBtn();
@@ -459,12 +524,31 @@ function createSearchableModelPicker({
   };
 }
 
+function syncCreateThinkingEffort(preferredEffort = createThinkingEffortSelect?.value || "") {
+  const kind = createKindSelect?.value || "pi";
+  const model = createModelPicker.getSelectedModel();
+  syncThinkingEffortSelect(createThinkingEffortSelect, kind, model, preferredEffort);
+}
+
+function syncContinueThinkingEffort(preferredEffort = continueThinkingEffort?.value || "") {
+  const task = tasks.get(selectedId);
+  if (!task) return;
+  const model = continueModelPicker.getSelectedModel() || task.model || "";
+  syncThinkingEffortSelect(
+    continueThinkingEffort,
+    task.kind,
+    model,
+    preferredEffort || task.thinkingEffort || "",
+  );
+}
+
 const createModelPicker = createSearchableModelPicker({
   inputEl: createModelInput,
   dropdownEl: createModelDropdown,
   clearBtn: createModelClear,
   getKind: () => createKindSelect?.value || "pi",
   emptyLabel: "默认模型（不指定）",
+  onChange: () => syncCreateThinkingEffort(),
 });
 
 const continueModelPicker = createSearchableModelPicker({
@@ -473,17 +557,22 @@ const continueModelPicker = createSearchableModelPicker({
   clearBtn: continueModelClear,
   getKind: () => tasks.get(selectedId)?.kind || "",
   emptyLabel: "沿用当前模型",
+  onChange: () => syncContinueThinkingEffort(),
 });
 
-function loadAgentModels() {
+function loadAgentModels(force = false) {
+  if (agentModelsLoaded && !force) return Promise.resolve();
   if (agentModelsLoad) return agentModelsLoad;
   agentModelsLoad = (async () => {
     const res = await fetch("/api/agent-models");
     if (!res.ok) throw new Error("读取模型列表失败");
     const data = await res.json();
     agentModelsByKind = normalizeAgentModelsPayload(data.models);
+    agentModelsLoaded = true;
     createModelPicker.syncWithKind();
+    syncCreateThinkingEffort();
     continueModelPicker.syncWithKind();
+    syncContinueThinkingEffort();
   })().catch((err) => {
     console.warn("加载模型列表失败，将在下次打开时重试", err);
   }).finally(() => {
@@ -1118,6 +1207,7 @@ function clearCreatePrompt() {
   const ta = document.getElementById("create-prompt");
   if (ta) ta.value = "";
   createModelPicker.clear();
+  syncCreateThinkingEffort("");
   formError.hidden = true;
   formError.textContent = "";
 }
@@ -1125,6 +1215,10 @@ function clearCreatePrompt() {
 function clearContinuePrompt() {
   if (continuePrompt) continuePrompt.value = "";
   continueModelPicker.clear();
+  const task = tasks.get(selectedId);
+  if (task) {
+    syncContinueThinkingEffort(task.thinkingEffort || "");
+  }
   if (continueError) {
     continueError.hidden = true;
     continueError.textContent = "";
@@ -1392,6 +1486,7 @@ function openCreate(mode = "draft") {
     createSubmit.textContent = "保存草稿";
   }
   createModelPicker.syncWithKind();
+  syncCreateThinkingEffort("");
   void loadAgentModels();
   createModal.classList.remove("hidden");
   if (createUseWorktree) createUseWorktree.checked = false;
@@ -1748,6 +1843,7 @@ function buildMetaJson(task) {
     workspaceId: task.workspaceId,
     cwd: task.cwd,
     model: task.model,
+    thinkingEffort: task.thinkingEffort,
     pid: task.pid,
     lastEvent: task.lastEvent,
     error: task.error,
@@ -1801,6 +1897,7 @@ function paintDetail(task) {
     metaItem("最后回复", replyLabel),
     metaItem("Agent", task.kind),
     metaItem("模型", task.model || "—"),
+    metaItem("思考强度", task.thinkingEffort || "—"),
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),
     metaItem("退出码", task.exitCode != null ? String(task.exitCode) : "—"),
     metaItem("会话", task.sessionId || "—", true),
@@ -1834,6 +1931,9 @@ function paintDetail(task) {
   continueBtn.disabled = !showContinue || submitting;
   continueBtn.textContent = queued.length ? `继续任务（排队 ${queued.length}）` : "继续任务";
   continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
+  if (continueThinkingEffort) {
+    continueThinkingEffort.disabled = !canContinue(task) || submitting;
+  }
   if (continueModel.disabled) continueModelPicker.closeDropdown();
   renderFollowupQueue(task.id);
   continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
@@ -1843,6 +1943,7 @@ function paintDetail(task) {
       ? "请先停止任务，再选择下一轮模型。"
       : `仅切换 ${task.kind} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
   continueModelPicker.syncWithKind();
+  syncContinueThinkingEffort(continueThinkingEffort?.value || task.thinkingEffort || "");
   continueHint.textContent = task.status === "draft"
     ? ""
     : showContinue
@@ -1922,9 +2023,11 @@ if (createKindSelect) {
   createKindSelect.addEventListener("change", () => {
     createModelPicker.clear();
     createModelPicker.syncWithKind();
+    syncCreateThinkingEffort("");
   });
 }
 createModelPicker.syncWithKind();
+syncCreateThinkingEffort("");
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
@@ -2042,11 +2145,13 @@ async function submitCreateTask() {
     createUseWorktree.checked
   );
   const selectedCreateModel = createModelPicker.commitOrRevert();
+  const selectedThinkingEffort = createThinkingEffortSelect?.value?.trim() || undefined;
   const body = {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
     workspaceId: selectedWorkspaceId,
     model: selectedCreateModel || undefined,
+    thinkingEffort: selectedThinkingEffort,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
     attachments: pendingAttachments.length ? pendingAttachments : undefined,
@@ -2213,14 +2318,19 @@ continueBtn.addEventListener("click", async () => {
     return;
   }
   const model = continueModel.disabled ? "" : continueModelPicker.commitOrRevert();
+  const effort = continueThinkingEffort && !continueThinkingEffort.disabled
+    ? continueThinkingEffort.value.trim()
+    : "";
   const body = {
     prompt: typed || undefined,
     model: model || undefined,
+    thinkingEffort: effort || undefined,
   };
   continuingTaskId = id;
   continueError.hidden = true;
   continueBtn.disabled = true;
   continueModel.disabled = true;
+  if (continueThinkingEffort) continueThinkingEffort.disabled = true;
   try {
     const data = await postContinue(id, body);
     if (data.task) {

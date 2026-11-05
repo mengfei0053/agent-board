@@ -41,6 +41,7 @@ export type PiArgInput = {
   prompt: string;
   sessionId?: string;
   model?: string;
+  thinkingEffort?: string;
 };
 
 /** Pure CLI argv for pi (no spawn). */
@@ -63,6 +64,7 @@ export function buildPiArgs(
   const sessionFlag = isContinue && validSessionId ? "--session" : "--session-id";
   const args = ["-p", "--mode", "json", sessionFlag, sessionId];
   if (task.model) args.push("--model", task.model);
+  if (task.thinkingEffort) args.push("--thinking", task.thinkingEffort);
   // "--" so a prompt starting with "-" is a message, not an unknown option.
   args.push("--", prompt);
   return {

@@ -105,6 +105,7 @@ export type Task = {
   cwd: string;
   prompt: string;
   model?: string;
+  thinkingEffort?: string;
   /** CLI session / chat id used for resume/continue */
   sessionId?: string;
   /** How many runs this task has had (1 on create, +1 each continue) */
@@ -143,6 +144,7 @@ export type CreateTaskInput = {
   cwd?: string;
   prompt: string;
   model?: string;
+  thinkingEffort?: string;
   attachments?: TaskAttachment[];
   /**
    * When true, create a git worktree under the resolved cwd and spawn there.
@@ -167,6 +169,7 @@ export type ContinueTaskInput = {
   prompt?: string;
   /** Next model in the same CLI session; omitted keeps the current model. */
   model?: string;
+  thinkingEffort?: string;
 };
 
 export type BoardEvent =

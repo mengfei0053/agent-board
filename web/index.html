@@ -184,6 +184,9 @@
             <div id="create-model-dropdown" class="model-select-dropdown hidden" role="listbox"></div>
           </div>
         </label>
+        <label>思考强度
+          <select name="thinkingEffort" id="create-thinking-effort"></select>
+        </label>
         <label class="prompt-field">任务内容
           <div id="create-quick-prompts" class="quick-prompts" hidden></div>
           <textarea name="prompt" id="create-prompt" required rows="6" placeholder="要 Agent 做的事（可粘贴或插入图片）"></textarea>
@@ -258,14 +261,19 @@
           <button type="button" id="start-btn" class="primary" hidden>开始任务</button>
         </div>
         <div id="continue-row" class="continue-row footer-continue" hidden>
-          <label class="continue-model-label" for="continue-model">下一轮模型
-            <div class="model-select model-select-up" id="continue-model-select">
-              <input id="continue-model" class="model-select-input" maxlength="200" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="continue-model-dropdown" aria-describedby="continue-model-hint" placeholder="留空沿用当前模型" />
-              <button type="button" class="model-select-clear" id="continue-model-clear" aria-label="清空模型" title="清空" hidden>×</button>
-              <span class="model-select-caret" aria-hidden="true">▾</span>
-              <div id="continue-model-dropdown" class="model-select-dropdown hidden" role="listbox"></div>
-            </div>
-          </label>
+          <div class="continue-model-grid">
+            <label class="continue-model-label" for="continue-model">下一轮模型
+              <div class="model-select model-select-up" id="continue-model-select">
+                <input id="continue-model" class="model-select-input" maxlength="200" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="continue-model-dropdown" aria-describedby="continue-model-hint" placeholder="留空沿用当前模型" />
+                <button type="button" class="model-select-clear" id="continue-model-clear" aria-label="清空模型" title="清空" hidden>×</button>
+                <span class="model-select-caret" aria-hidden="true">▾</span>
+                <div id="continue-model-dropdown" class="model-select-dropdown hidden" role="listbox"></div>
+              </div>
+            </label>
+            <label class="continue-model-label" for="continue-thinking-effort">思考强度
+              <select id="continue-thinking-effort"></select>
+            </label>
+          </div>
           <p id="continue-model-hint" class="muted continue-hint"></p>
           <div id="continue-quick-prompts" class="quick-prompts" hidden></div>
           <ul id="followup-queue" class="followup-queue" hidden></ul>

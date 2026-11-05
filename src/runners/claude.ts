@@ -10,6 +10,7 @@ export type ClaudeArgInput = {
   prompt: string;
   sessionId?: string;
   model?: string;
+  thinkingEffort?: string;
 };
 
 export type ClaudeBuildResult = {
@@ -59,6 +60,7 @@ export function buildClaudeArgs(
   }
 
   if (task.model) args.push("--model", task.model);
+  if (task.thinkingEffort) args.push("--effort", task.thinkingEffort);
   args.push(prompt);
 
   return { args, prompt, sessionId, assignedSession, continueNewSession };

@@ -407,6 +407,7 @@ export async function createDraft(input: CreateTaskInput): Promise<Task> {
     cwd: taskCwd,
     prompt: input.prompt,
     model: input.model?.trim() || resolveDefaultModel(input.kind),
+    thinkingEffort: input.thinkingEffort?.trim() || undefined,
     iteration: 1,
     status: "draft",
     createdAt,
@@ -500,11 +501,21 @@ async function startTaskBody(id: string): Promise<Task> {
   return spawnRunner(getTask(id)!);
 }
 
-export function continueTask(id: string, prompt?: string, model?: string): Promise<Task> {
-  return withTaskLock(id, () => continueTaskBody(id, prompt, model));
+export function continueTask(
+  id: string,
+  prompt?: string,
+  model?: string,
+  thinkingEffort?: string,
+): Promise<Task> {
+  return withTaskLock(id, () => continueTaskBody(id, prompt, model, thinkingEffort));
 }
 
-async function continueTaskBody(id: string, prompt?: string, model?: string): Promise<Task> {
+async function continueTaskBody(
+  id: string,
+  prompt?: string,
+  model?: string,
+  thinkingEffort?: string,
+): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
   if (t.status === "draft") {
@@ -518,6 +529,10 @@ async function continueTaskBody(id: string, prompt?: string, model?: string): Pr
     assertTextLimit(model, MAX_MODEL_CHARS, "model");
     if (!nextModel) throw new HttpError(400, "model required");
   }
+  const nextThinkingEffort =
+    thinkingEffort === undefined
+      ? t.thinkingEffort
+      : thinkingEffort.trim() || undefined;
   const changingModel = nextModel !== t.model;
   if (changingModel && !t.sessionId?.trim()) {
     throw new HttpError(409, "缺少原会话，无法在保留上下文的情况下切换模型");
@@ -552,6 +567,7 @@ async function continueTaskBody(id: string, prompt?: string, model?: string): Pr
     status: "queued",
     iteration: nextIter,
     model: nextModel,
+    thinkingEffort: nextThinkingEffort,
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
@@ -576,6 +592,7 @@ async function continueTaskBody(id: string, prompt?: string, model?: string): Pr
       sessionId: t.sessionId,
       model: nextModel,
       previousModel: t.model,
+      thinkingEffort: nextThinkingEffort,
     }),
   );
 

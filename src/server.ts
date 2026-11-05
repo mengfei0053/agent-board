@@ -457,6 +457,10 @@ app.post("/api/tasks", async (c) => {
     const prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
     const title = body.title == null ? undefined : requireString(body, "title", { max: MAX_TITLE_CHARS });
     const model = body.model == null ? undefined : requireString(body, "model", { max: MAX_MODEL_CHARS });
+    const thinkingEffort =
+      body.thinkingEffort == null
+        ? undefined
+        : requireString(body, "thinkingEffort", { max: 32 }).trim() || undefined;
     const start = parseStrictBool(body.start, "start") === true;
     const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
@@ -484,6 +488,7 @@ app.post("/api/tasks", async (c) => {
       prompt,
       title: title || undefined,
       model: model || undefined,
+      thinkingEffort,
       attachments: attachments.length ? attachments : undefined,
       useGitWorktree: useGitWorktree || undefined,
     };
@@ -574,6 +579,7 @@ app.post("/api/tasks/:id/archive", async (c) => {
 app.post("/api/tasks/:id/continue", async (c) => {
   let prompt: string | undefined;
   let model: string | undefined;
+  let thinkingEffort: string | undefined;
   try {
     const raw = await c.req.text();
     if (raw.trim()) {
@@ -596,12 +602,15 @@ app.post("/api/tasks/:id/continue", async (c) => {
       if ("model" in body) {
         model = requireString(body, "model", { required: true, max: MAX_MODEL_CHARS });
       }
+      if ("thinkingEffort" in body && body.thinkingEffort != null) {
+        thinkingEffort = requireString(body, "thinkingEffort", { max: 32 }).trim();
+      }
     }
   } catch (err) {
     return errorJson(c, err);
   }
   try {
-    const task = await continueTask(c.req.param("id"), prompt, model);
+    const task = await continueTask(c.req.param("id"), prompt, model, thinkingEffort);
     return c.json({ task });
   } catch (err) {
     return taskMutationError(c, err);

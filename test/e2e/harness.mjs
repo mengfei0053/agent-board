@@ -309,6 +309,7 @@ export function createMockServer(state, extra) {
         workspaceId: wsId,
         prompt: plain,
         model: (body.model && String(body.model).trim()) || "mock-model",
+        thinkingEffort: (body.thinkingEffort && String(body.thinkingEffort).trim()) || undefined,
         iteration: 1,
         status: "draft",
         createdAt,

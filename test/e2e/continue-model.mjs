@@ -47,6 +47,7 @@ const server = createMockServer(state, async (req, res, url) => {
     }
     const task = state.tasks.get(url.pathname.split("/")[3]);
     task.model = lastBody.model || task.model;
+    task.thinkingEffort = lastBody.thinkingEffort || task.thinkingEffort;
     task.iteration += 1;
     task.prompts.push({ iteration: task.iteration, prompt: lastBody.prompt || "请基于当前上下文继续完成任务" });
     json(res, 200, { task });
@@ -69,6 +70,8 @@ try {
   };
   await open(first.id);
   assert.equal(await page.$eval("#continue-model", (el) => el.disabled), false);
+  assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.disabled), false);
+  assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.value), "medium");
   assert.match(await page.$eval("#continue-model", (el) => el.placeholder), /sonnet/);
   await page.click("#continue-model");
   await page.waitForSelector("#continue-model-dropdown:not(.hidden)");
@@ -88,11 +91,13 @@ try {
   );
   assert.deepEqual(filtered, ["opus"]);
   await page.click('#continue-model-dropdown .model-option[data-value="opus"]');
+  await page.select("#continue-thinking-effort", "high");
 
   // Repeated server updates must not erase an unfinished selection or follow-up.
   await page.type("#continue-prompt", "next instruction");
   for (const stream of streams) stream.write(`event: task_upsert\ndata: ${JSON.stringify({ task: first })}\n\n`);
   await page.waitForFunction(() => document.getElementById("continue-model")?.value === "opus");
+  assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.value), "high");
   assert.equal(await page.$eval("#continue-prompt", (el) => el.value), "next instruction");
 
   // Errors retain input and allow retry without replacing the task/session.
@@ -115,7 +120,7 @@ try {
     })));
     throw error;
   }
-  assert.deepEqual(lastBody, { prompt: "next instruction", model: "opus" });
+  assert.deepEqual(lastBody, { prompt: "next instruction", model: "opus", thinkingEffort: "high" });
   assert.equal(state.tasks.get(first.id).sessionId, "original-session");
   assert.equal(state.tasks.get(first.id).iteration, 2);
   assert.equal(state.tasks.get(first.id).outputs[0].text, "previous answer");
@@ -136,16 +141,18 @@ try {
   await page.click("#detail-close");
   await open("running-task");
   assert.equal(await page.$eval("#continue-model", (el) => el.disabled), true);
+  assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.disabled), true);
   assert.equal(await page.$eval("#continue-btn", (el) => el.disabled), true);
   await page.click("#detail-close");
   await open("archived-task");
   assert.equal(await page.$eval("#continue-row", (el) => el.hidden), false);
   assert.equal(await page.$eval("#continue-btn", (el) => el.disabled), false);
   assert.equal(await page.$eval("#continue-model", (el) => el.disabled), false);
+  assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.value), "medium");
   await page.click("#continue-btn");
   await page.waitForFunction(() => document.getElementById("detail-sub")?.textContent.includes("迭代 2"));
   assert.equal(state.tasks.get("archived-task").sessionId, "archived-session");
-  assert.deepEqual(lastBody, {});
+  assert.deepEqual(lastBody, { thinkingEffort: "medium" });
   assert.equal(state.tasks.get("archived-task").prompts[1].prompt, "请基于当前上下文继续完成任务");
   assert.deepEqual(errors, []);
   console.log("[e2e-continue-model] model selection, history scoping, SSE, retry and safety guards passed");

@@ -30,6 +30,7 @@ export function approvalFlags(sandboxEnabled = isCodexSandboxEnabled()): string[
 export function baseExecFlags(
   taskModel?: string,
   sandboxEnabled = isCodexSandboxEnabled(),
+  thinkingEffort?: string,
 ): string[] {
   const flags = [
     "--json",
@@ -42,6 +43,9 @@ export function baseExecFlags(
     "--skip-git-repo-check",
   ];
   if (taskModel) flags.push("-m", taskModel);
+  if (thinkingEffort) {
+    flags.push("-c", `model_reasoning_effort=${JSON.stringify(thinkingEffort)}`);
+  }
   return flags;
 }
 
@@ -49,13 +53,16 @@ export function baseExecFlags(
  * Flags after `resume <id>`: resume does not accept -s/--approve-for-me.
  * Sandbox/approval flags must be passed as exec-level options before `resume`.
  */
-export function resumeFlags(taskModel?: string): string[] {
+export function resumeFlags(taskModel?: string, thinkingEffort?: string): string[] {
   const flags = [
     "--json",
     "--dangerously-bypass-hook-trust",
     "--skip-git-repo-check",
   ];
   if (taskModel) flags.push("-m", taskModel);
+  if (thinkingEffort) {
+    flags.push("-c", `model_reasoning_effort=${JSON.stringify(thinkingEffort)}`);
+  }
   return flags;
 }
 
@@ -63,6 +70,7 @@ export type CodexArgInput = {
   prompt: string;
   sessionId?: string;
   model?: string;
+  thinkingEffort?: string;
 };
 
 export type CodexBuildResult = {
@@ -91,17 +99,17 @@ export function buildCodexArgs(
       ...approvalFlags(sandboxEnabled),
       "resume",
       task.sessionId,
-      ...resumeFlags(task.model),
+      ...resumeFlags(task.model, task.thinkingEffort),
       prompt,
     ];
   } else if (isContinue && !task.sessionId) {
     // First round failed before thread.started — do NOT resume --last (wrong session).
     prompt = mergeContinueWithoutSession(task.prompt, opts?.continuePrompt || "");
-    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled), prompt];
+    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled, task.thinkingEffort), prompt];
     continueNewSession = true;
   } else {
     prompt = opts?.continuePrompt?.trim() || task.prompt;
-    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled), prompt];
+    args = ["exec", ...baseExecFlags(task.model, sandboxEnabled, task.thinkingEffort), prompt];
   }
 
   return { args, prompt, continueNewSession, sandbox: sandboxEnabled };

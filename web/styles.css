@@ -1290,7 +1290,14 @@ textarea { resize: vertical; min-height: 96px; }
   background: var(--panel-2);
 }
 .continue-label { margin-bottom: 0; }
+.continue-model-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 10px;
+  align-items: end;
+}
 .continue-model-label { display: grid; gap: 6px; margin-bottom: 6px; }
+.continue-model-label select { margin-top: 0; }
 #continue-model-hint { margin-bottom: 8px; }
 
 .model-select {
@@ -1399,15 +1406,6 @@ textarea { resize: vertical; min-height: 96px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.model-option-efforts {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--faint);
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border-soft);
-  background: var(--bg);
 }
 .model-option-empty {
   padding: 10px;
