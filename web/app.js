@@ -2,6 +2,7 @@ import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask } from "./boardTaskMerge.js";
 import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
 import { renderGitStatus } from "./git-status-view.js";
+import { formatRoundDuration } from "./roundTime.js";
 
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
@@ -1613,7 +1614,7 @@ function outputSignature(task) {
   const parts = turns.map((o) => `${o.iteration}:${(o.text || "").length}:${o.at || ""}`);
   const prompts = Array.isArray(task.prompts) ? task.prompts : [];
   const promptParts = prompts.map((p) => `${p.iteration}:${(p.prompt || "").length}:${p.at || ""}`);
-  return `${task.id}|${task.status}|${task.output?.length || 0}|${parts.join(";")}|${promptParts.join(";")}|${task.error || ""}|${task.exitCode ?? ""}`;
+  return `${task.id}|${task.status}|${task.startedAt || ""}|${task.endedAt || ""}|${task.output?.length || 0}|${parts.join(";")}|${promptParts.join(";")}|${task.error || ""}|${task.exitCode ?? ""}`;
 }
 
 function promptsOf(task) {
@@ -1621,7 +1622,7 @@ function promptsOf(task) {
   if (list.length) return list.slice().sort((a, b) => a.iteration - b.iteration);
   // Fallback: at least show the initial task.prompt as round 1.
   if (task.prompt && String(task.prompt).trim()) {
-    return [{ iteration: 1, prompt: task.prompt, at: task.createdAt }];
+    return [{ iteration: 1, prompt: task.prompt, at: task.startedAt || task.createdAt }];
   }
   return [];
 }
@@ -1678,7 +1679,13 @@ function paintOutput(task) {
     detailOutput.classList.remove("empty-output");
     detailOutput.replaceChildren();
     for (const round of rounds) {
-      const when = formatLocal(round.at || round.promptAt) || "";
+      const roundRunning = running && round.iteration === curIter;
+      const roundDone = task.status !== "draft" && !roundRunning;
+      const fallbackStartIso = round.iteration <= 1 ? task.startedAt || task.createdAt || "" : "";
+      const startIso = round.promptAt || fallbackStartIso;
+      const fallbackEndIso = round.iteration === curIter ? task.endedAt || task.updatedAt || "" : "";
+      const endIso = roundDone ? round.at || fallbackEndIso : "";
+      const when = formatLocal(startIso || round.at) || "";
       const kind = round.iteration <= 1 ? "初始" : "继续";
       const article = document.createElement("article");
       article.className = "output-turn";
@@ -1686,12 +1693,25 @@ function paintOutput(task) {
       header.className = "output-turn-head";
       const heading = document.createElement("span");
       heading.textContent = `第 ${round.iteration} 轮 · ${kind}${when ? " · " + when : ""}`;
-      header.appendChild(heading);
-      if (running && round.iteration === curIter) {
+      header.append(heading);
+      if (roundRunning) {
         const live = document.createElement("span");
         live.className = "turn-live";
         live.textContent = "实时";
-        header.appendChild(live);
+        header.append(live);
+      }
+      if (roundDone && endIso) {
+        const endWhen = formatLocal(endIso);
+        const duration = formatRoundDuration(startIso, endIso);
+        const endParts = [];
+        if (endWhen) endParts.push(`结束时间 ${endWhen}`);
+        if (duration) endParts.push(`时长 ${duration}`);
+        if (endParts.length) {
+          const endMeta = document.createElement("span");
+          endMeta.className = "output-turn-end";
+          endMeta.textContent = endParts.join(" · ");
+          header.append(endMeta);
+        }
       }
       const promptText = round.prompt || (round.iteration <= 1 ? task.prompt : "");
       const promptBox = document.createElement("div");

@@ -1760,7 +1760,8 @@ textarea { resize: vertical; min-height: 96px; }
 .output-turn-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   padding: 7px 12px;
   font-size: 11px;
   font-weight: 650;
@@ -1768,6 +1769,10 @@ textarea { resize: vertical; min-height: 96px; }
   background: color-mix(in srgb, var(--bg-elevated) 60%, var(--panel-2));
   border-bottom: 1px solid var(--border-soft);
   letter-spacing: 0.02em;
+}
+.output-turn-end {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 .turn-live {
   color: var(--run);

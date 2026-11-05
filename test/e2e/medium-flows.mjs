@@ -26,6 +26,7 @@ async function main() {
         sessionId: "sess_e2e_1",
         endedAt: "2026-01-01T01:00:00.000Z",
         summary: "done",
+        prompts: [{ iteration: 1, prompt: "完成某功能", at: "2026-01-01T00:58:22.000Z" }],
         outputs: [{ iteration: 1, text: "第一轮结果", at: "2026-01-01T01:00:00.000Z" }],
       }),
     ],
@@ -111,6 +112,11 @@ async function main() {
       (el) => el.textContent?.trim() || "",
     );
     assert.equal(lastReplyShown, "2026/01/01 09:00:00");
+    const turnEndShown = await page.$eval(
+      "#detail-output .output-turn-head .output-turn-end",
+      (el) => el.textContent?.trim() || "",
+    );
+    assert.equal(turnEndShown, "结束时间 2026/01/01 09:00:00 · 时长 1分钟38秒");
 
     await page.waitForFunction(() => {
       const el = document.querySelector("#detail-meta-grid [data-copy-cmd]");

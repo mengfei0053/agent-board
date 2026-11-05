@@ -353,7 +353,7 @@ export function mergeOutputTurns(
     map.set(o.iteration, {
       ...prev,
       ...o,
-      at: o.at || prev?.at,
+      at: prev?.at || o.at,
     });
   }
   return [...map.values()].sort((a, b) => a.iteration - b.iteration);

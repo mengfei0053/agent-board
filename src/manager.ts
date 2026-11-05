@@ -255,8 +255,15 @@ export function refreshOutputFromLogs(id: string): Task | undefined {
   const lines = readLogTail(id, 2500, 1_500_000);
   const curIter = cur.iteration ?? 1;
   const extracted = extractOutputsByIteration(lines, curIter);
+  const fallbackAt = cur.endedAt || cur.updatedAt;
+  const stamped = extracted.map((o) => {
+    if (fallbackAt && o.iteration === curIter && !o.at) {
+      return { ...o, at: fallbackAt };
+    }
+    return o;
+  });
   // Merge — never replace prior rounds when the log tail lost start/continue markers.
-  const outputs = mergeOutputTurns(cur.outputs, extracted, curIter);
+  const outputs = mergeOutputTurns(cur.outputs, stamped, curIter);
   const out = latestOutputText(outputs) || extractFinalOutput(lines) || cur.output || "";
   if (!out && !outputs.length) return cur;
   return patch(id, {
