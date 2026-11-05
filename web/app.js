@@ -89,6 +89,25 @@ let lastPaintedTaskId = null;
 
 let query = "";
 let dragTaskId = null;
+let pendingRenderList = false;
+let pendingRenderWorkspaces = false;
+let suppressClickUntil = 0;
+/**
+ * Active pointer-driven drag state (avoids buggy OS-level HTML5 DnD grabs on Linux).
+ * @type {{
+ *   kind: "card" | "ws",
+ *   id: string,
+ *   sourceEl: HTMLElement,
+ *   title: string,
+ *   startX: number,
+ *   startY: number,
+ *   started: boolean,
+ *   ghostEl: HTMLDivElement | null,
+ *   targetLane: string | null,
+ *   targetWsId: string | null,
+ * } | null}
+ */
+let activePointerDrag = null;
 /** @type {string|null} */
 let editingWorkspaceId = null;
 /** @type {(path: string) => void} */
@@ -686,6 +705,7 @@ function appendPromptCard(parent, prompt) {
       img.src = src;
       img.alt = "";
       img.loading = "lazy";
+      img.draggable = false;
       thumbs.appendChild(img);
     }
     parent.appendChild(thumbs);
@@ -923,6 +943,35 @@ function paintLastReply(task) {
   detailLastReplyAt.textContent = formatLocal(lastReplyAt(task)) || "—";
 }
 
+function updateCardReplyTime(taskId) {
+  const t = tasks.get(taskId);
+  if (!t) return;
+  const val = formatLocal(lastReplyAt(t));
+  if (!val) return;
+  let card = null;
+  for (const el of document.querySelectorAll(".card[data-id]")) {
+    if (el.dataset.id === taskId) {
+      card = el;
+      break;
+    }
+  }
+  if (!card) return;
+  let timesBox = card.querySelector(".card-times");
+  if (!timesBox) {
+    appendCardTimes(card, t);
+    return;
+  }
+  let replySpan = timesBox.querySelector(".time-reply");
+  if (!replySpan) {
+    replySpan = document.createElement("span");
+    replySpan.className = "time-reply";
+    replySpan.title = "最近一次模型输出的时间";
+    timesBox.append(replySpan);
+  }
+  replySpan.textContent = `最后回复 ${val}`;
+  card.dataset.cardSig = cardRenderSig(t);
+}
+
 /** @param {HTMLElement} parent @param {any} t */
 function appendCardTimes(parent, t) {
   const rows = [
@@ -1054,6 +1103,7 @@ function makeCard(t) {
     e.stopPropagation();
     setSelected(t.id, check.checked);
     btn.classList.toggle("selected", check.checked);
+    btn.dataset.cardSig = cardRenderSig(t);
   });
   if (archive) {
     const doArchive = (e) => {
@@ -1066,21 +1116,32 @@ function makeCard(t) {
       if (e.key === "Enter" || e.key === " ") doArchive(e);
     });
   }
+  btn.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target instanceof Element && e.target.closest(".card-check, .card-archive-btn")) return;
+    startPointerDrag("card", t.id, btn, displayTitleText(t) || t.id, e.clientX, e.clientY);
+  });
   btn.addEventListener("dragstart", (e) => {
+    if (e.isTrusted) {
+      e.preventDefault();
+      return;
+    }
     dragTaskId = t.id;
     btn.classList.add("dragging");
-    e.dataTransfer.setData("text/plain", t.id);
-    e.dataTransfer.effectAllowed = "move";
+    if (e.dataTransfer) {
+      e.dataTransfer.setData("text/plain", t.id);
+      e.dataTransfer.effectAllowed = "move";
+    }
   });
   btn.addEventListener("dragend", () => {
     dragTaskId = null;
     btn.classList.remove("dragging");
-    document.querySelectorAll(".lane.drag-over, .lane-body.drag-over").forEach((el) => {
-      el.classList.remove("drag-over");
-    });
+    clearLaneDragIndicators();
+    flushPendingRenders();
   });
   btn.onclick = (e) => {
     if (e.target === check) return;
+    if (Date.now() < suppressClickUntil) return;
     openDetail(t.id);
   };
   return btn;
@@ -1114,6 +1175,12 @@ function ensureLaneSelectButtons() {
   }
 }
 
+function clearLaneDragIndicators() {
+  for (const el of document.querySelectorAll(".lane.drag-over, .lane-body.drag-over")) {
+    el.classList.remove("drag-over");
+  }
+}
+
 function bindLaneDropTargets() {
   for (const key of LANES) {
     const lane = document.querySelector(`.lane[data-tab="${key}"]`);
@@ -1121,8 +1188,9 @@ function bindLaneDropTargets() {
     if (!lane || lane.dataset.dropBound) continue;
     lane.dataset.dropBound = "1";
     const onDragOver = (e) => {
+      if (dragWorkspaceId) return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
       lane.classList.add("drag-over");
       body?.classList.add("drag-over");
     };
@@ -1132,10 +1200,12 @@ function bindLaneDropTargets() {
       body?.classList.remove("drag-over");
     };
     const onDrop = async (e) => {
+      if (dragWorkspaceId) return;
       e.preventDefault();
       lane.classList.remove("drag-over");
       body?.classList.remove("drag-over");
-      const id = e.dataTransfer.getData("text/plain") || dragTaskId;
+      const id = e.dataTransfer?.getData("text/plain") || dragTaskId;
+      dragTaskId = null;
       if (!id) return;
       const t = tasks.get(id);
       if (!t) return;
@@ -1177,9 +1247,163 @@ function tasksInCurrentWorkspace() {
   return out;
 }
 
+const VIRTUAL_ESTIMATED_CARD_HEIGHT = 210;
+const VIRTUAL_CARD_GAP = 8;
+const VIRTUAL_OVERSCAN = 4;
+const VIRTUAL_MIN_WINDOW = 10;
+/** @type {Map<string, number>} Measured card heights by task id. */
+const cardHeightCache = new Map();
+/** @type {Map<string, { items: any[], lastSig: string, rafId: number }>} */
+const laneVirtualState = new Map();
+
+function cardRenderSig(t) {
+  const preview = previewText(t);
+  return [
+    t.id,
+    t.status,
+    selected.has(t.id) ? "1" : "0",
+    t.title || "",
+    t.cwd || "",
+    t.startedAt || "",
+    t.endedAt || "",
+    lastReplyAt(t),
+    t.prompt || "",
+    preview.error ? "E" : "O",
+    preview.text || "",
+    iterationOf(t),
+    t.kind || "",
+    t.model || "",
+    t.sideJobs?.length || 0,
+  ].join("\x1f");
+}
+
+function computeVirtualSlice(el, items) {
+  const n = items.length;
+  if (n <= VIRTUAL_MIN_WINDOW) {
+    return { startIdx: 0, endIdx: n - 1, topSpacer: 0, bottomSpacer: 0 };
+  }
+  const heights = [];
+  const offsets = [];
+  let runningTop = 0;
+  for (let i = 0; i < n; i++) {
+    offsets.push(runningTop);
+    const h = cardHeightCache.get(items[i].id) || VIRTUAL_ESTIMATED_CARD_HEIGHT;
+    heights.push(h);
+    runningTop += h + VIRTUAL_CARD_GAP;
+  }
+  const totalHeight = runningTop - VIRTUAL_CARD_GAP;
+  const scrollTop = Math.max(0, el.scrollTop || 0);
+  const viewportH = Math.max(el.clientHeight || 0, 640);
+  const viewBottom = scrollTop + viewportH;
+
+  let firstVisible = 0;
+  while (firstVisible < n - 1 && offsets[firstVisible] + heights[firstVisible] < scrollTop) {
+    firstVisible++;
+  }
+  let lastVisible = firstVisible;
+  while (lastVisible < n - 1 && offsets[lastVisible] <= viewBottom) {
+    lastVisible++;
+  }
+  let startIdx = Math.max(0, firstVisible - VIRTUAL_OVERSCAN);
+  const endIdx = Math.min(
+    n - 1,
+    Math.max(lastVisible + VIRTUAL_OVERSCAN, startIdx + VIRTUAL_MIN_WINDOW - 1),
+  );
+  if (endIdx - startIdx + 1 < VIRTUAL_MIN_WINDOW) {
+    startIdx = Math.max(0, endIdx - VIRTUAL_MIN_WINDOW + 1);
+  }
+  const topSpacer = startIdx > 0 ? Math.max(0, offsets[startIdx] - VIRTUAL_CARD_GAP) : 0;
+  const endBottom = offsets[endIdx] + heights[endIdx];
+  const bottomSpacer =
+    endIdx < n - 1 ? Math.max(0, totalHeight - endBottom - VIRTUAL_CARD_GAP) : 0;
+  return { startIdx, endIdx, topSpacer, bottomSpacer };
+}
+
+function makeLaneSpacer(pos, heightPx) {
+  const div = document.createElement("div");
+  div.className = `lane-spacer lane-spacer-${pos}`;
+  div.setAttribute("aria-hidden", "true");
+  div.style.height = `${Math.round(heightPx)}px`;
+  return div;
+}
+
+function renderLaneVirtual(key) {
+  const el = document.querySelector(`#list-${key}`);
+  const state = laneVirtualState.get(key);
+  if (!el || !state) return;
+  const items = state.items;
+  const { startIdx, endIdx, topSpacer, bottomSpacer } = computeVirtualSlice(el, items);
+  const slice = items.length ? items.slice(startIdx, endIdx + 1) : [];
+  const cardSigs = slice.map(cardRenderSig);
+  const laneSig = `${items.length}|${startIdx}:${endIdx}|${Math.round(topSpacer)}:${Math.round(bottomSpacer)}|${cardSigs.join("\x1e")}`;
+  if (state.lastSig === laneSig) return;
+  state.lastSig = laneSig;
+
+  const existingById = new Map();
+  for (const child of el.querySelectorAll(".card[data-id]")) {
+    existingById.set(child.dataset.id, child);
+  }
+  const nodes = [];
+  if (topSpacer > 0) {
+    nodes.push(makeLaneSpacer("top", topSpacer));
+  }
+  for (let i = 0; i < slice.length; i++) {
+    const t = slice[i];
+    const sig = cardSigs[i];
+    const prev = existingById.get(t.id);
+    if (prev && prev.dataset.cardSig === sig) {
+      nodes.push(prev);
+    } else {
+      const card = makeCard(t);
+      card.dataset.cardSig = sig;
+      nodes.push(card);
+    }
+  }
+  if (bottomSpacer > 0) {
+    nodes.push(makeLaneSpacer("bottom", bottomSpacer));
+  }
+  const prevScrollTop = el.scrollTop;
+  el.replaceChildren(...nodes);
+  if (items.length > VIRTUAL_MIN_WINDOW && el.scrollTop !== prevScrollTop) {
+    el.scrollTop = prevScrollTop;
+  }
+  for (const child of nodes) {
+    const id = child.dataset?.id;
+    if (!id) continue;
+    const h = child.offsetHeight;
+    if (h > 40) cardHeightCache.set(id, h);
+  }
+}
+
+function bindLaneVirtualScroll() {
+  for (const key of LANES) {
+    const body = document.querySelector(`#list-${key}`);
+    if (!body || body.dataset.virtualBound) continue;
+    body.dataset.virtualBound = "1";
+    body.addEventListener(
+      "scroll",
+      () => {
+        const state = laneVirtualState.get(key);
+        if (!state || state.items.length <= VIRTUAL_MIN_WINDOW) return;
+        if (state.rafId) return;
+        state.rafId = window.requestAnimationFrame(() => {
+          state.rafId = 0;
+          renderLaneVirtual(key);
+        });
+      },
+      { passive: true },
+    );
+  }
+}
+
 function renderList() {
+  if (isDragBusy()) {
+    pendingRenderList = true;
+    return;
+  }
   ensureLaneSelectButtons();
   bindLaneDropTargets();
+  bindLaneVirtualScroll();
   updateCounts();
   updateWorkspaceCounts();
   const buckets = { draft: [], todo: [], running: [], done: [], archived: [] };
@@ -1189,11 +1413,15 @@ function renderList() {
   }
   let total = 0;
   for (const key of LANES) {
-    const el = document.getElementById(`list-${key}`);
-    el.innerHTML = "";
     const items = buckets[key].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     total += items.length;
-    for (const t of items) el.appendChild(makeCard(t));
+    let state = laneVirtualState.get(key);
+    if (!state) {
+      state = { items: [], lastSig: "", rafId: 0 };
+      laneVirtualState.set(key, state);
+    }
+    state.items = items;
+    renderLaneVirtual(key);
   }
   emptyEl.hidden = total > 0;
   if (!total) {
@@ -1543,12 +1771,31 @@ function closeCreate() {
   createModelPicker.clear();
 }
 
+let shouldScrollOutputToLastTurn = false;
+let lastPaintedRoundCount = 0;
+
+function scrollOutputToLastTurn() {
+  if (!detailOutput) return;
+  const turns = detailOutput.querySelectorAll(".output-turn");
+  const lastTurn = turns.length ? turns[turns.length - 1] : null;
+  if (!lastTurn || turns.length <= 1) {
+    detailOutput.scrollTop = 0;
+    return;
+  }
+  const containerRect = detailOutput.getBoundingClientRect();
+  const turnRect = lastTurn.getBoundingClientRect();
+  const targetTop = detailOutput.scrollTop + (turnRect.top - containerRect.top) - 12;
+  detailOutput.scrollTop = Math.max(0, Math.round(targetTop));
+}
+
 async function openDetail(id) {
   selectedId = id;
   selectedLogLines = [];
   selectedLogCount = 0;
   lastOutputSig = "";
   lastPaintedTaskId = null;
+  lastPaintedRoundCount = 0;
+  shouldScrollOutputToLastTurn = true;
   clearContinuePrompt();
   applyQuickPromptsToUi();
   detailModal.classList.remove("hidden");
@@ -1630,8 +1877,14 @@ function promptsOf(task) {
 function paintOutput(task) {
   const sig = outputSignature(task);
   if (lastPaintedTaskId === task.id && lastOutputSig === sig && detailOutput.childNodes.length) {
+    if (shouldScrollOutputToLastTurn) {
+      shouldScrollOutputToLastTurn = false;
+      scrollOutputToLastTurn();
+      window.requestAnimationFrame(() => scrollOutputToLastTurn());
+    }
     return;
   }
+  const prevTaskId = lastPaintedTaskId;
   lastPaintedTaskId = task.id;
   lastOutputSig = sig;
 
@@ -1676,6 +1929,11 @@ function paintOutput(task) {
   const rounds = [...byIter.values()].sort((a, b) => a.iteration - b.iteration);
 
   if (rounds.length) {
+    const prevScrollTop = detailOutput.scrollTop;
+    const isNewRound = prevTaskId === task.id && rounds.length > lastPaintedRoundCount;
+    const shouldScrollToLast = shouldScrollOutputToLastTurn || prevTaskId !== task.id || isNewRound;
+    shouldScrollOutputToLastTurn = false;
+    lastPaintedRoundCount = rounds.length;
     detailOutput.classList.remove("empty-output");
     detailOutput.replaceChildren();
     for (const round of rounds) {
@@ -1689,6 +1947,7 @@ function paintOutput(task) {
       const kind = round.iteration <= 1 ? "初始" : "继续";
       const article = document.createElement("article");
       article.className = "output-turn";
+      article.dataset.iteration = String(round.iteration);
       const header = document.createElement("header");
       header.className = "output-turn-head";
       const heading = document.createElement("span");
@@ -1747,6 +2006,12 @@ function paintOutput(task) {
       }
       article.append(header, promptBox, replyLabel, reply);
       detailOutput.appendChild(article);
+    }
+    if (shouldScrollToLast) {
+      scrollOutputToLastTurn();
+      window.requestAnimationFrame(() => scrollOutputToLastTurn());
+    } else {
+      detailOutput.scrollTop = prevScrollTop;
     }
     outputHint.textContent = running
       ? `共 ${rounds.length} 轮 · 当前第 ${curIter} 轮更新中`
@@ -2590,6 +2855,167 @@ function clearWsDragIndicators() {
   }
 }
 
+function isDragBusy() {
+  return Boolean(activePointerDrag || dragTaskId || dragWorkspaceId);
+}
+
+function flushPendingRenders() {
+  if (isDragBusy()) return;
+  if (pendingRenderWorkspaces) {
+    pendingRenderWorkspaces = false;
+    renderWorkspaces();
+  }
+  if (pendingRenderList) {
+    pendingRenderList = false;
+    renderList();
+  }
+}
+
+function startPointerDrag(kind, id, sourceEl, title, startX, startY) {
+  cancelPointerDrag();
+  activePointerDrag = {
+    kind,
+    id,
+    sourceEl,
+    title: String(title || id),
+    startX,
+    startY,
+    started: false,
+    ghostEl: null,
+    targetLane: null,
+    targetWsId: null,
+  };
+}
+
+function findClosestWsButton(clientY) {
+  if (!wsListEl) return null;
+  const buttons = [...wsListEl.querySelectorAll(".ws-item")];
+  if (!buttons.length) return null;
+  let best = null;
+  let bestDist = Infinity;
+  for (const btn of buttons) {
+    const r = btn.getBoundingClientRect();
+    const mid = r.top + r.height / 2;
+    const d = Math.abs(clientY - mid);
+    if (d < bestDist) {
+      bestDist = d;
+      best = btn;
+    }
+  }
+  return best;
+}
+
+function highlightWsDropTarget(sourceId, targetBtn) {
+  clearWsDragIndicators();
+  if (!targetBtn) return null;
+  const targetId = targetBtn.dataset.workspaceId || null;
+  if (!targetId || targetId === sourceId) return null;
+  const ids = orderedWorkspaces().map((w) => w.id);
+  const fromIdx = ids.indexOf(sourceId);
+  const toIdx = ids.indexOf(targetId);
+  if (fromIdx === -1 || toIdx === -1) return null;
+  const placeAfter = fromIdx < toIdx;
+  targetBtn.classList.add("drag-over", placeAfter ? "drag-over-below" : "drag-over-above");
+  return targetId;
+}
+
+function cleanupPointerDragVisuals(drag) {
+  if (drag?.ghostEl) {
+    drag.ghostEl.remove();
+    drag.ghostEl = null;
+  }
+  if (drag?.sourceEl) {
+    drag.sourceEl.classList.remove("dragging");
+  }
+  document.body.classList.remove("is-dragging");
+  clearLaneDragIndicators();
+  clearWsDragIndicators();
+}
+
+function cancelPointerDrag() {
+  if (!activePointerDrag) return;
+  const drag = activePointerDrag;
+  activePointerDrag = null;
+  dragTaskId = null;
+  dragWorkspaceId = null;
+  cleanupPointerDragVisuals(drag);
+  flushPendingRenders();
+}
+
+window.addEventListener("pointermove", (e) => {
+  if (!activePointerDrag) return;
+  const drag = activePointerDrag;
+  const dx = e.clientX - drag.startX;
+  const dy = e.clientY - drag.startY;
+  if (!drag.started) {
+    if (Math.hypot(dx, dy) < 5) return;
+    drag.started = true;
+    if (drag.kind === "card") {
+      dragTaskId = drag.id;
+    } else {
+      dragWorkspaceId = drag.id;
+    }
+    drag.sourceEl.classList.add("dragging");
+    document.body.classList.add("is-dragging");
+    const ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.textContent = drag.title;
+    document.body.append(ghost);
+    drag.ghostEl = ghost;
+  }
+  if (drag.ghostEl) {
+    drag.ghostEl.style.transform = `translate3d(${e.clientX + 12}px, ${e.clientY + 12}px, 0)`;
+  }
+  const under = document.elementFromPoint(e.clientX, e.clientY);
+  if (drag.kind === "card") {
+    clearLaneDragIndicators();
+    const laneEl = under instanceof Element ? under.closest(".lane[data-tab]") : null;
+    if (laneEl) {
+      const key = laneEl.getAttribute("data-tab");
+      laneEl.classList.add("drag-over");
+      if (key) document.getElementById(`list-${key}`)?.classList.add("drag-over");
+      drag.targetLane = key;
+    } else {
+      drag.targetLane = null;
+    }
+  } else if (drag.kind === "ws") {
+    let targetBtn = under instanceof Element ? under.closest("#ws-list .ws-item") : null;
+    if (!targetBtn && under instanceof Element && wsListEl?.contains(under)) {
+      targetBtn = findClosestWsButton(e.clientY);
+    }
+    drag.targetWsId = highlightWsDropTarget(drag.id, targetBtn);
+  }
+});
+
+window.addEventListener("pointerup", () => {
+  if (!activePointerDrag) return;
+  const drag = activePointerDrag;
+  activePointerDrag = null;
+  dragTaskId = null;
+  dragWorkspaceId = null;
+  cleanupPointerDragVisuals(drag);
+  if (drag.started) {
+    suppressClickUntil = Date.now() + 220;
+    if (drag.kind === "card" && drag.targetLane) {
+      const t = tasks.get(drag.id);
+      if (t && tabOf(t.status) !== drag.targetLane) {
+        void moveToLane(drag.id, drag.targetLane);
+      }
+    } else if (drag.kind === "ws" && drag.targetWsId && drag.targetWsId !== drag.id) {
+      void reorderWorkspacesTo(drag.id, drag.targetWsId);
+    }
+  }
+  flushPendingRenders();
+});
+
+window.addEventListener("pointercancel", () => cancelPointerDrag());
+window.addEventListener("blur", () => cancelPointerDrag());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && activePointerDrag) {
+    cancelPointerDrag();
+  }
+});
+
 async function reorderWorkspacesTo(sourceId, targetId) {
   if (!sourceId || !workspaces.has(sourceId)) return;
   const ids = orderedWorkspaces().map((w) => w.id);
@@ -2604,7 +3030,20 @@ async function reorderWorkspacesTo(sourceId, targetId) {
     if (ws) ws.sortOrder = idx;
   });
   writeWorkspaceOrder(nextIds);
-  renderWorkspaces();
+  if (wsListEl) {
+    const byId = new Map();
+    for (const li of wsListEl.children) {
+      const btn = li.querySelector(".ws-item");
+      if (btn?.dataset.workspaceId) byId.set(btn.dataset.workspaceId, li);
+    }
+    if (byId.size === nextIds.length && nextIds.every((id) => byId.has(id))) {
+      for (const id of nextIds) {
+        wsListEl.append(byId.get(id));
+      }
+    } else {
+      renderWorkspaces();
+    }
+  }
   try {
     await fetch("/api/workspaces/reorder", {
       method: "POST",
@@ -2713,13 +3152,25 @@ function renderWorkspaces() {
       stats.appendChild(stat);
     }
     btn.append(name, path, count, stats);
-    btn.onclick = () => selectWorkspace(workspace.id);
+    btn.onclick = () => {
+      if (Date.now() < suppressClickUntil) return;
+      selectWorkspace(workspace.id);
+    };
     btn.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
       openWsContextMenu(e.clientX, e.clientY, workspace.id);
     });
+    btn.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      closeWsContextMenu();
+      startPointerDrag("ws", workspace.id, btn, workspace.name, e.clientX, e.clientY);
+    });
     btn.addEventListener("dragstart", (e) => {
+      if (e.isTrusted) {
+        e.preventDefault();
+        return;
+      }
       closeWsContextMenu();
       dragWorkspaceId = workspace.id;
       btn.classList.add("dragging");
@@ -2732,6 +3183,7 @@ function renderWorkspaces() {
       dragWorkspaceId = null;
       btn.classList.remove("dragging");
       clearWsDragIndicators();
+      flushPendingRenders();
     });
     btn.addEventListener("dragover", (e) => {
       const sourceId = dragWorkspaceId || e.dataTransfer?.getData("text/plain");
@@ -2739,13 +3191,7 @@ function renderWorkspaces() {
       e.preventDefault();
       e.stopPropagation();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      clearWsDragIndicators();
-      if (sourceId === workspace.id) return;
-      const ids = orderedWorkspaces().map((w) => w.id);
-      const fromIdx = ids.indexOf(sourceId);
-      const toIdx = ids.indexOf(workspace.id);
-      const placeAfter = fromIdx < toIdx;
-      btn.classList.add("drag-over", placeAfter ? "drag-over-below" : "drag-over-above");
+      highlightWsDropTarget(sourceId, btn);
     });
     btn.addEventListener("dragleave", (e) => {
       if (btn.contains(e.relatedTarget)) return;
@@ -2759,6 +3205,7 @@ function renderWorkspaces() {
       dragWorkspaceId = null;
       clearWsDragIndicators();
       void reorderWorkspacesTo(sourceId, workspace.id);
+      flushPendingRenders();
     });
     li.appendChild(btn);
     wsListEl.appendChild(li);
@@ -2979,14 +3426,41 @@ wsForm.addEventListener("submit", async (e) => {
 });
 
 let renderListTimer = null;
+let renderWorkspacesTimer = null;
 let paintDetailTimer = null;
 
 function scheduleRenderList() {
+  if (isDragBusy()) {
+    pendingRenderList = true;
+    return;
+  }
   if (renderListTimer) return;
   renderListTimer = setTimeout(() => {
     renderListTimer = null;
+    if (isDragBusy()) {
+      pendingRenderList = true;
+      return;
+    }
+    pendingRenderList = false;
     renderList();
   }, 80);
+}
+
+function scheduleRenderWorkspaces() {
+  if (isDragBusy()) {
+    pendingRenderWorkspaces = true;
+    return;
+  }
+  if (renderWorkspacesTimer) return;
+  renderWorkspacesTimer = setTimeout(() => {
+    renderWorkspacesTimer = null;
+    if (isDragBusy()) {
+      pendingRenderWorkspaces = true;
+      return;
+    }
+    pendingRenderWorkspaces = false;
+    renderWorkspaces();
+  }, 60);
 }
 
 function schedulePaintDetail(task) {
@@ -3037,7 +3511,7 @@ function connectEvents() {
     try { data = JSON.parse(ev.data); } catch { return; }
     if (data.workspace) {
       workspaces.set(data.workspace.id, data.workspace);
-      renderWorkspaces();
+      scheduleRenderWorkspaces();
     }
   });
   es.addEventListener("workspace_delete", (ev) => {
@@ -3112,7 +3586,7 @@ function connectEvents() {
     try { data = JSON.parse(ev.data); } catch { return; }
     if (data.taskId && data.at && isAgentStdoutLogLine(data.line)) {
       lastAgentLogAt.set(data.taskId, String(data.at));
-      scheduleRenderList();
+      updateCardReplyTime(data.taskId);
       if (data.taskId === selectedId && !detailModal.classList.contains("hidden")) {
         paintLastReply(tasks.get(selectedId));
       }

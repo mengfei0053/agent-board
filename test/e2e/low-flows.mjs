@@ -114,9 +114,10 @@ async function main() {
     assert.ok(cardMetrics.headingBeforeBadge, "card-heading should stay to the left of badge");
     assert.ok(cardMetrics.titleInsideCard, "card-title should stay inside card bounds");
 
-    // Seed many archived tasks to ensure flex column does not vertically squash cards
-    for (let i = 0; i < 20; i++) {
+    // Seed many archived tasks to ensure virtual scrolling & flex column do not vertically squash cards
+    for (let i = 0; i < 60; i++) {
       const id = `arch_${i}`;
+      const ts = new Date(Date.UTC(2026, 0, 1, 0, 0, 60 - i)).toISOString();
       state.tasks.set(
         id,
         makeTask({
@@ -126,6 +127,8 @@ async function main() {
           title: `归档任务 ${i}`,
           prompt: longPrompt,
           status: "archived",
+          createdAt: ts,
+          updatedAt: ts,
           summary: "已完成归档",
         }),
       );
@@ -136,16 +139,97 @@ async function main() {
       const laneBody = document.getElementById("list-archived");
       const firstCard = laneBody.querySelector(".card");
       const rect = firstCard.getBoundingClientRect();
+      const renderedCards = laneBody.querySelectorAll(".card").length;
+      const hasLastAtTop = Boolean(laneBody.querySelector('.card[data-id="arch_59"]'));
       return {
         cardHeight: rect.height,
         verticalClip: firstCard.scrollHeight - firstCard.clientHeight,
         laneScrollable: laneBody.scrollHeight > laneBody.clientHeight,
+        renderedCards,
+        hasLastAtTop,
+        countBadge: document.getElementById("count-archived")?.textContent,
       };
     });
     assert.ok(archiveMetrics.cardHeight > 100, `archived card should keep full height, got ${archiveMetrics.cardHeight}`);
     assert.equal(archiveMetrics.verticalClip, 0, "archived card should not clip vertically");
     assert.ok(archiveMetrics.laneScrollable, "archived lane should scroll vertically when overflowing");
-    console.log("[e2e-low] long URL card wrapping & archived lane height ok");
+    assert.equal(archiveMetrics.countBadge, "60", "archived lane badge should show total 60");
+    assert.ok(
+      archiveMetrics.renderedCards < 30,
+      `virtual scroll should only mount visible window, got ${archiveMetrics.renderedCards}`,
+    );
+    assert.equal(archiveMetrics.hasLastAtTop, false, "arch_59 should not be mounted while scrolled to top");
+
+    // Scroll to bottom of archived lane and verify bottom items mount dynamically
+    await page.evaluate(() => {
+      const laneBody = document.getElementById("list-archived");
+      laneBody.scrollTop = laneBody.scrollHeight;
+      laneBody.dispatchEvent(new Event("scroll"));
+    });
+    await page.waitForSelector('#list-archived .card[data-id="arch_59"]');
+    const bottomMetrics = await page.evaluate(() => {
+      const laneBody = document.getElementById("list-archived");
+      return {
+        renderedCards: laneBody.querySelectorAll(".card").length,
+        hasFirstAtBottom: Boolean(laneBody.querySelector('.card[data-id="arch_0"]')),
+        hasLastAtBottom: Boolean(laneBody.querySelector('.card[data-id="arch_59"]')),
+      };
+    });
+    assert.ok(bottomMetrics.renderedCards < 30, "virtual scroll should stay bounded at bottom");
+    assert.equal(bottomMetrics.hasFirstAtBottom, false, "arch_0 should unmount when scrolled to bottom");
+    assert.equal(bottomMetrics.hasLastAtBottom, true, "arch_59 should mount when scrolled to bottom");
+    console.log("[e2e-low] long URL card wrapping & virtualized archived lane scroll ok");
+
+    // —— Detail drawer auto-scrolls #detail-output to the last round ——
+    const manyRoundsText = Array.from({ length: 12 }, (_, idx) => `第 ${idx + 1} 行输出内容，用于撑开本轮高度。`).join("\n\n");
+    state.tasks.set(
+      "multi_round_task",
+      makeTask({
+        id: "multi_round_task",
+        workspaceId: "ws_default",
+        cwd: "/home/menghongfei/projects/qt-projects",
+        title: "多轮对话定位测试",
+        prompt: "第 1 轮提示词",
+        iteration: 6,
+        status: "succeeded",
+        prompts: Array.from({ length: 6 }, (_, i) => ({
+          iteration: i + 1,
+          prompt: `第 ${i + 1} 轮提示词\n\n${manyRoundsText}`,
+          at: new Date(Date.UTC(2026, 0, 1, 1, i, 0)).toISOString(),
+        })),
+        outputs: Array.from({ length: 6 }, (_, i) => ({
+          iteration: i + 1,
+          text: `### 第 ${i + 1} 轮回复\n\n${manyRoundsText}`,
+          at: new Date(Date.UTC(2026, 0, 1, 1, i, 30)).toISOString(),
+        })),
+      }),
+    );
+    await page.reload({ waitUntil: "networkidle2" });
+    await page.waitForSelector('.card[data-id="multi_round_task"]');
+    await page.click('.card[data-id="multi_round_task"]');
+    await page.waitForSelector('#detail-modal:not(.hidden) #detail-output .output-turn[data-iteration="6"]');
+    await page.waitForFunction(() => {
+      const box = document.getElementById("detail-output");
+      return box && box.scrollTop > 0;
+    });
+    const detailScrollMetrics = await page.evaluate(() => {
+      const box = document.getElementById("detail-output");
+      const lastTurn = box.querySelector('.output-turn[data-iteration="6"]');
+      const boxRect = box.getBoundingClientRect();
+      const lastRect = lastTurn.getBoundingClientRect();
+      return {
+        scrollTop: box.scrollTop,
+        scrollHeight: box.scrollHeight,
+        clientHeight: box.clientHeight,
+        lastTurnVisibleInViewport:
+          lastRect.top >= boxRect.top - 4 && lastRect.top < boxRect.bottom,
+      };
+    });
+    assert.ok(detailScrollMetrics.scrollTop > 0, "detail-output should scroll down to the last round");
+    assert.ok(detailScrollMetrics.lastTurnVisibleInViewport, "last round should be positioned inside detail-output viewport");
+    await page.click("#detail-close");
+    await page.waitForSelector("#detail-modal.hidden");
+    console.log("[e2e-low] detail drawer auto-scroll to last round ok");
 
     // —— Workspace drag-and-drop reorder ——
     await page.evaluate(() => localStorage.removeItem("agent-board.workspaceOrder"));
@@ -186,6 +270,25 @@ async function main() {
     await page.reload({ waitUntil: "networkidle2" });
     await page.waitForSelector('.ws-item[data-workspace-id="ws_third"]');
     assert.deepEqual(await readWsOrder(), ["ws_third", "ws_default", "ws_extra"]);
+
+    // Real pointer-driven drag (ws_extra → ws_third)
+    const fromBox = await page.$eval('.ws-item[data-workspace-id="ws_extra"]', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    const toBox = await page.$eval('.ws-item[data-workspace-id="ws_third"]', (el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await page.mouse.move(fromBox.x, fromBox.y);
+    await page.mouse.down();
+    await page.mouse.move(toBox.x, toBox.y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(() => {
+      const ids = [...document.querySelectorAll("#ws-list .ws-item")].map((el) => el.dataset.workspaceId);
+      return ids[0] === "ws_extra";
+    });
+    assert.deepEqual(await readWsOrder(), ["ws_extra", "ws_third", "ws_default"]);
     console.log("[e2e-low] workspace drag reorder ok");
 
     // —— E9 docs page ——
