@@ -2,7 +2,7 @@ import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask } from "./boardTaskMerge.js";
 import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
 import { renderGitStatus } from "./git-status-view.js";
-import { formatRoundDuration } from "./roundTime.js";
+import { formatRoundDuration, formatTaskDuration } from "./roundTime.js";
 
 const emptyEl = document.getElementById("empty");
 const form = document.getElementById("create-form");
@@ -23,6 +23,8 @@ const detailSidejobs = document.getElementById("detail-sidejobs");
 const sidejobsHint = document.getElementById("sidejobs-hint");
 const logCount = document.getElementById("log-count");
 const detailLastReplyAt = document.querySelector("#detail-last-reply-at");
+const detailTotalDuration = document.getElementById("detail-total-duration");
+let detailDurationTimer = null;
 const logViewerModal = document.getElementById("log-viewer-modal");
 const logViewerBody = document.getElementById("log-viewer-body");
 const logViewerHint = document.getElementById("log-viewer-hint");
@@ -941,6 +943,18 @@ function lastReplyAt(t) {
 function paintLastReply(task) {
   if (!detailLastReplyAt) return;
   detailLastReplyAt.textContent = formatLocal(lastReplyAt(task)) || "—";
+}
+
+function paintTaskDuration(task) {
+  clearTimeout(detailDurationTimer);
+  detailDurationTimer = null;
+  detailTotalDuration.textContent = formatTaskDuration(task) || "—";
+  if (["queued", "running", "blocked"].includes(task.status) && !detailModal.classList.contains("hidden")) {
+    detailDurationTimer = setTimeout(() => {
+      const latest = tasks.get(selectedId);
+      if (latest) paintTaskDuration(latest);
+    }, 1000);
+  }
 }
 
 function updateCardReplyTime(taskId) {
@@ -2173,6 +2187,7 @@ function paintDetail(task) {
   const endLabel = formatLocal(task.endedAt) || "—";
   const replyLabel = formatLocal(lastReplyAt(task)) || "—";
   paintLastReply(task);
+  paintTaskDuration(task);
   detailMetaGrid.replaceChildren(
     metaItem("任务 ID", task.id || "—"),
     metaItem("状态", statusText),
@@ -2288,6 +2303,8 @@ function openMetaViewer() {
 }
 
 function closeDetail() {
+  clearTimeout(detailDurationTimer);
+  detailDurationTimer = null;
   infoViewerModal?.classList.add("hidden");
   sidejobsViewerModal?.classList.add("hidden");
   closeLogViewer();

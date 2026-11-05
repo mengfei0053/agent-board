@@ -2880,7 +2880,8 @@ button.topbar-brand[aria-expanded="true"] {
 .detail-extra-actions { gap: 18px; }
 .detail-info-row { flex-wrap: wrap; gap: 8px 18px; }
 .detail-info-row .detail-task-id { max-width: 140px; }
-.detail-info-row .detail-last-reply {
+.detail-info-row .detail-last-reply,
+.detail-info-row .detail-total-duration {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -2903,7 +2904,16 @@ button.topbar-brand[aria-expanded="true"] {
 .extensions-table td:last-child { white-space: nowrap; }
 .extensions-table td:last-child button + button { margin-left: 6px; }
 .extensions-table input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
-.extension-description { max-width: 220px; overflow-wrap: anywhere; margin-top: 4px; }
+.extension-description {
+  max-width: 220px;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
 .extension-sync-failed { background: color-mix(in srgb, var(--danger, #e35d6a) 12%, transparent); }
 .extensions-paths { overflow-wrap: anywhere; }
 .extensions-card summary { cursor: pointer; font-size: 13px; }

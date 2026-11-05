@@ -195,12 +195,12 @@ npm start</code></pre>
     
       <section id="settings">
         <h3>MCP / Skills 统一管理</h3>
-        <p>设置页提供 pi、Claude、Cursor、Devin CLI、Codex 的分发矩阵，保存到本机用户级配置；工作区 MCP 仍可覆盖。MCP 支持 stdio / HTTP，Skill 支持本地目录和 GitHub HTTPS 仓库的完整包安装。同步仅管理纳管条目，同名冲突会单独报告，可重试；Skill 卸载保留主副本，允许从本机导入恢复。</p>
+        <p>设置页提供 pi、Claude、Cursor、Devin CLI、Codex 的分发矩阵，保存到本机用户级配置；工作区 MCP 仍可覆盖。MCP 支持 stdio / HTTP，同名冲突会单独报告，可重试。Skill 支持本地目录和 GitHub HTTPS 仓库的完整包安装，检测到同名目录会自动勾选；勾选直接覆盖，取消勾选直接删除目标 Agent 的同名技能。卸载保留管理中心主副本，允许从本机导入恢复。</p>
         <p><code>GET /api/settings/extensions</code> 返回 <code>revision</code>、<code>mcp</code>、<code>skills</code>、<code>agents</code>、<code>skillStore</code> 和 <code>syncResults</code>。凭据字段显示占位符，编辑时保留占位符即可保留原值。<code>GET /api/settings/extensions/local-skills</code> 列出可导入的本机技能和卸载后保留的主副本。</p>
         <p><code>POST /api/settings/extensions/:action</code> 必须携带最新 <code>revision</code>，过期返回 409。可用操作：</p>
         <ul>
           <li><code>save-mcp</code>：<code>{ revision, name, config: { command?, args?, env?, url?, headers? }, apps: ["cursor", "devin"] }</code></li>
-          <li><code>set-apps</code>：<code>{ revision, resource: "mcp" | "skills", name, apps }</code></li>
+          <li><code>set-apps</code>：<code>{ revision, resource: "mcp" | "skills", name, agent, enabled: true | false }</code>，修改单个 Agent；也兼容 <code>{ revision, resource, name, apps }</code> 整组选项。</li>
           <li><code>delete</code>：<code>{ revision, resource, name }</code></li>
           <li><code>import-mcp</code>：<code>{ revision, agent: "pi" | "claude" | "cursor" | "devin" | "codex" }</code>；仅导入支持的连接字段，其他认证字段与 SSE 会明确拒绝。</li>
           <li><code>install-skill</code>：<code>{ revision, name, apps, path? }</code> 或 <code>{ revision, name, apps, url, ref?, subdir? }</code>；目录必须包含有效的 <code>SKILL.md</code>，最多 2000 个文件 / 20 MB。</li>

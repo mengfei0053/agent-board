@@ -70,8 +70,14 @@ function render() {
     const info = node("td");
     info.append(node("strong", entry.name));
     const description = resource === "mcp" ? entry.config.url || entry.config.command : entry.description;
-    info.append(node("div", description, "muted extension-description"));
-    if (entry.source) info.append(node("div", entry.source, "muted extension-description"));
+    const descriptionEl = node("div", description, "muted extension-description");
+    descriptionEl.title = description || "";
+    info.append(descriptionEl);
+    if (entry.source) {
+      const sourceEl = node("div", entry.source, "muted extension-description");
+      sourceEl.title = entry.source;
+      info.append(sourceEl);
+    }
     row.append(info);
     for (const agent of agents) {
       const cell = node("td");
@@ -85,7 +91,7 @@ function render() {
       if (failure) { cell.classList.add("extension-sync-failed"); cell.title = failure.error; }
       toggle.addEventListener("change", async () => {
         const apps = toggle.checked ? [...entry.apps, agent] : entry.apps.filter(item => item !== agent);
-        try { await mutate("set-apps", { resource, name: entry.name, apps }); }
+        try { await mutate("set-apps", { resource, name: entry.name, apps, agent, enabled: toggle.checked }); }
         catch { toggle.checked = entry.apps.includes(agent); }
       });
       cell.append(toggle);

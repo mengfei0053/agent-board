@@ -43,9 +43,9 @@
 | Devin CLI | `~/.config/devin/mcp_config.json` | `~/.config/devin/skills/` |
 | Codex | `~/.codex/config.toml` | `~/.codex/skills/` |
 
-会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。卸载保留主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复；导入前已有的同内容技能目录也会保留，停用后恢复原目录。未纳管配置保持原样；同名不同内容会显示冲突，其他 Agent 仍可完成分发，处理后点「重新同步」。MCP 修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
+会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。Agent 目录存在同名 Skill 时自动勾选；勾选直接覆盖对应 Agent 的同名目录，取消勾选直接删除该目录，不恢复旧版本。切换只作用于当前技能和目标 Agent；「重新同步」会按全部勾选状态覆盖分发。卸载会删除各 Agent 的同名技能，保留管理中心主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复。其他名称的技能保持原样。MCP 同名配置冲突会单独报告，修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
 
-工作区 MCP 继续按原有规则覆盖全局设置；全局 Skill 开关控制看板创建的链接，各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
+工作区 MCP 继续按原有规则覆盖全局设置；各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。删除技能链接不会删除链接指向的外部目录。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
 
 ## 要求
 

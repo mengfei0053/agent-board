@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestDb, stopTestDb, testDataRoot } from "./harness.js";
 import { ensureSchema, getPool, closePool, upsertMetaMany } from "../../src/db.js";
@@ -57,4 +57,40 @@ test("extension HTTP routes persist centrally, redact secrets, detect concurrent
   assert.ok(((await local.json()) as any).skills.some((entry: any) => entry.agent === "board"));
   assert.equal((await post("save-mcp", { revision: 4, name: "../bad", config: { command: "x" }, apps: [] })).status, 400);
   assert.equal((await post("not-an-action", { revision: 4 })).status, 404);
+});
+
+test("skill HTTP toggles auto-check existing folders, overwrite when enabled and delete when disabled", async () => {
+  await getPool().query("DELETE FROM meta WHERE key = 'extensions'");
+  setExtensionManagerForTests(new ExtensionManager(deps));
+  const source = join(testDataRoot(), "auto-review");
+  mkdirSync(source);
+  const skillText = "---\nname: auto-review\ndescription: Review\n---\nCentral version.\n";
+  writeFileSync(join(source, "SKILL.md"), skillText);
+  const existing = join(paths.cursor.skills, "auto-review");
+  mkdirSync(existing, { recursive: true });
+  writeFileSync(join(existing, "SKILL.md"), "Old version");
+  let result = await post("install-skill", { revision: 0, name: "auto-review", path: source, apps: [] });
+  assert.equal(result.status, 200);
+  let doc = await result.json() as any;
+  assert.deepEqual(doc.skills[0].apps, ["cursor"]);
+  assert.equal(readFileSync(join(existing, "SKILL.md"), "utf8"), "Old version");
+  result = await post("set-apps", { revision: 1, resource: "skills", name: "auto-review", agent: "cursor", enabled: true });
+  assert.equal(result.status, 200);
+  doc = await result.json() as any;
+  assert.ok(doc.syncResults.every((entry: any) => entry.ok));
+  assert.ok(lstatSync(existing).isSymbolicLink());
+  assert.equal(readFileSync(join(existing, "SKILL.md"), "utf8"), skillText);
+  result = await post("set-apps", { revision: 2, resource: "skills", name: "auto-review", agent: "cursor", enabled: false });
+  assert.equal(result.status, 200);
+  assert.equal(existsSync(existing), false);
+  assert.deepEqual(((await result.json()) as any).skills[0].apps, []);
+  assert.ok(existsSync(join(deps.store, "auto-review", "SKILL.md")));
+  const devin = join(paths.devin.skills, "auto-review");
+  mkdirSync(devin, { recursive: true });
+  writeFileSync(join(devin, "SKILL.md"), "Existing Devin skill");
+  const reloaded = await app.request("/api/settings/extensions");
+  assert.deepEqual(((await reloaded.json()) as any).skills[0].apps, ["devin"]);
+  result = await post("set-apps", { revision: 3, resource: "skills", name: "auto-review", agent: "devin", enabled: false });
+  assert.equal(result.status, 200);
+  assert.equal(existsSync(devin), false);
 });

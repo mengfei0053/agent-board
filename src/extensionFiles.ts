@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse, stringify } from "smol-toml";
 import { dataDir } from "./db.js";
@@ -167,80 +167,46 @@ function linkTarget(path: string): string | undefined {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
 }
 
+export function nativeSkillPresent(root: string, name: string): boolean {
+  return existsSync(join(root, name));
+}
+
+export function managedSkillNames(root: string, store: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).filter(name => {
+    const target = linkTarget(join(root, name));
+    return target && dirname(target) === resolve(store) && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(name);
+  });
+}
+
 export function inspectNativeSkills(root: string, desired: Record<string, string>, store: string): void {
   for (const [name, source] of Object.entries(desired)) {
     if (!existsSync(join(source, "SKILL.md"))) throw new Error("技能主副本丢失，请检查存储目录");
-    if (linkTarget(join(root, name)) !== source) throw new Error(`Skill ${name} 尚未同步或存在同名冲突`);
+    if (!nativeSkillPresent(root, name)) throw new Error(`Skill ${name} 尚未同步`);
   }
   if (!existsSync(root)) return;
   for (const name of readdirSync(root)) {
     const target = linkTarget(join(root, name));
     if (target && dirname(target) === resolve(store) && !Object.hasOwn(desired, name)) throw new Error("存在待移除的 Skill，请重新同步");
   }
-  const originals = skillOriginalRoot(root, store);
-  if (existsSync(originals) && readdirSync(originals).some(name => !Object.hasOwn(desired, name) && !existsSync(join(root, name)))) {
-    throw new Error("存在待恢复的原始 Skill，请重新同步");
-  }
 }
 
-function skillOriginalRoot(root: string, store: string): string {
-  const key = createHash("sha256").update(resolve(root)).digest("hex").slice(0, 16);
-  // Backups must stay outside agent skill roots, otherwise recursive discovery loads them twice.
-  return join(store, ".originals", key);
-}
-
-function skillHash(root: string): string {
-  const hash = createHash("sha256");
-  let count = 0;
-  let bytes = 0;
-  const walk = (path: string, prefix: string) => {
-    if (++count > 2000) throw new Error("技能目录过大，请手动处理同名目录");
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink()) throw new Error("同名技能包含符号链接，请手动处理");
-    hash.update(prefix).update(stat.isDirectory() ? "dir" : String(stat.mode & 0o111));
-    if (stat.isDirectory()) {
-      for (const name of readdirSync(path).sort()) walk(join(path, name), `${prefix}/${name}`);
-    } else {
-      if ((bytes += stat.size) > 20 * 1024 * 1024 || !stat.isFile()) throw new Error("技能文件过大或类型无效");
-      hash.update(readFileSync(path));
-    }
-  };
-  walk(root, "");
-  return hash.digest("hex");
-}
-
-/** Only links into our private store are removed; identical imported originals are restored. */
-export function syncNativeSkills(root: string, desired: Record<string, string>, store = skillStore()): void {
-  const originals = skillOriginalRoot(root, store);
-  if (!existsSync(root) && !existsSync(originals) && !Object.keys(desired).length) return;
-  mkdirSync(root, { recursive: true });
-  if (existsSync(originals)) {
-    for (const name of readdirSync(originals)) {
-      const path = join(root, name);
-      if (!Object.hasOwn(desired, name) && !existsSync(path) && !linkTarget(path)) renameSync(join(originals, name), path);
-    }
-  }
-  for (const name of readdirSync(root)) {
+/** Explicit toggles replace/delete same-name entries; never follow a skill symlink when removing it. */
+export function syncNativeSkills(root: string, desired: Record<string, string>, store = skillStore(), names = Object.keys(desired)): void {
+  if (names.length && existsSync(root) && existsSync(store) && realpathSync(root) === realpathSync(store)) throw new Error("技能主副本不能放在目标 Agent 目录中");
+  for (const name of names) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(name)) throw new Error("技能名称无效");
+    const source = Object.hasOwn(desired, name) ? desired[name] : undefined;
+    if (source && (!isAbsolute(source) || dirname(source) !== resolve(store))) throw new Error("技能主副本路径无效");
     const path = join(root, name);
-    const target = linkTarget(path);
-    if (!target || dirname(target) !== resolve(store) || desired[name] === target) continue;
-    rmSync(path);
-    if (existsSync(join(originals, name))) renameSync(join(originals, name), path);
-  }
-  for (const [name, source] of Object.entries(desired)) {
-    if (!isAbsolute(source) || dirname(source) !== resolve(store)) throw new Error("技能主副本路径无效");
-    const path = join(root, name);
+    if (!source) {
+      rmSync(path, { recursive: true, force: true });
+      continue;
+    }
+    if (resolve(path) === source) throw new Error("技能主副本不能放在目标 Agent 目录中");
     if (linkTarget(path) === source) continue;
-    const original = join(originals, name);
-    if (!existsSync(path) && existsSync(original)) renameSync(original, path);
-    let moved = false;
-    if (existsSync(path) || linkTarget(path)) {
-      if (linkTarget(path) || existsSync(original) || skillHash(path) !== skillHash(source)) throw new Error(`Skill ${name} 已存在不同内容，请先处理同名冲突`);
-      mkdirSync(originals, { recursive: true });
-      renameSync(path, original);
-      moved = true;
-    }
-    try { symlinkSync(source, path, process.platform === "win32" ? "junction" : "dir"); }
-    catch (error) { if (moved) renameSync(original, path); throw error; }
+    mkdirSync(root, { recursive: true });
+    rmSync(path, { recursive: true, force: true });
+    symlinkSync(source, path, process.platform === "win32" ? "junction" : "dir");
   }
 }

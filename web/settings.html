@@ -66,7 +66,7 @@
         <details>
           <summary>配置位置与同步说明</summary>
           <div id="extensions-paths" class="settings-block-desc extensions-paths"></div>
-          <p class="settings-block-desc">仅维护纳管条目，已有其他配置会保留。MCP 写入前备份为 .agent-board.bak；凭据在页面隐藏，保留占位符即可沿用。Skills 复制完整主副本后通过符号链接分发；同名不同内容会报冲突。停用或卸载仅移除看板链接，保留主副本和导入前的文件。Pi MCP 需支持 MCP 的版本或适配器；OAuth 需在各 CLI 分别登录。其他工具的自动导入也可能让未勾选的技能或 MCP 可见。</p>
+          <p class="settings-block-desc">Skills 存在同名目录时自动勾选；勾选直接覆盖目标 Agent 的同名技能，取消勾选直接删除，管理中心主副本保留。MCP 写入前备份为 .agent-board.bak；凭据在页面隐藏，保留占位符即可沿用。Pi MCP 需支持 MCP 的版本或适配器；OAuth 需在各 CLI 分别登录。其他工具的自动导入也可能让未勾选的技能或 MCP 可见。</p>
         </details>
       </section>
       <dialog id="extension-editor" class="extension-dialog" aria-labelledby="extension-editor-title">
@@ -91,7 +91,7 @@
       </dialog>
       <dialog id="extension-local-skills" class="extension-dialog" aria-labelledby="extension-local-title">
         <h2 id="extension-local-title">导入本机 Skill</h2>
-        <p class="settings-block-desc">选择后复制到管理中心，再选择分发目标。原始目录会保留。</p>
+        <p class="settings-block-desc">选择后复制到管理中心，再选择分发目标。Agent 目录存在同名技能时自动勾选。</p>
         <div id="extension-local-list"></div>
         <button type="button" class="secondary" id="extension-local-close">关闭</button>
       </dialog>

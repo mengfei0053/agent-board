@@ -146,21 +146,70 @@ test("skill packages retain scripts, distribute independently, preserve original
   assert.ok(existsSync(join(f.paths.cursor.skills, "review", "scripts", "review.sh")));
 });
 
-test("identical imported skill directory is backed up and restored; different existing files and symlinks are preserved", async () => {
+test("existing same-name skills are checked on load; unchecking deletes them without restoring originals", async () => {
   const f = fixture();
-  const source = join(f.paths.cursor.skills, "review");
+  const source = join(f.root, "review");
+  const existing = join(f.paths.cursor.skills, "review");
   makeSkill(source);
-  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] });
-  assert.equal(lstatSync(source).isSymbolicLink(), true);
-  assert.ok(existsSync(join(f.store, ".originals")));
-  assert.deepEqual(readdirSync(f.paths.cursor.skills), ["review"], "backups must not appear as extra skills");
+  makeSkill(existing);
+  writeFileSync(join(existing, "original.txt"), "different existing content");
+  const installed = await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: [] });
+  assert.deepEqual(installed.skills[0].apps, ["cursor"]);
+  assert.ok(installed.syncResults.every(result => result.ok));
+  assert.ok(existsSync(join(existing, "original.txt")), "import with no target selected leaves detected directories intact");
+  assert.equal(lstatSync(existing).isSymbolicLink(), false);
+  const reloaded = await new ExtensionManager(f.deps).document();
+  assert.deepEqual(reloaded.skills[0].apps, ["cursor"]);
   await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: [] });
-  assert.equal(lstatSync(source).isSymbolicLink(), false);
-  const root = join(f.root, "target");
-  mkdirSync(root);
-  symlinkSync(source, join(root, "unmanaged"));
-  syncNativeSkills(root, {}, f.store);
-  assert.ok(lstatSync(join(root, "unmanaged")).isSymbolicLink());
+  assert.equal(existsSync(existing), false);
+  assert.ok(existsSync(join(f.store, "review", "SKILL.md")));
+  assert.deepEqual(readdirSync(f.paths.cursor.skills), []);
+});
+
+test("checking overwrites same-name skill directories and links while preserving other skills and link destinations", () => {
+  const f = fixture();
+  const root = f.paths.cursor.skills;
+  const master = join(f.store, "review");
+  makeSkill(master);
+  makeSkill(join(root, "review"));
+  writeFileSync(join(root, "review", "old.txt"), "old");
+  makeSkill(join(root, "unrelated"));
+  syncNativeSkills(root, { review: master }, f.store, ["review"]);
+  assert.equal(readlinkSync(join(root, "review")), master);
+  assert.equal(existsSync(join(root, "review", "old.txt")), false);
+  syncNativeSkills(root, {}, f.store, ["review"]);
+  assert.equal(existsSync(join(root, "review")), false);
+  const external = join(f.root, "external");
+  makeSkill(external);
+  symlinkSync(external, join(root, "review"));
+  syncNativeSkills(root, { review: master }, f.store, ["review"]);
+  assert.equal(readlinkSync(join(root, "review")), master);
+  assert.ok(existsSync(join(external, "SKILL.md")));
+  rmSync(join(root, "review"));
+  symlinkSync(external, join(root, "review"));
+  syncNativeSkills(root, {}, f.store, ["review"]);
+  assert.ok(existsSync(join(external, "SKILL.md")), "unchecking must unlink without deleting the symlink destination");
+  assert.ok(existsSync(join(root, "unrelated", "SKILL.md")));
+  assert.throws(() => syncNativeSkills(root, {}, f.store, ["../external"]), /名称/);
+});
+
+test("external same-name skills are detected after import and unrelated toggles never overwrite them", async () => {
+  const f = fixture();
+  const source = join(f.root, "review");
+  makeSkill(source);
+  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: [] });
+  const existing = join(f.paths.cursor.skills, "review");
+  makeSkill(existing);
+  writeFileSync(join(existing, "original.txt"), "keep until explicitly checked or resynced");
+  assert.deepEqual((await f.manager.document()).skills[0].apps, ["cursor"]);
+  const result = await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: ["cursor", "devin"] });
+  assert.deepEqual(result.skills[0].apps, ["cursor", "devin"]);
+  assert.ok(existsSync(join(existing, "original.txt")));
+  assert.equal(readlinkSync(join(f.paths.devin.skills, "review")), join(f.store, "review"));
+  const synced = await f.manager.mutate("sync", { revision: 2 });
+  assert.ok(synced.syncResults.every(result => result.ok));
+  assert.equal(readlinkSync(existing), join(f.store, "review"));
+  assert.equal(existsSync(join(existing, "original.txt")), false);
 });
 
 test("skill import rejects traversal, external symlinks and invalid packages", async () => {
@@ -182,17 +231,6 @@ test("skill installation rolls back private files if catalog persistence fails",
   await assert.rejects(f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] }), /保存失败/);
   assert.equal(existsSync(join(f.store, "review")), false);
   assert.equal(existsSync(f.paths.cursor.skills), false);
-});
-
-test("interrupted skill original backup is restored on the next sync even after disabling", async () => {
-  const f = fixture();
-  const source = join(f.paths.cursor.skills, "review");
-  makeSkill(source);
-  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: ["cursor"] });
-  rmSync(source); // Simulate interruption after link removal, before restoring the original.
-  await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: [] });
-  assert.equal(lstatSync(source).isDirectory(), true);
-  assert.ok(existsSync(join(source, "scripts", "review.sh")));
 });
 
 test("GitHub skill installation passes a branch safely and validates repository subdirectories", async () => {
@@ -219,4 +257,34 @@ fs.writeFileSync(path.join(dir,'SKILL.md'), '---\\nname: review\\ndescription: R
     await assert.rejects(f.manager.mutate("install-skill", { revision: 1, name: "bad", url: "https://github.com/example/skills", subdir: "../../outside", apps: [] }), /仓库内/);
     await assert.rejects(f.manager.mutate("install-skill", { revision: 1, name: "bad", url: "https://github.com/example/skills", ref: "--upload-pack=bad", apps: [] }), /分支/);
   } finally { process.env.PATH = previousPath; }
+});
+
+test("single-agent toggles preserve newly discovered peers and explicitly overwrite checked same-name skills", async () => {
+  const f = fixture();
+  const source = join(f.root, "review");
+  makeSkill(source);
+  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: [] });
+  const cursor = join(f.paths.cursor.skills, "review");
+  makeSkill(cursor);
+  writeFileSync(join(cursor, "old.txt"), "existing version");
+  const enabled = await f.manager.mutate("set-apps", { revision: 1, resource: "skills", name: "review", apps: ["devin"], agent: "devin", enabled: true });
+  assert.deepEqual(enabled.skills[0].apps, ["cursor", "devin"]);
+  assert.ok(existsSync(join(cursor, "old.txt")), "newly detected peer must not be deleted by a stale selection list");
+  await f.manager.mutate("set-apps", { revision: 2, resource: "skills", name: "review", agent: "cursor", enabled: true });
+  assert.equal(readlinkSync(cursor), join(f.store, "review"));
+  assert.equal(existsSync(join(cursor, "old.txt")), false);
+  await f.manager.mutate("set-apps", { revision: 3, resource: "skills", name: "review", agent: "cursor", enabled: false });
+  assert.equal(existsSync(cursor), false);
+  assert.ok(existsSync(join(f.paths.devin.skills, "review", "SKILL.md")));
+});
+
+test("deleting a skill removes same-name agent folders even when they were never linked by the board", async () => {
+  const f = fixture();
+  const source = join(f.root, "review");
+  makeSkill(source);
+  await f.manager.mutate("install-skill", { revision: 0, name: "review", path: source, apps: [] });
+  for (const agent of ["cursor", "devin"] as const) makeSkill(join(f.paths[agent].skills, "review"));
+  await f.manager.mutate("delete", { revision: 1, resource: "skills", name: "review" });
+  for (const agent of ["cursor", "devin"] as const) assert.equal(existsSync(join(f.paths[agent].skills, "review")), false);
+  assert.ok(existsSync(join(f.store, "review", "SKILL.md")));
 });

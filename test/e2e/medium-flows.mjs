@@ -23,11 +23,24 @@ async function main() {
         title: "已完成任务",
         prompt: "完成某功能",
         status: "succeeded",
+        iteration: 2,
         sessionId: "sess_e2e_1",
-        endedAt: "2026-01-01T01:00:00.000Z",
+        endedAt: "2026-01-01T01:10:00.000Z",
         summary: "done",
-        prompts: [{ iteration: 1, prompt: "完成某功能", at: "2026-01-01T00:58:22.000Z" }],
-        outputs: [{ iteration: 1, text: "第一轮结果", at: "2026-01-01T01:00:00.000Z" }],
+        prompts: [
+          { iteration: 1, prompt: "完成某功能", at: "2026-01-01T00:58:22.000Z" },
+          { iteration: 2, prompt: "补充验证", at: "2026-01-01T01:09:00.000Z" },
+        ],
+        outputs: [
+          { iteration: 1, text: "第一轮结果", at: "2026-01-01T01:00:00.000Z" },
+          { iteration: 2, text: "验证完成", at: "2026-01-01T01:10:00.000Z" },
+        ],
+      }),
+      makeTask({
+        id: "task_live_duration",
+        workspaceId: "ws_default",
+        status: "running",
+        prompts: [{ iteration: 1, prompt: "持续执行", at: new Date(Date.now() - 10000).toISOString() }],
       }),
     ],
   });
@@ -111,7 +124,8 @@ async function main() {
       "#detail-last-reply-at",
       (el) => el.textContent?.trim() || "",
     );
-    assert.equal(lastReplyShown, "2026/01/01 09:00:00");
+    assert.equal(lastReplyShown, "2026/01/01 09:10:00");
+    assert.equal(await page.$eval("#detail-total-duration", (el) => el.textContent), "2分钟38秒");
     const turnEndShown = await page.$eval(
       "#detail-output .output-turn-head .output-turn-end",
       (el) => el.textContent?.trim() || "",
@@ -184,6 +198,17 @@ async function main() {
     await page.waitForFunction(() =>
       document.getElementById("detail-modal")?.classList.contains("hidden"),
     );
+
+    // Total duration advances even when the agent has no new SSE events.
+    await page.click('.card[data-id="task_live_duration"]');
+    await page.waitForSelector("#detail-modal:not(.hidden)");
+    await page.waitForFunction(() => document.getElementById("detail-total-duration")?.textContent !== "—");
+    const liveDuration = await page.$eval("#detail-total-duration", (el) => el.textContent);
+    await page.waitForFunction((previous) => {
+      const value = document.getElementById("detail-total-duration")?.textContent;
+      return value && value !== "—" && value !== previous;
+    }, { timeout: 4000 }, liveDuration);
+    await page.click("#detail-close");
 
     // —— E7 image upload mock on create form ——
     await page.click("#btn-new");

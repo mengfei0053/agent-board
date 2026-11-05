@@ -8,7 +8,7 @@ import { HttpError } from "./httpError.js";
 import { resolveAllowedDirectory } from "./paths.js";
 import { withSettingsLock } from "./settingsLock.js";
 import { parseWorkspaceMcp, type McpServer, type McpServers } from "./workspaceMcp.js";
-import { EXTENSION_AGENTS, extensionPaths, inspectNativeMcp, inspectNativeSkills, nativeMcpServers, objectMap, readNativeConfig, skillStore, syncNativeMcp, syncNativeSkills, type ExtensionAgent } from "./extensionFiles.js";
+import { EXTENSION_AGENTS, extensionPaths, inspectNativeMcp, inspectNativeSkills, managedSkillNames, nativeMcpServers, nativeSkillPresent, objectMap, readNativeConfig, skillStore, syncNativeMcp, syncNativeSkills, type ExtensionAgent } from "./extensionFiles.js";
 
 const execFileAsync = promisify(execFile);
 const MASK = "••••••••";
@@ -17,6 +17,7 @@ type McpEntry = { name: string; config: McpServer; apps: ExtensionAgent[] };
 type SkillEntry = { name: string; description: string; source: string; apps: ExtensionAgent[] };
 export type ExtensionCatalog = { revision: number; mcp: McpEntry[]; skills: SkillEntry[] };
 type SyncResult = { agent: ExtensionAgent; resource: "mcp" | "skills"; ok: boolean; error?: string };
+type SkillTargets = Partial<Record<ExtensionAgent, string[]>>;
 type Dependencies = {
   load: () => Promise<ExtensionCatalog>;
   save: (catalog: ExtensionCatalog) => Promise<void>;
@@ -90,7 +91,7 @@ export class ExtensionManager {
   constructor(private deps: Dependencies) {}
 
   async document() {
-    const catalog = await this.deps.load();
+    const catalog = this.withPresentSkills(await this.deps.load());
     return {
       ...catalog,
       mcp: catalog.mcp.map(entry => ({ ...entry, config: maskConfig(entry.config) })),
@@ -98,15 +99,17 @@ export class ExtensionManager {
       skillStore: this.deps.store,
       syncResults: this.sync(catalog, true).map(result => {
         const previous = this.results.find(entry => entry.agent === result.agent && entry.resource === result.resource && !entry.ok);
-        return !result.ok && previous ? previous : result;
+        return previous ?? result;
       }),
     };
   }
 
   mutate(action: string, body: Record<string, unknown>) {
     return withSettingsLock(async () => {
-      const catalog = structuredClone(await this.deps.load());
+      const saved = await this.deps.load();
+      const catalog = this.withPresentSkills(saved);
       if (body.revision !== catalog.revision) throw new HttpError(409, "配置已被其他页面修改，请重新加载后重试");
+      const previousSkills = structuredClone(catalog.skills);
       let rollbackInstall: (() => void) | undefined;
       if (action === "save-mcp") this.saveMcp(catalog, body);
       else if (action === "set-apps") this.setApps(catalog, body);
@@ -114,14 +117,45 @@ export class ExtensionManager {
       else if (action === "import-mcp") this.importMcp(catalog, body);
       else if (action === "install-skill") rollbackInstall = await this.installSkill(catalog, body);
       else if (action !== "sync") throw new HttpError(404, "未知扩展操作");
-      if (action !== "sync") {
+      if (action === "install-skill") {
+        const installed = catalog.skills.at(-1)!;
+        installed.apps = this.presentSkillApps(installed);
+      }
+      if (action !== "sync" || !isDeepStrictEqual(catalog, saved)) {
         catalog.revision++;
         try { await this.deps.save(catalog); }
         catch { rollbackInstall?.(); throw new HttpError(500, "扩展配置保存失败，请重试"); }
       }
-      this.results = this.sync(catalog);
+      this.results = this.sync(catalog, false, this.skillTargets(action, body, previousSkills, catalog.skills), action === "sync");
       return this.document();
     });
+  }
+
+  private presentSkillApps(entry: SkillEntry): ExtensionAgent[] {
+    return EXTENSION_AGENTS.filter(agent => entry.apps.includes(agent) || nativeSkillPresent(this.deps.paths[agent].skills, entry.name));
+  }
+
+  private withPresentSkills(catalog: ExtensionCatalog): ExtensionCatalog {
+    const result = structuredClone(catalog);
+    for (const entry of result.skills) entry.apps = this.presentSkillApps(entry);
+    return result;
+  }
+
+  private skillTargets(action: string, body: Record<string, unknown>, before: SkillEntry[], after: SkillEntry[]): SkillTargets {
+    const targets: SkillTargets = {};
+    for (const agent of EXTENSION_AGENTS) {
+      if (action === "sync") targets[agent] = after.map(entry => entry.name);
+      else if (action === "delete" && body.resource === "skills") targets[agent] = [body.name as string];
+      else if (action === "install-skill" && appsOf(body.apps).includes(agent)) targets[agent] = [after.at(-1)!.name];
+      else if (action === "set-apps" && body.resource === "skills") {
+        if (body.agent === agent) { targets[agent] = [body.name as string]; continue; }
+        if (body.agent !== undefined) continue;
+        const previous = before.find(entry => entry.name === body.name)!;
+        const next = after.find(entry => entry.name === body.name)!;
+        if (previous.apps.includes(agent) !== next.apps.includes(agent)) targets[agent] = [next.name];
+      }
+    }
+    return targets;
   }
 
   private saveMcp(catalog: ExtensionCatalog, body: Record<string, unknown>) {
@@ -140,7 +174,11 @@ export class ExtensionManager {
     if (body.resource !== "mcp" && body.resource !== "skills") throw new HttpError(400, "无效的资源类型");
     const entry = catalog[body.resource].find(entry => entry.name === body.name);
     if (!entry) throw new HttpError(404, "条目不存在");
-    entry.apps = appsOf(body.apps);
+    if (body.agent !== undefined || body.enabled !== undefined) {
+      const [agent] = appsOf([body.agent]);
+      if (typeof body.enabled !== "boolean") throw new HttpError(400, "enabled 必须是布尔值");
+      entry.apps = body.enabled ? [...new Set([...entry.apps, agent])] : entry.apps.filter(app => app !== agent);
+    } else entry.apps = appsOf(body.apps);
   }
 
   private remove(catalog: ExtensionCatalog, body: Record<string, unknown>) {
@@ -148,7 +186,7 @@ export class ExtensionManager {
     const entries = catalog[body.resource];
     const index = entries.findIndex(entry => entry.name === body.name);
     if (index < 0) throw new HttpError(404, "条目不存在");
-    // Keep private skill copies for recovery; only the catalog and managed links are removed.
+    // Keep private skill copies for recovery; same-name entries in agent directories are removed.
     entries.splice(index, 1);
   }
 
@@ -229,7 +267,7 @@ export class ExtensionManager {
     } finally { if (temporary) rmSync(temporary, { recursive: true, force: true }); }
   }
 
-  private sync(catalog: ExtensionCatalog, inspect = false): SyncResult[] {
+  private sync(catalog: ExtensionCatalog, inspect = false, targets: SkillTargets = {}, cleanupSkills = false): SyncResult[] {
     const results: SyncResult[] = [];
     for (const agent of EXTENSION_AGENTS) {
       for (const resource of ["mcp", "skills"] as const) {
@@ -239,8 +277,14 @@ export class ExtensionManager {
             (inspect ? inspectNativeMcp : syncNativeMcp)(this.deps.paths[agent].mcp, nativeMcpServers(agent, servers));
           } else {
             const skills = Object.fromEntries(catalog.skills.filter(entry => entry.apps.includes(agent)).map(entry => [entry.name, join(this.deps.store, entry.name)]));
-            for (const path of Object.values(skills)) if (!existsSync(join(path, "SKILL.md"))) throw new Error("技能主副本丢失，请检查存储目录");
-            (inspect ? inspectNativeSkills : syncNativeSkills)(this.deps.paths[agent].skills, skills, this.deps.store);
+            if (inspect) inspectNativeSkills(this.deps.paths[agent].skills, skills, this.deps.store);
+            else {
+              const names = cleanupSkills
+                ? [...new Set([...(targets[agent] ?? []), ...managedSkillNames(this.deps.paths[agent].skills, this.deps.store)])]
+                : targets[agent] ?? [];
+              for (const name of names) if (skills[name] && !existsSync(join(skills[name], "SKILL.md"))) throw new Error("技能主副本丢失，请检查存储目录");
+              syncNativeSkills(this.deps.paths[agent].skills, skills, this.deps.store, names);
+            }
           }
           results.push({ agent, resource, ok: true });
         } catch (error) {
