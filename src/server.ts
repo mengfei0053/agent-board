@@ -50,6 +50,7 @@ import type {
 } from "./types.js";
 import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
 import { importModelHistory, readModelHistory } from "./modelHistory.js";
+import { AGENT_KINDS, readAgentModels } from "./agentModels.js";
 import { ArchivedReadonlyError } from "./taskErrors.js";
 import { applyWorkspacePatch } from "./workspaceRecord.js";
 import { browseHome, listDirs } from "./fsbrowse.js";
@@ -705,6 +706,24 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 }
 
 
+
+app.get("/api/agent-models", async (c) => {
+  const kindRaw = c.req.query("kind")?.trim();
+  if (kindRaw && !AGENT_KINDS.includes(kindRaw as AgentKind)) {
+    return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
+  }
+  const models = await readAgentModels(kindRaw as AgentKind | undefined);
+  return c.json({ models });
+});
+
+app.get("/api/models", async (c) => {
+  const kindRaw = c.req.query("kind")?.trim();
+  if (kindRaw && !AGENT_KINDS.includes(kindRaw as AgentKind)) {
+    return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
+  }
+  const models = await readAgentModels(kindRaw as AgentKind | undefined);
+  return c.json({ models });
+});
 
 app.get("/api/model-history", async (c) => c.json({ history: await readModelHistory() }));
 

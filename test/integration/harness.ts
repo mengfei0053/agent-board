@@ -84,6 +84,7 @@ export async function startTestDb(): Promise<string> {
   process.env.DATA_DIR = testDataDir;
   process.env.UPLOADS_DIR = join(testDataDir, "uploads");
   process.env.AGENT_BOARD_REFUSE_REPO_DATA = "1";
+  process.env.AGENT_BOARD_SKIP_MODEL_SYNC = "1";
   process.env.AGENT_BOARD_WEBHOOK_SECRET = "test-webhook-secret";
   if (isRepoDataPath(process.env.DATA_DIR) || isRepoDataPath(process.env.UPLOADS_DIR)) {
     throw new Error("integration tests refused to use the repo data directory");

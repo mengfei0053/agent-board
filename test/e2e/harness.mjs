@@ -122,6 +122,30 @@ export function createState(seed = {}) {
   };
   /** @type {{ name: string, url: string, originalName?: string }[]} */
   const uploads = [];
+  const agentModels = seed.agentModels || {
+    pi: [
+      { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+      { model: "wb/cn:glm-5.3", thinkingEfforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+      { model: "api/claude-haiku-4-5", thinkingEfforts: [] },
+    ],
+    claude: [
+      { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+      { model: "opus", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+      { model: "haiku", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+    ],
+    cursor: [
+      { model: "grok-4.7-high-fast", thinkingEfforts: ["high"] },
+      { model: "composer-2.5", thinkingEfforts: [] },
+    ],
+    devin: [
+      { model: "swe-2-high", thinkingEfforts: ["high"] },
+      { model: "swe-2-medium", thinkingEfforts: ["medium"] },
+    ],
+    codex: [
+      { model: "gpt-6.1-terra", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+      { model: "gpt-6.1-sol", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+    ],
+  };
   return {
     workspaces,
     tasks,
@@ -130,6 +154,7 @@ export function createState(seed = {}) {
     settings,
     uploads,
     modelHistory: { pi: [], claude: [], cursor: [], devin: [], codex: [] },
+    agentModels,
   };
 }
 
@@ -232,6 +257,16 @@ export function createMockServer(state, extra) {
         state.workspaces.delete(id);
         return json(res, 200, { deleted: [id] });
       }
+    }
+
+    if ((pathname === "/api/agent-models" || pathname === "/api/models") && req.method === "GET") {
+      const kind = u.searchParams.get("kind") || "";
+      if (kind && state.agentModels[kind]) {
+        const filtered = { pi: [], claude: [], cursor: [], devin: [], codex: [] };
+        filtered[kind] = state.agentModels[kind];
+        return json(res, 200, { models: filtered });
+      }
+      return json(res, 200, { models: state.agentModels });
     }
 
     if (pathname === "/api/model-history" && req.method === "GET") {

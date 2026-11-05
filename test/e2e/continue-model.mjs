@@ -16,8 +16,15 @@ const state = createState({ tasks: [
   makeTask({ id: "archived-task", status: "archived", sessionId: "archived-session" }),
 ] });
 for (const task of state.tasks.values()) task.workspaceId = "ws_default";
-state.modelHistory.claude = ["saved-claude-model"];
-state.modelHistory.codex = ["codex-only-model"];
+state.agentModels.claude = [
+  { model: "saved-claude-model", thinkingEfforts: ["low", "medium", "high"] },
+  { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { model: "opus", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+  { model: "haiku", thinkingEfforts: ["low", "medium", "high", "xhigh", "max"] },
+];
+state.agentModels.codex = [
+  { model: "codex-only-model", thinkingEfforts: ["low", "medium", "high"] },
+];
 let failNext = false;
 let lastBody;
 const streams = new Set();
@@ -63,13 +70,26 @@ try {
   await open(first.id);
   assert.equal(await page.$eval("#continue-model", (el) => el.disabled), false);
   assert.match(await page.$eval("#continue-model", (el) => el.placeholder), /sonnet/);
-  const suggestions = await page.$$eval("#continue-model-suggestions option", (els) => els.map((el) => el.value));
+  await page.click("#continue-model");
+  await page.waitForSelector("#continue-model-dropdown:not(.hidden)");
+  const suggestions = await page.$$eval(
+    "#continue-model-dropdown .model-option:not(.model-option-default)",
+    (els) => els.map((el) => el.dataset.value),
+  );
   assert.ok(suggestions.includes("saved-claude-model"));
   assert.ok(suggestions.includes("opus"));
   assert.ok(!suggestions.includes("codex-only-model"));
 
+  // Fuzzy search filters the detail modal model dropdown
+  await page.type("#continue-model", "op");
+  const filtered = await page.$$eval(
+    "#continue-model-dropdown .model-option:not(.model-option-default)",
+    (els) => els.map((el) => el.dataset.value),
+  );
+  assert.deepEqual(filtered, ["opus"]);
+  await page.click('#continue-model-dropdown .model-option[data-value="opus"]');
+
   // Repeated server updates must not erase an unfinished selection or follow-up.
-  await page.type("#continue-model", "opus");
   await page.type("#continue-prompt", "next instruction");
   for (const stream of streams) stream.write(`event: task_upsert\ndata: ${JSON.stringify({ task: first })}\n\n`);
   await page.waitForFunction(() => document.getElementById("continue-model")?.value === "opus");

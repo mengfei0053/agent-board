@@ -21,6 +21,7 @@ import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadProcessEnvOverrides } from "./processEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
+import { syncAgentModelsOnStartup } from "./agentModels.js";
 import { boardMetaLineSqlPattern } from "./extractOutput.js";
 import { collectUploadRefs, gcOrphanUploads } from "./uploads.js";
 import { finalizeRunningSideJobs } from "./sideJobs.js";
@@ -994,6 +995,9 @@ export async function initStore(): Promise<void> {
   await loadProcessEnvOverrides();
   await loadQuickPrompts();
   await loadCodexSandbox();
+  if (process.env.AGENT_BOARD_SKIP_MODEL_SYNC !== "1") {
+    await syncAgentModelsOnStartup();
+  }
   // Patch in-memory tasks missing workspaceId
   for (const [id, t] of tasks) {
     if (!t.workspaceId && defaultWorkspaceId) {
@@ -1373,7 +1377,7 @@ export async function resetStoreForTests(): Promise<void> {
   pendingTaskWrites.clear();
   const p = getPool();
   await p.query(
-    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta, model_history RESTART IDENTITY CASCADE`,
+    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta, model_history, agent_models RESTART IDENTITY CASCADE`,
   );
   tasks = new Map();
   workspaces = new Map();

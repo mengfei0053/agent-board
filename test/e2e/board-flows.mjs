@@ -428,98 +428,82 @@ async function main() {
       console.log("[e2e-board] E5 worktree checkbox ok");
     }
 
-    // E6: model history survives task deletion/reload and stays scoped to its Agent.
+    // E6: database model picker with fuzzy search, thinking efforts, and Agent linkage in Create Draft & Create Todo.
     {
-      const historyKey = "agent-board.modelHistory.pi";
-      const customModel = 'custom:model<&"test';
-      const options = () => page.$$eval("#model-suggestions option", (els) => els.map((el) => el.value));
+      const dropdownModels = () =>
+        page.$$eval("#create-model-dropdown .model-option:not(.model-option-default)", (els) =>
+          els.map((el) => el.dataset.value),
+        );
       await selectWorkspace(page, "ws_default");
-      await createViaUi(page, {
-        mode: "draft", title: "模型历史", prompt: "remember model", model: `  ${customModel}  `,
-      });
-      const created = [...state.tasks.values()].find((t) => t.title === "模型历史");
-      assert.equal(created?.model, customModel);
-      assert.deepEqual(state.modelHistory.pi, [customModel]);
-      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
-      await closeDetailIfOpen(page);
-      state.tasks.delete(created.id);
-      await page.reload({ waitUntil: "networkidle2" });
-      await page.waitForSelector(".ws-item");
-      await page.click("#btn-new-todo");
-      await page.waitForFunction((model) => document.querySelector("#model-suggestions option")?.value === model, {}, customModel);
-      assert.equal(await page.$eval("#create-model", (el) => el.list?.id), "model-suggestions");
-      assert.equal((await options())[0], customModel);
-      assert.ok((await options()).includes("cn:deepseek-v4.1-flash"));
+
+      // Open New Draft: loads pi models from database and shows thinking efforts
+      await page.click("#btn-new");
+      await page.waitForSelector("#create-modal:not(.hidden)");
+      await page.click("#create-model");
+      await page.waitForSelector("#create-model-dropdown:not(.hidden)");
+      assert.deepEqual(await dropdownModels(), [
+        "wb/cn:deepseek-v4.1-flash",
+        "wb/cn:glm-5.3",
+        "api/claude-haiku-4-5",
+      ]);
+      const effortsText = await page.$eval(
+        '#create-model-dropdown .model-option[data-value="wb/cn:deepseek-v4.1-flash"] .model-option-efforts',
+        (el) => el.textContent,
+      );
+      assert.match(effortsText, /high/);
+
+      // Fuzzy search filters options and clicking selects the model
+      await page.type("#create-model", "glm");
+      assert.deepEqual(await dropdownModels(), ["wb/cn:glm-5.3"]);
+      await page.click('#create-model-dropdown .model-option[data-value="wb/cn:glm-5.3"]');
+      assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:glm-5.3");
+
+      // Switching Agent updates model list and clears incompatible model selection
       await page.select('#create-form select[name="kind"]', "claude");
-      assert.equal((await options()).includes(customModel), false);
-      assert.ok((await options()).includes("sonnet"));
+      assert.equal(await page.$eval("#create-model", (el) => el.value), "");
+      await page.click("#create-model");
+      assert.deepEqual(await dropdownModels(), ["sonnet", "opus", "haiku"]);
+
+      // Free-text input not in DB model list is rejected/reverted on blur or submit
+      await page.type("#create-model", "not-in-db-model");
+      await page.click('input[name="title"]');
+      await page.waitForFunction(() => document.getElementById("create-model")?.value === "");
+
+      // Switch back to pi and create a draft with fuzzy-searched model via Enter
       await page.select('#create-form select[name="kind"]', "pi");
-      assert.equal((await options())[0], customModel);
-      await page.click("#create-cancel");
-
-      // Reusing a model promotes it without duplicates; blank values aren't saved.
-      await createViaUi(page, { mode: "todo", title: "常用模型", prompt: "use preset", model: "cn:glm-5.3" });
+      await page.click("#create-model");
+      await page.type("#create-model", "dpv41");
+      assert.deepEqual(await dropdownModels(), ["wb/cn:deepseek-v4.1-flash"]);
+      await page.keyboard.press("Enter");
+      assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:deepseek-v4.1-flash");
+      await page.type('input[name="title"]', "数据库模型草稿");
+      await page.type("#create-prompt", "use db model in draft");
+      await Promise.all([
+        page.waitForSelector("#detail-modal:not(.hidden)"),
+        page.click("#create-submit"),
+      ]);
+      const createdDraft = [...state.tasks.values()].find((t) => t.title === "数据库模型草稿");
+      assert.equal(createdDraft?.model, "wb/cn:deepseek-v4.1-flash");
       await closeDetailIfOpen(page);
-      await createViaUi(page, { mode: "draft", title: "复用模型", prompt: "reuse model", model: customModel });
+
+      // New Todo also uses the database model picker with Agent linkage
+      await page.click("#btn-new-todo");
+      await page.waitForSelector("#create-modal:not(.hidden)");
+      await page.select('#create-form select[name="kind"]', "codex");
+      await page.click("#create-model");
+      assert.deepEqual(await dropdownModels(), ["gpt-6.1-terra", "gpt-6.1-sol"]);
+      await page.click('#create-model-dropdown .model-option[data-value="gpt-6.1-terra"]');
+      await page.type('input[name="title"]', "数据库模型Todo");
+      await page.type("#create-prompt", "use db model in todo");
+      await Promise.all([
+        page.waitForSelector("#detail-modal:not(.hidden)"),
+        page.click("#create-submit"),
+      ]);
+      const createdTodo = [...state.tasks.values()].find((t) => t.title === "数据库模型Todo");
+      assert.equal(createdTodo?.kind, "codex");
+      assert.equal(createdTodo?.model, "gpt-6.1-terra");
       await closeDetailIfOpen(page);
-      await createViaUi(page, { mode: "draft", title: "默认模型", prompt: "use default", model: "   " });
-      await closeDetailIfOpen(page);
-      assert.deepEqual(state.modelHistory.pi, [customModel, "cn:glm-5.3"]);
-      await page.click("#btn-new");
-      const suggestions = await options();
-      assert.equal(suggestions[0], customModel);
-      assert.equal(suggestions.filter((m) => m === "cn:glm-5.3").length, 1);
-      await page.type("#create-model", "failed-model");
-      await page.type("#create-prompt", "   ");
-      await page.click("#create-submit");
-      await page.waitForSelector("#form-error:not([hidden])");
-      assert.equal(state.modelHistory.pi.includes("failed-model"), false);
-      await page.click("#create-cancel");
-
-      // A fresh browser receives database history without localStorage or task fallback.
-      for (const [id, task] of state.tasks) {
-        if (task.model === customModel) state.tasks.delete(id);
-      }
-      const context = await browser.createBrowserContext();
-      try {
-        const otherPage = await context.newPage();
-        await otherPage.goto(base + "/", { waitUntil: "networkidle2" });
-        await otherPage.waitForSelector(".ws-item");
-        await otherPage.click("#btn-new");
-        assert.equal(await otherPage.$eval("#model-suggestions option", (el) => el.value), customModel);
-        assert.equal(await otherPage.evaluate((key) => localStorage.getItem(key), historyKey), null);
-      } finally {
-        await context.close();
-      }
-
-      // Browser history is removed only after being imported into the shared store.
-      await page.evaluate((key) => localStorage.setItem(key, JSON.stringify(["legacy-model"])), historyKey);
-      await page.reload({ waitUntil: "networkidle2" });
-      await page.waitForSelector(".ws-item");
-      await page.click("#btn-new");
-      await page.waitForFunction(() => [...document.querySelectorAll("#model-suggestions option")].some((el) => el.value === "legacy-model"));
-      assert.ok(state.modelHistory.pi.includes("legacy-model"));
-      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
-      await page.click("#create-cancel");
-
-      // Failed migration retains the browser copy and retries on the next open.
-      await page.evaluate((key) => localStorage.setItem(key, JSON.stringify(["retry-model"])), historyKey);
-      await page.setRequestInterception(true);
-      const rejectImport = (request) => {
-        if (request.url().endsWith("/api/model-history/import")) request.respond({ status: 503, body: "unavailable" });
-        else request.continue();
-      };
-      page.on("request", rejectImport);
-      await page.reload({ waitUntil: "networkidle2" });
-      assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), historyKey), ["retry-model"]);
-      assert.equal(state.modelHistory.pi.includes("retry-model"), false);
-      await page.setRequestInterception(false);
-      page.off("request", rejectImport);
-      await page.click("#btn-new");
-      await page.waitForFunction(() => [...document.querySelectorAll("#model-suggestions option")].some((el) => el.value === "retry-model"));
-      assert.equal(await page.evaluate((key) => localStorage.getItem(key), historyKey), null);
-      await page.click("#create-cancel");
-      console.log("[e2e-board] E6 database model history, migration and Agent filtering ok");
+      console.log("[e2e-board] E6 database model picker, fuzzy search and Agent filtering ok");
     }
 
     // E7: sidebar counts group every status and follow SSE across workspaces.

@@ -36,7 +36,8 @@ const continueBtn = document.getElementById("continue-btn");
 const continuePrompt = document.getElementById("continue-prompt");
 const continueModel = document.getElementById("continue-model");
 const continueModelHint = document.getElementById("continue-model-hint");
-const continueModelSuggestions = document.getElementById("continue-model-suggestions");
+const continueModelDropdown = document.getElementById("continue-model-dropdown");
+const continueModelClear = document.getElementById("continue-model-clear");
 let continuingTaskId = null;
 const continueHint = document.getElementById("continue-hint");
 const continueError = document.getElementById("continue-error");
@@ -97,84 +98,398 @@ let pendingAttachments = [];
 const createTitle = document.getElementById("create-title");
 const createHint = document.getElementById("create-hint");
 const createSubmit = document.getElementById("create-submit");
-const modelSuggestions = document.getElementById("model-suggestions");
+const createModelInput = document.getElementById("create-model");
+const createModelDropdown = document.getElementById("create-model-dropdown");
+const createModelClear = document.getElementById("create-model-clear");
 const createKindSelect = form?.elements?.namedItem?.("kind") || form?.querySelector?.('select[name="kind"]');
 
-/** 常用模型：按 Agent kind 过滤；未知 kind 用全局列表。 */
-const COMMON_MODELS_BY_KIND = {
-  pi: ["cn:deepseek-v4.1-flash", "cn:glm-5.3"],
-  claude: ["sonnet", "opus", "haiku"],
-  cursor: ["gpt-5.2", "sonnet-4.5", "composer-1"],
-  devin: ["swe-2-high"],
-  codex: ["gpt-6.1-terra"],
+const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex"];
+/** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
+let agentModelsByKind = {
+  pi: [],
+  claude: [],
+  cursor: [],
+  devin: [],
+  codex: [],
 };
-const COMMON_MODELS_ALL = [
-  ...new Set(Object.values(COMMON_MODELS_BY_KIND).flat()),
-];
-const MODEL_HISTORY_PREFIX = "agent-board.modelHistory.";
-const MODEL_HISTORY_LIMIT = 20;
-let modelHistory = {};
-let modelHistoryLoad = null;
+let agentModelsLoad = null;
 
-function readLegacyModelHistory(kind) {
-  try {
-    const saved = JSON.parse(localStorage.getItem(MODEL_HISTORY_PREFIX + kind) || "[]");
-    return Array.isArray(saved)
-      ? [...new Set(saved.filter((m) => typeof m === "string").map((m) => m.trim()).filter((m) => m && m.length <= 200))].slice(0, MODEL_HISTORY_LIMIT)
-      : [];
-  } catch {
-    return [];
+function normalizeModelItem(raw) {
+  if (typeof raw === "string") {
+    const m = raw.trim();
+    return m ? { model: m, thinkingEfforts: [] } : null;
   }
+  if (!raw || typeof raw !== "object") return null;
+  const m = typeof raw.model === "string" ? raw.model.trim() : "";
+  if (!m) return null;
+  const efforts = Array.isArray(raw.thinkingEfforts)
+    ? raw.thinkingEfforts.filter((e) => typeof e === "string" && e.trim()).map((e) => e.trim())
+    : [];
+  return { model: m, thinkingEfforts: efforts };
 }
 
-function rememberModel(kind, model) {
-  if (!model) return;
-  modelHistory[kind] = [model, ...(modelHistory[kind] || []).filter((m) => m !== model)]
-    .slice(0, MODEL_HISTORY_LIMIT);
-}
-
-function loadModelHistory() {
-  if (modelHistoryLoad) return modelHistoryLoad;
-  modelHistoryLoad = (async () => {
-    const legacy = {};
-    for (const kind of Object.keys(COMMON_MODELS_BY_KIND)) {
-      const models = readLegacyModelHistory(kind);
-      if (models.length) legacy[kind] = models;
+function normalizeAgentModelsPayload(rawModels) {
+  const next = { pi: [], claude: [], cursor: [], devin: [], codex: [] };
+  if (!rawModels || typeof rawModels !== "object") return next;
+  for (const kind of SUPPORTED_AGENT_KINDS) {
+    const list = Array.isArray(rawModels[kind]) ? rawModels[kind] : [];
+    const seen = new Set();
+    for (const item of list) {
+      const normalized = normalizeModelItem(item);
+      if (!normalized || seen.has(normalized.model)) continue;
+      seen.add(normalized.model);
+      next[kind].push(normalized);
     }
-    const importing = Object.keys(legacy).length > 0;
-    const res = await fetch(importing ? "/api/model-history/import" : "/api/model-history", importing ? {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ history: legacy }),
-    } : undefined);
-    if (!res.ok) throw new Error("读取模型历史失败");
-    const data = await res.json();
-    modelHistory = data.history;
-    for (const kind of Object.keys(legacy)) {
-      try { localStorage.removeItem(MODEL_HISTORY_PREFIX + kind); } catch { /* ignore */ }
-    }
-    refreshModelSuggestions(createKindSelect?.value);
-    refreshModelSuggestions(tasks.get(selectedId)?.kind, continueModelSuggestions);
-  })().catch((err) => {
-    console.warn("加载模型历史失败，将在下次打开时重试", err);
-  }).finally(() => {
-    modelHistoryLoad = null;
-  });
-  return modelHistoryLoad;
+  }
+  return next;
 }
 
-function refreshModelSuggestions(kind, target = modelSuggestions) {
-  if (!target) return;
+function getAgentModelsForKind(kind) {
   const k = String(kind || "").trim();
-  const defaults = (k && COMMON_MODELS_BY_KIND[k]) ? COMMON_MODELS_BY_KIND[k] : COMMON_MODELS_ALL;
-  const used = [...tasks.values()]
-    .filter((t) => !k || t.kind === k)
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
-    .map((t) => typeof t.model === "string" ? t.model.trim() : "")
-    .filter(Boolean);
-  const history = k ? (modelHistory[k] || []) : Object.values(modelHistory).flat();
-  const list = [...new Set([...history, ...used, ...defaults])];
-  target.replaceChildren(...list.map((model) => new Option(model, model)));
+  return (k && agentModelsByKind[k]) ? agentModelsByKind[k] : [];
+}
+
+function isSubsequenceMatch(target, token) {
+  let ti = 0;
+  for (let i = 0; i < target.length && ti < token.length; i++) {
+    if (target[i] === token[ti]) ti++;
+  }
+  return ti === token.length;
+}
+
+function scoreModelMatch(modelLower, queryLower, tokens) {
+  if (modelLower === queryLower) return 0;
+  if (modelLower.startsWith(queryLower)) return 1;
+  const segments = modelLower.split(/[/:]/);
+  if (segments.some((seg) => seg.startsWith(queryLower))) return 1;
+  if (tokens.every((t) => modelLower.includes(t))) return 2;
+  if (tokens.every((t) => isSubsequenceMatch(modelLower, t))) return 3;
+  return -1;
+}
+
+function fuzzyFilterAgentModels(models, queryText) {
+  const q = String(queryText || "").trim().toLowerCase();
+  if (!q) return models;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const item of models) {
+    const score = scoreModelMatch(item.model.toLowerCase(), q, tokens);
+    if (score >= 0) scored.push({ item, score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.item.model.localeCompare(b.item.model));
+  return scored.map((s) => s.item);
+}
+
+function createModelOptionEl(item, isSelected, isActive) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "model-option"
+    + (isSelected ? " is-selected" : "")
+    + (isActive ? " is-active" : "");
+  btn.setAttribute("role", "option");
+  btn.setAttribute("aria-selected", isSelected ? "true" : "false");
+  btn.dataset.value = item.model;
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "model-option-name";
+  nameSpan.textContent = item.model;
+  btn.appendChild(nameSpan);
+  if (Array.isArray(item.thinkingEfforts) && item.thinkingEfforts.length) {
+    const effortsSpan = document.createElement("span");
+    effortsSpan.className = "model-option-efforts";
+    effortsSpan.title = `支持的思考强度：${item.thinkingEfforts.join(", ")}`;
+    effortsSpan.textContent = item.thinkingEfforts.join(" / ");
+    btn.appendChild(effortsSpan);
+  }
+  return btn;
+}
+
+function createSearchableModelPicker({
+  inputEl,
+  dropdownEl,
+  clearBtn,
+  getKind,
+  emptyLabel,
+}) {
+  let selectedModel = "";
+  let isSearching = false;
+  let filterQuery = "";
+  let activeIndex = -1;
+  let isOpen = false;
+
+  const updateClearBtn = () => {
+    if (!clearBtn || !inputEl) return;
+    const hasText = Boolean(selectedModel || inputEl.value);
+    clearBtn.hidden = !hasText || inputEl.disabled;
+  };
+
+  const findExactModel = (rawText) => {
+    const trimmed = String(rawText || "").trim();
+    if (!trimmed) return "";
+    const list = getAgentModelsForKind(getKind());
+    const exact = list.find((m) => m.model === trimmed)
+      || list.find((m) => m.model.toLowerCase() === trimmed.toLowerCase());
+    return exact ? exact.model : null;
+  };
+
+  const renderDropdown = () => {
+    if (!dropdownEl || !inputEl) return;
+    const allModels = getAgentModelsForKind(getKind());
+    const filtered = isSearching ? fuzzyFilterAgentModels(allModels, filterQuery) : allModels;
+    dropdownEl.replaceChildren();
+
+    const showDefaultOpt = !isSearching || !filterQuery.trim();
+    const totalOptions = (showDefaultOpt ? 1 : 0) + filtered.length;
+    if (activeIndex >= totalOptions) activeIndex = totalOptions - 1;
+
+    let optIdx = 0;
+    if (showDefaultOpt) {
+      const defBtn = document.createElement("button");
+      defBtn.type = "button";
+      const isAct = optIdx === activeIndex;
+      defBtn.className = "model-option model-option-default"
+        + (!selectedModel ? " is-selected" : "")
+        + (isAct ? " is-active" : "");
+      defBtn.setAttribute("role", "option");
+      defBtn.setAttribute("aria-selected", !selectedModel ? "true" : "false");
+      defBtn.dataset.value = "";
+      defBtn.textContent = emptyLabel;
+      dropdownEl.appendChild(defBtn);
+      optIdx++;
+    }
+
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.className = "model-option-empty muted";
+      empty.textContent = allModels.length ? "无匹配模型" : "暂无可用模型";
+      dropdownEl.appendChild(empty);
+      return;
+    }
+
+    for (const item of filtered) {
+      const isSel = item.model === selectedModel;
+      const isAct = optIdx === activeIndex;
+      dropdownEl.appendChild(createModelOptionEl(item, isSel, isAct));
+      optIdx++;
+    }
+  };
+
+  const openDropdown = () => {
+    if (!inputEl || !dropdownEl || inputEl.disabled) return;
+    isOpen = true;
+    dropdownEl.classList.remove("hidden");
+    inputEl.setAttribute("aria-expanded", "true");
+    renderDropdown();
+  };
+
+  const closeDropdown = () => {
+    if (!dropdownEl || !inputEl) return;
+    isOpen = false;
+    activeIndex = -1;
+    dropdownEl.classList.add("hidden");
+    inputEl.setAttribute("aria-expanded", "false");
+  };
+
+  const selectValue = (val) => {
+    if (!inputEl) return;
+    const matched = val ? findExactModel(val) : "";
+    selectedModel = matched || "";
+    isSearching = false;
+    filterQuery = "";
+    inputEl.value = selectedModel;
+    inputEl.dataset.selectedModel = selectedModel;
+    updateClearBtn();
+    closeDropdown();
+  };
+
+  const commitOrRevert = () => {
+    if (!inputEl) return "";
+    if (isSearching) {
+      const raw = inputEl.value.trim();
+      if (!raw) {
+        selectedModel = "";
+      } else {
+        const matched = findExactModel(raw);
+        if (matched) selectedModel = matched;
+      }
+      isSearching = false;
+      filterQuery = "";
+      inputEl.value = selectedModel;
+      inputEl.dataset.selectedModel = selectedModel;
+    } else if (selectedModel && !findExactModel(selectedModel)) {
+      selectedModel = "";
+      inputEl.value = "";
+      inputEl.dataset.selectedModel = "";
+    }
+    updateClearBtn();
+    closeDropdown();
+    return selectedModel;
+  };
+
+  const syncWithKind = () => {
+    if (!inputEl) return;
+    if (selectedModel && !findExactModel(selectedModel)) {
+      selectedModel = "";
+      if (!isSearching) inputEl.value = "";
+      inputEl.dataset.selectedModel = "";
+    } else if (isSearching && inputEl.value.trim()) {
+      const matched = findExactModel(inputEl.value.trim());
+      selectedModel = matched || "";
+      inputEl.dataset.selectedModel = selectedModel;
+    }
+    updateClearBtn();
+    renderDropdown();
+  };
+
+  const clear = () => {
+    selectedModel = "";
+    isSearching = false;
+    filterQuery = "";
+    if (inputEl) {
+      inputEl.value = "";
+      inputEl.dataset.selectedModel = "";
+    }
+    updateClearBtn();
+    closeDropdown();
+  };
+
+  inputEl?.addEventListener("focus", () => {
+    if (inputEl.disabled) return;
+    void loadAgentModels();
+    openDropdown();
+  });
+
+  inputEl?.addEventListener("click", () => {
+    if (inputEl.disabled) return;
+    if (!isOpen) openDropdown();
+  });
+
+  inputEl?.addEventListener("input", () => {
+    if (inputEl.disabled) return;
+    isSearching = true;
+    filterQuery = inputEl.value;
+    const raw = inputEl.value.trim();
+    if (!raw) {
+      selectedModel = "";
+      inputEl.dataset.selectedModel = "";
+    } else {
+      const matched = findExactModel(raw);
+      if (matched) {
+        selectedModel = matched;
+        inputEl.dataset.selectedModel = matched;
+      }
+    }
+    activeIndex = filterQuery.trim() ? 0 : -1;
+    updateClearBtn();
+    openDropdown();
+  });
+
+  inputEl?.addEventListener("keydown", (e) => {
+    if (inputEl.disabled) return;
+    const options = dropdownEl ? [...dropdownEl.querySelectorAll(".model-option")] : [];
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!isOpen) openDropdown();
+      if (options.length) {
+        activeIndex = (activeIndex + 1) % options.length;
+        renderDropdown();
+      }
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!isOpen) openDropdown();
+      if (options.length) {
+        activeIndex = activeIndex <= 0 ? options.length - 1 : activeIndex - 1;
+        renderDropdown();
+      }
+      return;
+    }
+    if (e.key === "Enter" && isOpen) {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetOpt = activeIndex >= 0 && options[activeIndex]
+        ? options[activeIndex]
+        : (isSearching && options.length ? options[0] : null);
+      if (targetOpt) {
+        selectValue(targetOpt.dataset.value || "");
+      } else {
+        commitOrRevert();
+      }
+      return;
+    }
+    if (e.key === "Escape" && isOpen) {
+      e.preventDefault();
+      e.stopPropagation();
+      commitOrRevert();
+    }
+  });
+
+  inputEl?.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (document.activeElement !== inputEl) {
+        commitOrRevert();
+      }
+    }, 120);
+  });
+
+  dropdownEl?.addEventListener("mousedown", (e) => {
+    const opt = e.target?.closest?.(".model-option");
+    if (!opt) return;
+    e.preventDefault();
+    selectValue(opt.dataset.value || "");
+  });
+
+  clearBtn?.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    clear();
+    inputEl?.focus();
+    openDropdown();
+  });
+
+  return {
+    clear,
+    syncWithKind,
+    commitOrRevert,
+    closeDropdown,
+    isOpen: () => isOpen,
+    refreshUi: () => {
+      updateClearBtn();
+      renderDropdown();
+    },
+  };
+}
+
+const createModelPicker = createSearchableModelPicker({
+  inputEl: createModelInput,
+  dropdownEl: createModelDropdown,
+  clearBtn: createModelClear,
+  getKind: () => createKindSelect?.value || "pi",
+  emptyLabel: "默认模型（不指定）",
+});
+
+const continueModelPicker = createSearchableModelPicker({
+  inputEl: continueModel,
+  dropdownEl: continueModelDropdown,
+  clearBtn: continueModelClear,
+  getKind: () => tasks.get(selectedId)?.kind || "",
+  emptyLabel: "沿用当前模型",
+});
+
+function loadAgentModels() {
+  if (agentModelsLoad) return agentModelsLoad;
+  agentModelsLoad = (async () => {
+    const res = await fetch("/api/agent-models");
+    if (!res.ok) throw new Error("读取模型列表失败");
+    const data = await res.json();
+    agentModelsByKind = normalizeAgentModelsPayload(data.models);
+    createModelPicker.syncWithKind();
+    continueModelPicker.syncWithKind();
+  })().catch((err) => {
+    console.warn("加载模型列表失败，将在下次打开时重试", err);
+  }).finally(() => {
+    agentModelsLoad = null;
+  });
+  return agentModelsLoad;
 }
 
 
@@ -802,13 +1117,14 @@ function renderList() {
 function clearCreatePrompt() {
   const ta = document.getElementById("create-prompt");
   if (ta) ta.value = "";
+  createModelPicker.clear();
   formError.hidden = true;
   formError.textContent = "";
 }
 
 function clearContinuePrompt() {
   if (continuePrompt) continuePrompt.value = "";
-  if (continueModel) continueModel.value = "";
+  continueModelPicker.clear();
   if (continueError) {
     continueError.hidden = true;
     continueError.textContent = "";
@@ -1075,8 +1391,8 @@ function openCreate(mode = "draft") {
     createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行（使用当前工作区路径）。";
     createSubmit.textContent = "保存草稿";
   }
-  refreshModelSuggestions(createKindSelect?.value);
-  void loadModelHistory();
+  createModelPicker.syncWithKind();
+  void loadAgentModels();
   createModal.classList.remove("hidden");
   if (createUseWorktree) createUseWorktree.checked = false;
   void refreshCreateWorktreeEligibility();
@@ -1122,11 +1438,13 @@ async function refreshCreateWorktreeEligibility() {
 }
 function closeCreate() {
   worktreeEligSeq += 1;
+  createModelPicker.closeDropdown();
   createModal.classList.add("hidden");
   hideCreateWorktree();
   clearCreatePrompt();
   clearPendingAttachments();
   try { form.reset(); } catch { /* ignore */ }
+  createModelPicker.clear();
 }
 
 async function openDetail(id) {
@@ -1516,6 +1834,7 @@ function paintDetail(task) {
   continueBtn.disabled = !showContinue || submitting;
   continueBtn.textContent = queued.length ? `继续任务（排队 ${queued.length}）` : "继续任务";
   continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
+  if (continueModel.disabled) continueModelPicker.closeDropdown();
   renderFollowupQueue(task.id);
   continueModel.placeholder = task.model ? `留空沿用 ${task.model}` : "留空沿用当前模型";
   continueModelHint.textContent = !task.sessionId
@@ -1523,7 +1842,7 @@ function paintDetail(task) {
     : !canContinue(task)
       ? "请先停止任务，再选择下一轮模型。"
       : `仅切换 ${task.kind} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
-  refreshModelSuggestions(task.kind, continueModelSuggestions);
+  continueModelPicker.syncWithKind();
   continueHint.textContent = task.status === "draft"
     ? ""
     : showContinue
@@ -1601,17 +1920,11 @@ document.getElementById("btn-new").onclick = () => openCreate("draft");
 document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
 if (createKindSelect) {
   createKindSelect.addEventListener("change", () => {
-    refreshModelSuggestions(createKindSelect.value);
+    createModelPicker.clear();
+    createModelPicker.syncWithKind();
   });
 }
-refreshModelSuggestions(createKindSelect?.value);
-document.getElementById("create-model")?.addEventListener("focus", () => {
-  refreshModelSuggestions(createKindSelect?.value);
-});
-continueModel.addEventListener("focus", () => {
-  refreshModelSuggestions(tasks.get(selectedId)?.kind, continueModelSuggestions);
-  void loadModelHistory();
-});
+createModelPicker.syncWithKind();
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
@@ -1728,11 +2041,12 @@ async function submitCreateTask() {
     createUseWorktree &&
     createUseWorktree.checked
   );
+  const selectedCreateModel = createModelPicker.commitOrRevert();
   const body = {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
     workspaceId: selectedWorkspaceId,
-    model: String(fd.get("model") || "").trim() || undefined,
+    model: selectedCreateModel || undefined,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
     attachments: pendingAttachments.length ? pendingAttachments : undefined,
@@ -1750,13 +2064,13 @@ async function submitCreateTask() {
     return;
   }
   tasks.set(data.task.id, data.task);
-  rememberModel(body.kind, body.model);
   clearPendingAttachments();
   closeCreate();
   renderWorkspaces();
   renderList();
   openDetail(data.task.id);
   form.reset();
+  createModelPicker.clear();
 }
 
 form.addEventListener("submit", async (e) => {
@@ -1875,7 +2189,6 @@ async function drainFollowup(id) {
     removeFollowup(id, 0);
     if (data.task) {
       tasks.set(data.task.id, data.task);
-      rememberModel(data.task.kind, data.task.model);
       renderList();
     }
   } catch (err) {
@@ -1899,7 +2212,7 @@ continueBtn.addEventListener("click", async () => {
     paintDetail(tasks.get(id) || task);
     return;
   }
-  const model = continueModel.disabled ? "" : continueModel.value.trim();
+  const model = continueModel.disabled ? "" : continueModelPicker.commitOrRevert();
   const body = {
     prompt: typed || undefined,
     model: model || undefined,
@@ -1912,7 +2225,6 @@ continueBtn.addEventListener("click", async () => {
     const data = await postContinue(id, body);
     if (data.task) {
       tasks.set(data.task.id, data.task);
-      rememberModel(data.task.kind, data.task.model);
       if (selectedId === id) clearContinuePrompt();
       renderList();
     }
@@ -2573,7 +2885,7 @@ function connectEvents() {
 }
 
 connectEvents();
-void loadModelHistory();
+void loadAgentModels();
 Promise.all([
   fetch("/api/workspaces").then((r) => r.json()),
   fetch("/api/tasks").then((r) => r.json()),

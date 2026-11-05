@@ -40,6 +40,7 @@ const {
 } = await import("../../src/store.js");
 const { clearHandlesForTests, setNextTaskIdForTests } = await import("../../src/manager.js");
 const { runners } = await import("../../src/runners/index.js");
+const { syncAgentModelsOnStartup } = await import("../../src/agentModels.js");
 
 await initStore();
 installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
@@ -145,6 +146,83 @@ describe("integration I1–I12", () => {
     assert.equal(merged.history.pi.length, 4);
     assert.ok(merged.history.pi.includes("parallel-a"));
     assert.ok(merged.history.pi.includes("parallel-b"));
+  });
+
+  it("syncAgentModelsOnStartup upserts models and thinking efforts and skips failed agents", async () => {
+    const firstSync = await syncAgentModelsOnStartup(async (kind) => {
+      if (kind === "pi") {
+        return [
+          { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["low", "medium", "high"] },
+          { model: "api/claude-haiku-4-5", thinkingEfforts: [] },
+        ];
+      }
+      if (kind === "claude") {
+        return [{ model: "sonnet", thinkingEfforts: ["low", "medium", "high", "max"] }];
+      }
+      if (kind === "cursor") {
+        return [{ model: "grok-4.7-high", thinkingEfforts: ["high"] }];
+      }
+      if (kind === "devin") {
+        return [{ model: "swe-2-high", thinkingEfforts: ["high"] }];
+      }
+      return [{ model: "gpt-6.1-terra", thinkingEfforts: ["low", "medium", "high", "xhigh"] }];
+    });
+    assert.equal(firstSync.updated.length, 5);
+    assert.equal(firstSync.failed.length, 0);
+
+    const initialResp = await jsonOf(await app.request("/api/agent-models"));
+    assert.deepEqual(initialResp.models.pi, [
+      { model: "api/claude-haiku-4-5", thinkingEfforts: [] },
+      { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["low", "medium", "high"] },
+    ]);
+    assert.deepEqual(initialResp.models.claude, [
+      { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "max"] },
+    ]);
+
+    // Second sync: pi updates existing effort + adds new model; claude & cursor fail -> DB preserves old rows
+    const secondSync = await syncAgentModelsOnStartup(async (kind) => {
+      if (kind === "pi") {
+        return [
+          { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["low", "medium", "high", "max"] },
+          { model: "wb/cn:glm-5.3", thinkingEfforts: ["medium", "high"] },
+        ];
+      }
+      if (kind === "claude") {
+        throw new Error("claude probe timeout");
+      }
+      if (kind === "cursor") {
+        return [];
+      }
+      if (kind === "devin") {
+        return [{ model: "swe-2-high", thinkingEfforts: ["high"] }];
+      }
+      return [{ model: "gpt-6.1-terra", thinkingEfforts: ["low", "medium", "high", "xhigh"] }];
+    });
+    assert.ok(secondSync.updated.includes("pi"));
+    assert.ok(secondSync.failed.includes("claude"));
+    assert.ok(secondSync.failed.includes("cursor"));
+
+    const afterResp = await jsonOf(await app.request("/api/agent-models"));
+    assert.deepEqual(afterResp.models.pi, [
+      { model: "api/claude-haiku-4-5", thinkingEfforts: [] },
+      { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["low", "medium", "high", "max"] },
+      { model: "wb/cn:glm-5.3", thinkingEfforts: ["medium", "high"] },
+    ]);
+    assert.deepEqual(afterResp.models.claude, [
+      { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "max"] },
+    ]);
+    assert.deepEqual(afterResp.models.cursor, [
+      { model: "grok-4.7-high", thinkingEfforts: ["high"] },
+    ]);
+
+    const onlyClaude = await jsonOf(await app.request("/api/agent-models?kind=claude"));
+    assert.deepEqual(onlyClaude.models.claude, [
+      { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "max"] },
+    ]);
+    assert.deepEqual(onlyClaude.models.pi, []);
+
+    const badKind = await app.request("/api/agent-models?kind=unknown");
+    assert.equal(badKind.status, 400);
   });
 
   it("I1 workspace CRUD + settings persist to Postgres", async () => {

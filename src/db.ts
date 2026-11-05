@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS model_history (
 );
 CREATE INDEX IF NOT EXISTS model_history_recent_idx ON model_history(kind, last_used_at DESC);
 
+CREATE TABLE IF NOT EXISTS agent_models (
+  kind TEXT NOT NULL,
+  model TEXT NOT NULL,
+  thinking_efforts JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (kind, model)
+);
+CREATE INDEX IF NOT EXISTS agent_models_kind_idx ON agent_models(kind, model);
+
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
