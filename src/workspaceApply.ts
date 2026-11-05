@@ -51,6 +51,13 @@ export function normalizeWorkspaceSettings(
     }
   }
 
+  if ("gitStatusEnabled" in rec && rec.gitStatusEnabled != null && typeof rec.gitStatusEnabled !== "boolean") {
+    throw new HttpError(400, "settings.gitStatusEnabled must be a boolean");
+  }
+  if (rec.gitStatusEnabled === false) {
+    out.gitStatusEnabled = false;
+  }
+
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -76,6 +83,10 @@ export function mergeWorkspaceSettings(
     const m = typeof patch.mcp === "string" ? patch.mcp.trim() : "";
     if (m) next.mcp = m;
     else delete next.mcp;
+  }
+  if ("gitStatusEnabled" in patch) {
+    if (patch.gitStatusEnabled === false) next.gitStatusEnabled = false;
+    else delete next.gitStatusEnabled;
   }
   return Object.keys(next).length ? next : undefined;
 }

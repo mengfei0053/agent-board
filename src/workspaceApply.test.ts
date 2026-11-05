@@ -42,15 +42,27 @@ describe("normalizeWorkspaceSettings", () => {
     const s = normalizeWorkspaceSettings({ skills: "one\n\ntwo\n" });
     assert.deepEqual(s?.skills, ["one", "two"]);
   });
+
+  it("handles gitStatusEnabled boolean (defaults to enabled when true/omitted)", () => {
+    assert.equal(normalizeWorkspaceSettings({ gitStatusEnabled: true }), undefined);
+    assert.deepEqual(normalizeWorkspaceSettings({ gitStatusEnabled: false }), {
+      gitStatusEnabled: false,
+    });
+    assert.throws(
+      () => normalizeWorkspaceSettings({ gitStatusEnabled: "no" }),
+      /gitStatusEnabled must be a boolean/,
+    );
+  });
 });
 
 describe("mergeWorkspaceSettings", () => {
   it("clears fields when patch sends empty", () => {
-    const prev = { systemPrompt: "a", skills: ["s"], mcp: "m" };
+    const prev = { systemPrompt: "a", skills: ["s"], mcp: "m", gitStatusEnabled: false };
     const next = mergeWorkspaceSettings(prev, {
       systemPrompt: "",
       skills: [],
       mcp: "",
+      gitStatusEnabled: true,
     });
     assert.equal(next, undefined);
   });
@@ -58,9 +70,9 @@ describe("mergeWorkspaceSettings", () => {
   it("merges partial patch", () => {
     const next = mergeWorkspaceSettings(
       { systemPrompt: "old", skills: ["x"] },
-      { systemPrompt: "new" },
+      { systemPrompt: "new", gitStatusEnabled: false },
     );
-    assert.deepEqual(next, { systemPrompt: "new", skills: ["x"] });
+    assert.deepEqual(next, { systemPrompt: "new", skills: ["x"], gitStatusEnabled: false });
   });
 });
 

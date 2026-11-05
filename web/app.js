@@ -3251,7 +3251,7 @@ async function loadGitStatus(force) {
   if (!gitPanel) return;
   const id = selectedWorkspaceId;
   const ws = id ? workspaces.get(id) : null;
-  if (!ws) {
+  if (!ws || ws.settings?.gitStatusEnabled === false) {
     gitPanel.hidden = true;
     gitShownKey = "";
     gitLoadSeq += 1;

@@ -116,6 +116,7 @@ function createServer() {
             : [];
           if (skills.length) next.skills = skills;
           if (typeof s.mcp === "string" && s.mcp.trim()) next.mcp = s.mcp.trim();
+          if (s.gitStatusEnabled === false) next.gitStatusEnabled = false;
           workspace.settings = Object.keys(next).length ? next : undefined;
         }
         workspace.updatedAt = new Date().toISOString();
@@ -291,6 +292,26 @@ async function main() {
     assert.match(settingsGit, /notes\.txt/);
     assert.match(settingsGit, /未暂存修改/);
     console.log("[e2e] settings git status ok");
+
+    // —— Toggle off git status reading ——
+    const defaultGitChecked = await page.$eval("#ws-git-status-enabled", (el) => el.checked);
+    assert.equal(defaultGitChecked, true);
+    await page.click("#ws-git-status-enabled");
+    await page.waitForFunction(
+      () => document.getElementById("ws-git-status-content")?.hidden === true,
+    );
+    await page.click("#btn-save-ws-settings");
+    await page.waitForFunction(
+      () => (document.getElementById("ws-settings-status")?.textContent || "").includes("已保存"),
+    );
+    assert.equal(workspace.settings?.gitStatusEnabled, false);
+
+    // Return to board and verify #git-panel is hidden when gitStatusEnabled is false
+    await page.goto(`${base}/`, { waitUntil: "networkidle2" });
+    await page.waitForSelector('.ws-item[data-workspace-id="ws_e2e_1"]');
+    const gitPanelHiddenOnBoard = await page.$eval("#git-panel", (el) => el.hidden);
+    assert.equal(gitPanelHiddenOnBoard, true);
+    console.log("[e2e] git status toggle off ok");
 
     console.log("[e2e] all passed");
   } finally {

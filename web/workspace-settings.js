@@ -8,6 +8,9 @@ const pathInput = document.getElementById("ws-path");
 const promptInput = document.getElementById("ws-system-prompt");
 const skillsInput = document.getElementById("ws-skills");
 const mcpInput = document.getElementById("ws-mcp");
+const gitStatusEnabledInput = document.getElementById("ws-git-status-enabled");
+const gitStatusHintEl = document.getElementById("ws-git-status-hint");
+const gitStatusContentEl = document.getElementById("ws-git-status-content");
 const btnClear = document.getElementById("btn-clear-ws-settings");
 
 function workspaceIdFromPath() {
@@ -24,6 +27,18 @@ function setStatus(msg, ok) {
   statusEl.classList.toggle("muted", ok !== true && ok !== false);
 }
 
+function syncGitStatusVisibility() {
+  const enabled = !gitStatusEnabledInput || gitStatusEnabledInput.checked;
+  if (gitStatusHintEl) {
+    gitStatusHintEl.textContent = enabled
+      ? "开启：扫描并展示此工作区下的 Git 仓库状态"
+      : "关闭：不再读取或展示此工作区下的 Git 仓库状态";
+  }
+  if (gitStatusContentEl) {
+    gitStatusContentEl.hidden = !enabled;
+  }
+}
+
 function fillForm(ws) {
   nameInput.value = ws.name || "";
   pathInput.value = ws.path || "";
@@ -31,6 +46,10 @@ function fillForm(ws) {
   promptInput.value = s.systemPrompt || "";
   skillsInput.value = Array.isArray(s.skills) ? s.skills.join("\n") : "";
   mcpInput.value = s.mcp || "";
+  if (gitStatusEnabledInput) {
+    gitStatusEnabledInput.checked = s.gitStatusEnabled !== false;
+  }
+  syncGitStatusVisibility();
   subtitleEl.textContent = `${ws.name} · ${ws.path}`;
   document.title = `空间设置 · ${ws.name} · agent-board`;
 }
@@ -63,7 +82,8 @@ function collectSettings() {
     .map((s) => s.trim())
     .filter(Boolean);
   const mcp = mcpInput.value;
-  return { systemPrompt, skills, mcp };
+  const gitStatusEnabled = gitStatusEnabledInput ? Boolean(gitStatusEnabledInput.checked) : true;
+  return { systemPrompt, skills, mcp, gitStatusEnabled };
 }
 
 form.addEventListener("submit", async (e) => {
@@ -95,12 +115,14 @@ btnClear.addEventListener("click", async () => {
   promptInput.value = "";
   skillsInput.value = "";
   mcpInput.value = "";
+  if (gitStatusEnabledInput) gitStatusEnabledInput.checked = true;
+  syncGitStatusVisibility();
   setStatus("保存中…");
   try {
     const body = {
       name: nameInput.value.trim(),
       path: pathInput.value.trim(),
-      settings: { systemPrompt: "", skills: [], mcp: "" },
+      settings: { systemPrompt: "", skills: [], mcp: "", gitStatusEnabled: true },
     };
     const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}`, {
       method: "PATCH",
@@ -121,6 +143,12 @@ const gitStatusSummary = document.getElementById("git-status-summary");
 
 async function loadGitStatus(refresh) {
   if (!workspaceId || !gitStatusBody) return;
+  if (gitStatusEnabledInput && !gitStatusEnabledInput.checked) {
+    syncGitStatusVisibility();
+    gitStatusBody.replaceChildren();
+    return;
+  }
+  syncGitStatusVisibility();
   if (gitStatusSummary) {
     gitStatusSummary.textContent = "加载中…";
     gitStatusSummary.classList.remove("bad");
@@ -139,6 +167,13 @@ async function loadGitStatus(refresh) {
     renderGitStatus(gitStatusBody, gitStatusSummary, null, String(err?.message || err));
   }
 }
+
+gitStatusEnabledInput?.addEventListener("change", () => {
+  syncGitStatusVisibility();
+  if (gitStatusEnabledInput.checked) {
+    void loadGitStatus(false);
+  }
+});
 
 document.getElementById("git-refresh")?.addEventListener("click", () => {
   void loadGitStatus(true);

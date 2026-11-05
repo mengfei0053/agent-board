@@ -83,6 +83,11 @@ export type WorkspaceSettings = {
    * Legacy prose is still passed as a prompt note.
    */
   mcp?: string;
+  /**
+   * Whether to read and display Git repository status under this workspace path.
+   * Defaults to true when omitted.
+   */
+  gitStatusEnabled?: boolean;
 };
 
 export type Workspace = {

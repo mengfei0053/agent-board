@@ -265,6 +265,7 @@ export function createMockServer(state, extra) {
             : [];
           if (skills.length) next.skills = skills;
           if (typeof s.mcp === "string" && s.mcp.trim()) next.mcp = s.mcp.trim();
+          if (s.gitStatusEnabled === false) next.gitStatusEnabled = false;
           cur.settings = Object.keys(next).length ? next : undefined;
         }
         cur.updatedAt = new Date().toISOString();

@@ -380,6 +380,17 @@ app.get("/api/workspaces/:id/git-status", async (c) => {
   const id = c.req.param("id");
   const ws = getWorkspace(id);
   if (!ws) return c.json({ error: "not found" }, 404);
+  if (ws.settings?.gitStatusEnabled === false) {
+    return c.json({
+      workspaceId: id,
+      root: ws.path,
+      disabled: true,
+      truncated: false,
+      scannedDirs: 0,
+      cached: false,
+      repos: [],
+    });
+  }
   try {
     const root = resolveAllowedDirectory(ws.path, "path");
     const refresh = c.req.query("refresh") === "1" || c.req.query("refresh") === "true";

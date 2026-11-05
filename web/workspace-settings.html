@@ -78,11 +78,28 @@
             <h2 id="ws-git-title">Git 状态</h2>
             <p class="settings-block-desc">只读查看此路径下的全部 Git 仓库（工作区根目录，以及嵌套仓库、子模块）。不会提交、推送或切换分支。</p>
           </header>
-          <div class="git-panel-actions">
-            <p class="git-panel-summary muted" id="git-status-summary">加载中…</p>
-            <button type="button" class="secondary" id="git-refresh">刷新</button>
+          <label class="settings-row settings-row-toggle">
+            <span class="settings-label">
+              <strong>读取 Git 仓库状态</strong>
+              <span class="muted settings-default">默认开启</span>
+            </span>
+            <span class="settings-toggle-line">
+              <input
+                type="checkbox"
+                id="ws-git-status-enabled"
+                name="gitStatusEnabled"
+                checked
+              />
+              <span class="settings-toggle-hint muted" id="ws-git-status-hint">开启：扫描并展示此工作区下的 Git 仓库状态</span>
+            </span>
+          </label>
+          <div id="ws-git-status-content">
+            <div class="git-panel-actions">
+              <p class="git-panel-summary muted" id="git-status-summary">加载中…</p>
+              <button type="button" class="secondary" id="git-refresh">刷新</button>
+            </div>
+            <div id="git-status-body" class="git-status-body"></div>
           </div>
-          <div id="git-status-body" class="git-status-body"></div>
         </section>
 
         <section class="settings-card" aria-labelledby="ws-mcp-title">
