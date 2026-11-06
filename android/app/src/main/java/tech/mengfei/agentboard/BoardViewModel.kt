@@ -521,6 +521,10 @@ class BoardViewModel(
         val current = _state.value
         val selectedPath = current.workspaces.find { it.id == current.selectedWorkspaceId }?.path
         val nextCwd = cwdForNewTask(current.draftCwd, selectedPath, current.workspaces.map { it.path })
+        if (slot(session.sessionId)?.inflight == null) {
+            commandNote = null
+            formError = null
+        }
         _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd) }
         push(Screen.Create(session.sessionId))
         if (CAP_BOARD_SETTINGS in capabilities(session) && slot(session.sessionId)?.settingsLoaded != true) {
@@ -1358,12 +1362,19 @@ class BoardViewModel(
     }
 
     private fun onSettings(sessionId: String, command: String, message: tech.mengfei.agentboard.protocol.Envelope) {
+        if (!archiveReplySettled(message)) return
         val holder = slot(sessionId)
+        if (holder.inflight?.requestId == message.text("ref") || holder.inflight?.cmd == command) {
+            holder.inflight = null
+            if (sessionId == activeId) commandNote = null
+        }
         val executed = message.type == "ack" && message.text("stage") == "executed"
         val documentOk = settingsDocumentOk(command, message.payload)
         val effect = settingsAckEffect(activeId, sessionId, command, executed, documentOk)
+        val onSettingsScreen = screen == Screen.BoardSettings || screen == Screen.WorkspaceSettings
+        val isWrite = command == "cmd.settings.put" || command == "cmd.workspace.update"
         if (!executed || !documentOk) {
-            if (sessionId == activeId) {
+            if (sessionId == activeId && (isWrite || onSettingsScreen)) {
                 if (!executed) {
                     formError = interpretCommand(message)?.summary?.let { say(it) } ?: UNSUPPORTED_COPY
                     if (message.text("code") == "unsupported" || message.text("code") == "bad_type") holder.settingsBlocked = UNSUPPORTED_COPY
@@ -1375,6 +1386,7 @@ class BoardViewModel(
             render()
             return
         }
+        if (sessionId == activeId && (isWrite || onSettingsScreen)) formError = null
         when (command) {
             "cmd.workspace.get", "cmd.workspace.update" -> {
                 val form = readWorkspaceSettingsForm(message.payload)
@@ -1599,16 +1611,23 @@ class BoardViewModel(
     }
 
     private fun requestWorkspaceSettings(session: PhoneSession) {
+        val live = lives[session.credentialId] ?: return
+        if (live.phase != SocketPhase.AUTHENTICATED) return
         val workspaceId = disk.workspaces[session.sessionId] ?: _state.value.selectedWorkspaceId ?: return
         if (workspaceId.isEmpty()) return
-        sendCommand(session, "cmd.workspace.get", workspaceId, keys()) { id, ts, key ->
-            workspaceGetEnvelope(id, ts, session.boardId, workspaceId, key)
+        val built = workspaceGetEnvelope(ids(), clock(), session.boardId, workspaceId, keys())
+        if (built is Validated.Ok && relay.send(session.credentialId, encodeEnvelope(built.value))) {
+            refs[built.value.id] = RefRecord(built.value.id, session.sessionId, session.credentialId, session.boardId, "cmd.workspace.get", workspaceId, live.epoch)
         }
     }
 
     private fun requestBoardSettings(session: PhoneSession) {
-        val key = keys()
-        sendRaw(session, "cmd.settings.get", null, key, settingsGetEnvelope(ids(), clock(), session.boardId, key))
+        val live = lives[session.credentialId] ?: return
+        if (live.phase != SocketPhase.AUTHENTICATED) return
+        val message = settingsGetEnvelope(ids(), clock(), session.boardId, keys())
+        if (relay.send(session.credentialId, encodeEnvelope(message))) {
+            refs[message.id] = RefRecord(message.id, session.sessionId, session.credentialId, session.boardId, "cmd.settings.get", null, live.epoch)
+        }
     }
 
     private fun loadArchive(reset: Boolean, workspaceId: String? = null) {

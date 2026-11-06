@@ -243,6 +243,30 @@ class BoardConnectionTest {
         } finally { owner.clear() }
     }
 
+    @Test
+    fun openCreateLoadsSettingsWithoutBlockingCreateOrShowingAcceptedBanner() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticateWithWorkspaceAndSettings()
+            model.openCreate()
+            assertEquals(Screen.Create("s1"), model.state.value.screen)
+            assertEquals("send", model.state.value.createMode)
+            assertNull(model.state.value.commandNote)
+            assertNull(model.state.value.formError)
+            val settingsGet = relay.sent.last { it.type == "cmd.settings.get" }
+            relay.acceptSettings(settingsGet.id)
+            assertEquals("send", model.state.value.createMode)
+            assertNull(model.state.value.commandNote)
+            assertNull(model.state.value.formError)
+            relay.executeSettings(settingsGet.id)
+            assertEquals("send", model.state.value.createMode)
+            assertNull(model.state.value.commandNote)
+            assertNull(model.state.value.formError)
+            assertEquals(1, model.state.value.quickPrompts.size)
+        } finally { owner.clear() }
+    }
+
     private fun harness(): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
         val store = SessionStore(MemoryPrefs(), MemoryPrefs())
         store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", Long.MAX_VALUE,
@@ -274,7 +298,7 @@ private class ConnectionRelay : RelayApi {
         val message = tech.mengfei.agentboard.protocol.parseEnvelope(text)
         sent += message
         if (message.type == "board.list" && replyToLists) {
-            listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[{"boardId":"board-a","online":true,"generation":1}]}}""")
+            listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[{"boardId":"board-a","online":true,"generation":1,"capabilities":["board.settings","workspace.settings"]}]}}""")
         }
         return true
     }
@@ -289,6 +313,18 @@ private class ConnectionRelay : RelayApi {
     }
     fun newGenerationSnapshot(generation: Long) {
         listener.onMessage("""{"v":1,"id":"snap-$generation","type":"evt.snapshot","ts":3,"payload":{"boardId":"board-a","generation":$generation,"seq":1,"tasks":[],"workspaces":[]}}""")
+    }
+    fun authenticateWithWorkspaceAndSettings() {
+        listener.onOpen()
+        val hello = sent.last { it.type == "client.hello" }
+        listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
+        listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
+    }
+    fun acceptSettings(ref: String) {
+        listener.onMessage("""{"v":1,"id":"settings-accepted","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"accepted","commandId":"cmd-1"}}""")
+    }
+    fun executeSettings(ref: String) {
+        listener.onMessage("""{"v":1,"id":"settings-exec","type":"ack","ts":3,"payload":{"ref":"$ref","stage":"executed","settings":{"quickPrompts":[{"id":"q1","label":"Fix","content":"Fix bug"}]}}}""")
     }
     override fun closeSocket(credentialId: String) = Unit
     override fun closeAll() = Unit
