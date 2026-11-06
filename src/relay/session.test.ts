@@ -30,6 +30,27 @@ function createCmd(extra: Record<string, unknown> = {}): Envelope {
 }
 
 describe("connector session", () => {
+  it("stops a rejected event stream and asks for a new generation once", async () => {
+    for (const code of ["seq_gap", "generation_mismatch"]) {
+      const facade = memoryFacade({ tasks: [], workspaces: [] });
+      const { frames, send } = sentFrames();
+      let fatals = 0;
+      const session = new ConnectorSession({
+        generation: 1, boardId: "thinkbook", facade,
+        idempotency: new CreateIdempotency(), send,
+        onOverflow: () => {}, onFatal: () => { fatals += 1; },
+      });
+      await session.bootstrap();
+      session.handleCommand(frame("err", { code, ref: "event-1" }));
+      session.handleCommand(frame("err", { code, ref: "event-2" }));
+      facade.publish({ type: "task_log", taskId: "t1", line: "after rejection", at: new Date().toISOString() });
+      await Promise.resolve();
+      assert.equal(fatals, 1);
+      assert.equal(frames.length, 1);
+      assert.equal(session.queuedCommandCount(), 0);
+    }
+  });
+
   it("emits the baseline snapshot before buffered terminal and delete events", async () => {
     const running = makeTask({ id: "live", status: "running", title: "Live" });
     const facade = memoryFacade({ tasks: [running], workspaces: [makeWorkspace()] });

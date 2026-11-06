@@ -46,6 +46,7 @@ import tech.mengfei.agentboard.protocol.FrameKind
 import tech.mengfei.agentboard.protocol.LaunchPhase
 import tech.mengfei.agentboard.protocol.LinkInput
 import tech.mengfei.agentboard.protocol.LinkPill
+import tech.mengfei.agentboard.protocol.LIST_POLL_MS
 import tech.mengfei.agentboard.protocol.LogBinding
 import tech.mengfei.agentboard.protocol.LogLine
 import tech.mengfei.agentboard.protocol.MIGRATION_READING
@@ -336,6 +337,16 @@ class BoardViewModel(
 
     init {
         boot()
+    }
+
+    fun reconnectActiveBoard() {
+        val current = session(activeId) ?: return
+        if (lives[current.credentialId]?.phase == SocketPhase.UNAUTHORIZED) {
+            openRepair(current.sessionId)
+            return
+        }
+        banner = null
+        connect(current.credentialId)
     }
 
     fun updatePairCode(value: String) = _state.updateCopy { copy(pairCode = value) }
@@ -1084,6 +1095,7 @@ class BoardViewModel(
         val secret = disk.credentials[credentialId] ?: return
         val live = lives.getOrPut(credentialId) { LiveSocket() }
         live.job?.cancel()
+        live.timeoutJob?.cancel()
         val epoch = live.epoch + 1
         live.epoch = epoch
         sessionsOn(credentialId).forEach { session ->
@@ -1094,6 +1106,8 @@ class BoardViewModel(
             holder.appliedGeneration = invalidated.appliedGeneration
             holder.view = holder.view.copy(needsResync = invalidated.needsResync)
             holder.eligibilityFresh = false
+            holder.lastSubscribeAt = null
+            holder.resync.onSnapshot()
         }
         live.phase = if (live.phase == SocketPhase.AUTHENTICATED || live.phase == SocketPhase.RECONNECTING) {
             SocketPhase.RECONNECTING
@@ -1126,6 +1140,8 @@ class BoardViewModel(
             override fun onClosed(reason: String) {
                 viewModelScope.launch {
                     if (live.epoch != epoch) return@launch
+                    java.util.logging.Logger.getLogger("AgentBoardLink").info("Socket closed; retrying")
+                    live.timeoutJob?.cancel()
                     live.phase = SocketPhase.CLOSED
                     render()
                     val wait = live.backoff
@@ -1137,6 +1153,12 @@ class BoardViewModel(
                 }
             }
         })
+        live.timeoutJob = viewModelScope.launch {
+            delay(20_000)
+            if (live.epoch == epoch && live.phase != SocketPhase.AUTHENTICATED && live.phase != SocketPhase.UNAUTHORIZED) {
+                connect(credentialId)
+            }
+        }
     }
 
     private fun onFrame(credentialId: String, epoch: Long, text: String) {
@@ -1191,8 +1213,10 @@ class BoardViewModel(
             render()
             return
         }
+        live.timeoutJob?.cancel()
         live.backoff = 1_000
         live.phase = SocketPhase.AUTHENTICATED
+        armPoll()
         live.suppressConnected = false
         live.helloBoardIds = disk.credentials[credentialId]?.boardIds?.toSet().orEmpty()
         sendList(credentialId)
@@ -1201,6 +1225,7 @@ class BoardViewModel(
     }
 
     private fun onList(credentialId: String, live: LiveSocket, epoch: Long, boards: List<tech.mengfei.agentboard.protocol.BoardInfo>) {
+        live.timeoutJob?.cancel()
         live.listRef = null
         live.suppressConnected = false
         live.helloBoardIds = boards.map { it.boardId }.toSet()
@@ -1218,15 +1243,18 @@ class BoardViewModel(
         mine.forEach { session ->
             val info = boards.find { it.boardId == session.boardId } ?: return@forEach
             val holder = slot(session.sessionId)
+            java.util.logging.Logger.getLogger("AgentBoardLink").info(
+                "Board list: board=${info.boardId} online=${info.online} generation=${info.generation} applied=${holder.appliedGeneration} resync=${holder.view.needsResync}",
+            )
             holder.proof = BoardProof(info.online, info.generation, now, epoch)
             holder.capabilities = info.capabilities
             holder.view = holder.view.copy(
                 needsResync = resyncAfterList(holder.appliedGeneration, info.generation, holder.view.needsResync, holder.view.sawSnapshot),
             )
         }
-        live.subscribed = mine.map { it.boardId }.toSet()
         mine.forEach { session ->
-            relay.send(credentialId, encodeEnvelope(subTasksEnvelope(ids(), clock(), session.boardId)))
+            val holder = slot(session.sessionId)
+            if (session.boardId !in live.subscribed || holder.view.needsResync) subscribeTasks(session)
         }
         if (chip == TaskChip.ARCHIVE) {
             val active = session(activeId)
@@ -1239,6 +1267,9 @@ class BoardViewModel(
         val holder = slot(sessionId)
         when (val outcome = holder.reducer.apply(holder.view, message)) {
             is ApplyOutcome.Resync -> {
+                if (!holder.view.needsResync) {
+                    java.util.logging.Logger.getLogger("AgentBoardLink").info("Event gap: board=${holder.view.boardId} reason=${outcome.reason}")
+                }
                 holder.view = outcome.view
                 holder.eligibilityFresh = false
                 banner = if (englishUi) "Missed events (${outcome.reason}). Refreshing from a snapshot." else "漏收了事件（${outcome.reason}）。正在用快照刷新。"
@@ -1247,9 +1278,20 @@ class BoardViewModel(
             }
             is ApplyOutcome.Applied -> {
                 if (message.type == "evt.snapshot") {
-                    holder.snapshotAt = clock()
-                    if (!outcome.view.needsResync) holder.appliedGeneration = outcome.view.generation
-                    holder.eligibilityFresh = lives[session(sessionId)?.credentialId]?.phase == SocketPhase.AUTHENTICATED && !outcome.view.needsResync
+                    java.util.logging.Logger.getLogger("AgentBoardLink").info(
+                        "Snapshot: board=${holder.view.boardId} generation=${outcome.view.generation} seq=${outcome.view.seq} resync=${outcome.view.needsResync}",
+                    )
+                    val now = clock()
+                    val live = session(sessionId)?.let { lives[it.credentialId] }
+                    holder.snapshotAt = now
+                    if (!outcome.view.needsResync) {
+                        holder.appliedGeneration = outcome.view.generation
+                        holder.resync.onSnapshot()
+                        if (live?.phase == SocketPhase.AUTHENTICATED && outcome.view.generation != null) {
+                            holder.proof = BoardProof(online = true, listedGeneration = outcome.view.generation, at = now, epoch = live.epoch)
+                        }
+                    }
+                    holder.eligibilityFresh = live?.phase == SocketPhase.AUTHENTICATED && !outcome.view.needsResync
                     if (!outcome.view.needsResync && (banner?.startsWith("漏收了事件") == true || banner?.startsWith("Missed events") == true)) {
                         banner = null
                     }
@@ -1622,10 +1664,19 @@ class BoardViewModel(
 
     private fun sendList(credentialId: String) {
         val live = lives[credentialId] ?: return
-        if (live.phase != SocketPhase.AUTHENTICATED) return
+        if (live.phase != SocketPhase.AUTHENTICATED || live.listRef != null) return
         val listId = ids()
         live.listRef = listId
-        relay.send(credentialId, encodeEnvelope(boardListEnvelope(listId, clock())))
+        if (!relay.send(credentialId, encodeEnvelope(boardListEnvelope(listId, clock())))) {
+            connect(credentialId)
+            return
+        }
+        live.timeoutJob?.cancel()
+        val epoch = live.epoch
+        live.timeoutJob = viewModelScope.launch {
+            delay(LIST_POLL_MS)
+            if (live.epoch == epoch && live.listRef == listId) connect(credentialId)
+        }
     }
 
     private fun armPoll() {
@@ -1633,7 +1684,7 @@ class BoardViewModel(
         if (!pollArmed(foreground, lives.values.any { it.phase == SocketPhase.AUTHENTICATED })) return
         pollJob = viewModelScope.launch {
             while (foreground) {
-                delay(15_000)
+                delay(LIST_POLL_MS)
                 if (!foreground) break
                 referencedCredentialIds(disk).forEach { id ->
                     if (lives[id]?.phase == SocketPhase.AUTHENTICATED) sendList(id)
@@ -1662,17 +1713,26 @@ class BoardViewModel(
         proofJobs.keys.toList().filter { it !in keep }.forEach { id -> proofJobs.remove(id)?.cancel() }
     }
 
+    private fun subscribeTasks(session: PhoneSession) {
+        val live = lives[session.credentialId] ?: return
+        if (live.phase != SocketPhase.AUTHENTICATED) return
+        val holder = slot(session.sessionId)
+        val last = holder.lastSubscribeAt
+        if (last != null && clock() - last < LIST_POLL_MS) return
+        holder.lastSubscribeAt = clock()
+        live.subscribed = live.subscribed + session.boardId
+        relay.send(session.credentialId, encodeEnvelope(subTasksEnvelope(ids(), clock(), session.boardId)))
+    }
+
     private fun armResync(sessionId: String) {
         val holder = slot(sessionId)
-        if (!holder.resync.onGap()) return
         val session = session(sessionId) ?: return
+        if (!foreground || !holder.resync.onGap()) return
+        val epoch = lives[session.credentialId]?.epoch
         viewModelScope.launch {
             delay(400)
-            if (holder.resync.consumeIfStillNeeded()) {
-                val live = lives[session.credentialId]
-                if (live?.phase == SocketPhase.AUTHENTICATED) {
-                    relay.send(session.credentialId, encodeEnvelope(subTasksEnvelope(ids(), clock(), session.boardId)))
-                }
+            if (holder.resync.consumeIfStillNeeded() && lives[session.credentialId]?.epoch == epoch && holder.view.needsResync) {
+                subscribeTasks(session)
             }
         }
     }
@@ -2013,7 +2073,7 @@ class BoardViewModel(
     override fun onCleared() {
         pollJob?.cancel()
         proofJobs.values.forEach { it.cancel() }
-        lives.values.forEach { it.job?.cancel() }
+        lives.values.forEach { it.job?.cancel(); it.timeoutJob?.cancel() }
         relay.closeAll()
     }
 
@@ -2032,12 +2092,14 @@ class BoardViewModel(
         var log: LogBinding? = null
         var suppressConnected: Boolean = false
         var job: Job? = null
+        var timeoutJob: Job? = null
     }
 
     private class Slot(val reducer: BoardReducer, var view: BoardView) {
         var appliedGeneration: Long? = null
         var proof: BoardProof? = null
         var snapshotAt: Long? = null
+        var lastSubscribeAt: Long? = null
         var capabilities: List<String> = emptyList()
         var eligibilityFresh: Boolean = false
         var epoch: Int = 0

@@ -47,6 +47,10 @@ export class ConnectorSession {
   private readonly workspaceUpdates = new SuccessCache<PhoneWorkspaceCard>();
   private readonly settingsPuts = new SuccessCache<SettingsDocument>();
   private readonly archives = new SuccessCache<{ taskId: string }>();
+  private logWindowStart = 0;
+  private logWindowCount = 0;
+  private frameWindowStart = 0;
+  private frameWindowCount = 0;
 
   constructor(
     private readonly opts: {
@@ -90,6 +94,15 @@ export class ConnectorSession {
 
   handleCommand(message: Envelope): void {
     if (this.closed || this.overflowed) return;
+    // Once the relay rejects a sequence or rate-limits an event frame, this
+    // cursor cannot repair the hole. Re-registering creates a fresh baseline.
+    if (message.type === "err" && ["seq_gap", "generation_mismatch", "rate_limited"].includes(String(message.payload.code))) {
+      const code = String(message.payload.code);
+      this.opts.log?.("warn", `relay rejected an event (${code}); rebuilding the snapshot`);
+      this.close();
+      this.opts.onFatal(new Error(`relay event rejected: ${code}`));
+      return;
+    }
     if (!isLiveCommand(message.type)) return;
     if (this.pendingCommands >= RELAY_LIMITS.maxLiveCommands) {
       this.fail(message, new RelayCommandError("rate_limited", "relay command queue is full"));
@@ -214,8 +227,13 @@ export class ConnectorSession {
   }
 
   private async applyEvent(ev: BoardEvent): Promise<void> {
+    if (ev.type === "task_log" && !this.allowLogFrame()) return;
     const result = eventsFromBoardEvent(this.cursor, ev, this.opts.boardId);
-    for (const frame of result.frames) this.emit(frame);
+    for (const frame of result.frames) {
+      await this.paceFrame();
+      if (this.closed || this.overflowed) return;
+      this.emit(frame);
+    }
     if (!result.needsSnapshot || this.closed) return;
     const tasks = this.opts.facade.boardSnapshot().flatMap((task) => {
       const mapped = mapBoardTask(task);
@@ -529,6 +547,33 @@ export class ConnectorSession {
       message: safe.message,
       boardId: this.opts.boardId,
     }, message.id);
+  }
+
+  private allowLogFrame(): boolean {
+    const now = Date.now();
+    if (now - this.logWindowStart >= 1_000) {
+      this.logWindowStart = now;
+      this.logWindowCount = 0;
+    }
+    if (this.logWindowCount >= 15) return false;
+    this.logWindowCount += 1;
+    return true;
+  }
+
+  /** Keep outbound frames below the relay's 40 messages/sec per-socket rate limit. */
+  private async paceFrame(): Promise<void> {
+    const now = Date.now();
+    if (now - this.frameWindowStart >= 1_000) {
+      this.frameWindowStart = now;
+      this.frameWindowCount = 0;
+    }
+    if (this.frameWindowCount >= 28) {
+      const waitMs = Math.max(10, 1_050 - (now - this.frameWindowStart));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      this.frameWindowStart = Date.now();
+      this.frameWindowCount = 0;
+    }
+    this.frameWindowCount += 1;
   }
 
   private emit(frame: RelayFrame): void {

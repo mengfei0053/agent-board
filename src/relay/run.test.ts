@@ -47,6 +47,26 @@ describe("embedded relay run", { concurrency: 1 }, () => {
     assert.equal(facade.listeners.size, 0);
   });
 
+  it("re-registers and sends a fresh snapshot after a relay sequence gap", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const dialer = startEmbeddedRelay({
+      config: enabledConfig(relay.url, { reconnectMinMs: 10 }), facade, log: () => {},
+    });
+    try {
+      await dialer.ready;
+      await waitFor(() => relay.received.some((item) => item.type === "evt.snapshot"));
+      const first = relay.received.find((item) => item.type === "evt.snapshot")!;
+      relay.send(relay.clients[0]!, "err", { code: "seq_gap", ref: first.id, stage: "failed" });
+      await waitFor(() => relay.received.some((item) => item.type === "evt.snapshot" && item.payload.generation === 2));
+      assert.equal(facade.listeners.size, 1);
+    } finally {
+      await dialer.close();
+      await relay.close();
+    }
+  });
+
   it("registers, sends a snapshot, and resets backoff after a registered session", async () => {
     const relay = new MockRelay();
     await relay.listen();

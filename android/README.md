@@ -32,6 +32,14 @@ Commands use one idempotency key per attempt. `accepted` waits. `executed` is th
 
 `evt.task.done` posts one notification per `eventId` on the `task_done` channel while the socket is online. The dedupe set lasts for the signed-in session, including a switch to another board. `evt.gap` keeps the list marked stale until a recovery snapshot covers that gap or a snapshot arrives on a new board generation. A log, task update, completion, or the cached snapshot replayed with the gap does not clear it, and the phone subscribes again. A dropped socket looks up an in-flight command instead of sending it again.
 
+## Connection recovery
+
+「正在同步」means the relay reports the board online but the phone is still waiting for a complete snapshot of the current board generation. Cached pre-gap snapshots do not make the data current. The app shows the last receive time in local `HH:mm:ss` and offers 「重新连接」 without deleting pairing or resending task commands.
+
+Foreground status polling starts after authentication (including cold starts and reconnects), every 15 seconds. A status request with no reply triggers a reconnect after 15 seconds; an unfinished connection/authentication attempt is retried after 20 seconds. Healthy subscriptions are not replayed on every poll. Gap recovery subscriptions are limited to once per board per 15 seconds.
+
+A persistent `seq_gap` also requires a healthy board-to-relay stream: update the desktop board connector as well as the APK. The connector re-registers after a sequence/generation mismatch to publish a new baseline. Continuing a task and completing it again now uses a distinct completion event ID, avoiding a dropped sequence during relay deduplication. Restart the desktop service only when it is safe for running tasks.
+
 ## Build
 
 JDK 17 or newer and Android SDK 35.

@@ -1,5 +1,9 @@
 package tech.mengfei.agentboard.protocol
 
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
 const val PROOF_TTL_MS = 60_000L
 const val LIST_POLL_MS = 15_000L
 
@@ -103,12 +107,23 @@ fun pillCopy(pill: LinkPill, snapshotAt: Long? = null, english: Boolean = false)
     val extra = when (pill.cache) {
         CacheKind.NONE -> null
         CacheKind.NO_WORKSPACES -> if (english) "This board has no workspaces yet." else NO_WORKSPACE_COPY
-        CacheKind.NO_DATA -> if (english) "Could not load. No offline data." else "无法加载，暂无离线数据"
-        CacheKind.OFFLINE -> cacheLine("看板离线", snapshotAt, english)
-        CacheKind.UNSTABLE -> cacheLine("连接不稳定", snapshotAt, english)
+        CacheKind.NO_DATA -> when (pill.detail) {
+            PillDetail.CONNECTING -> if (english) "Connecting to relay…" else "正在连接中继…"
+            PillDetail.SYNCING -> if (english) "Board online. Waiting for a complete snapshot…" else "看板在线，正在等待完整数据…"
+            else -> if (english) "Could not load. No offline data." else "无法加载，暂无离线数据"
+        }
+        CacheKind.OFFLINE -> cacheLine(if (english) "Board offline" else "看板离线", snapshotAt, english)
+        CacheKind.UNSTABLE -> {
+            val prefix = if (pill.detail == PillDetail.SYNCING) {
+                if (english) "Board online. Recovering task data" else "看板在线，正在恢复任务数据"
+            } else {
+                if (english) "Connection not confirmed" else "暂未确认连接状态"
+            }
+            cacheLine(prefix, snapshotAt, english)
+        }
     }
     val updated = if (pill.detail == PillDetail.UPDATED && pill.proofAt != null) {
-        if (english) "Updated at ${pill.proofAt}" else "状态更新于 ${pill.proofAt}"
+        if (english) "Updated at ${displayTime(pill.proofAt)}" else "状态更新于 ${displayTime(pill.proofAt)}"
     } else {
         null
     }
@@ -116,13 +131,17 @@ fun pillCopy(pill: LinkPill, snapshotAt: Long? = null, english: Boolean = false)
 }
 
 private fun cacheLine(prefix: String, snapshotAt: Long?, english: Boolean): String {
-    val time = snapshotAt?.let { " · $it" }.orEmpty()
+    val time = snapshotAt?.let { if (english) " · received ${displayTime(it)}" else " · 接收于 ${displayTime(it)}" }.orEmpty()
     return if (english) {
-        "$prefix · showing the local cache · may be stale$time"
+        "$prefix · showing previous data, which may be stale$time"
     } else {
-        "$prefix · 显示本地缓存 · 可能已过期$time"
+        "$prefix · 暂时显示上次数据，可能不是最新$time"
     }
 }
+
+private fun displayTime(at: Long): String = DateTimeFormatter.ofPattern("HH:mm:ss")
+    .withZone(ZoneId.systemDefault())
+    .format(Instant.ofEpochMilli(at))
 
 fun resyncAfterList(
     appliedGeneration: Long?,

@@ -18,7 +18,7 @@ describe("relay cursor", () => {
 
     const done = cursor.observeTask("thinkbook", { ...running, title: "Ship it", status: "succeeded" });
     assert.deepEqual(done.map((frame) => frame.type), ["evt.task", "evt.task.done"]);
-    assert.equal(done[1]?.payload.eventId, "done-3-t1");
+    assert.equal(done[1]?.payload.eventId, "done-3-t1-3");
     assert.equal(done[1]?.payload.status, "succeeded");
 
     const repeat = cursor.observeTask("thinkbook", { ...running, title: "Ship it", status: "succeeded" });
@@ -82,6 +82,18 @@ describe("relay cursor", () => {
     assert.equal(snap.payload.seq, 1);
     const frames = cursor.observeTask("thinkbook", done);
     assert.equal(frames.length, 0);
+  });
+
+  it("uses a new event id when a completed task is continued and completes again", () => {
+    const cursor = new RelayCursor(1);
+    const running = mapBoardTask(makeTask({ status: "running" }))!;
+    cursor.buildSnapshot("thinkbook", [running], []);
+    const first = cursor.observeTask("thinkbook", { ...running, status: "succeeded" });
+    const resumed = cursor.observeTask("thinkbook", running);
+    const second = cursor.observeTask("thinkbook", { ...running, status: "succeeded" });
+    const events = [...first, ...resumed, ...second];
+    assert.equal(new Set(events.map((event) => event.payload.eventId)).size, events.length);
+    assert.deepEqual(events.map((event) => event.payload.seq), [2, 3, 4, 5, 6]);
   });
 
   it("marks log lines as system and truncates them", () => {

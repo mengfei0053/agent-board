@@ -170,6 +170,130 @@ class BoardViewModelPairTest {
     }
 }
 
+@OptIn(ExperimentalCoroutinesApi::class)
+class BoardConnectionTest {
+    private val main = UnconfinedTestDispatcher()
+
+    @Before
+    fun setup() { Dispatchers.setMain(main) }
+
+    @After
+    fun teardown() { Dispatchers.resetMain() }
+
+    @Test
+    fun coldStartPollsAfterAuthenticationAndDoesNotReplayHealthySubscriptions() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground() // The socket has not authenticated yet.
+            relay.authenticate()
+            assertEquals("已连接", model.state.value.connection)
+            main.scheduler.advanceTimeBy(90_001)
+            assertEquals("已连接", model.state.value.connection)
+            assertTrue(relay.sent.count { it.type == "board.list" } >= 7)
+            assertEquals(1, relay.sent.count { it.type == "sub.tasks" })
+            model.onBackground()
+            val count = relay.sent.size
+            main.scheduler.advanceTimeBy(30_001)
+            assertEquals(count, relay.sent.size)
+            model.onForeground()
+            assertEquals("已连接", model.state.value.connection)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun unansweredStatusRequestReconnectsInsteadOfStayingAuthenticatedForever() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticate()
+            relay.replyToLists = false
+            main.scheduler.advanceTimeBy(31_001)
+            assertTrue(relay.opens > 1)
+            assertFalse(model.state.value.connection == "已连接")
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun socketThatNeverAuthenticatesIsRetriedAfterTheHandshakeDeadline() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            main.scheduler.advanceTimeBy(20_001)
+            assertEquals(2, relay.opens)
+            assertFalse(model.state.value.connection == "已连接")
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun repeatedGapNotificationsDoNotCreateAResubscribeStorm() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticate()
+            repeat(100) { relay.gap() }
+            main.scheduler.advanceTimeBy(1_000)
+            assertEquals(1, relay.sent.count { it.type == "sub.tasks" })
+            assertEquals("正在同步", model.state.value.connection)
+            main.scheduler.advanceTimeBy(15_001)
+            assertEquals(2, relay.sent.count { it.type == "sub.tasks" })
+            relay.newGenerationSnapshot(2)
+            assertEquals("已连接", model.state.value.connection)
+            model.reconnectActiveBoard()
+            assertEquals(2, relay.opens)
+        } finally { owner.clear() }
+    }
+
+    private fun harness(): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
+        val store = SessionStore(MemoryPrefs(), MemoryPrefs())
+        store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", Long.MAX_VALUE,
+            "https://relay.example", "wss://relay.example/v1/ws", listOf("board-a"))))
+        store.apply(DiskOp.PutCatalog(CatalogDocument(catalogVersion = 1,
+            migrationState = MigrationState.COMMITTED, order = listOf("s1"),
+            sessions = listOf(PhoneSession("s1", "c1", "board-a", "Office", 1)),
+            activeSessionId = "s1", migrationCredentialId = null)))
+        val relay = ConnectionRelay()
+        val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)),
+            clock = { 1_000L + main.scheduler.currentTime })
+        val owner = androidx.lifecycle.ViewModelStore()
+        owner.put("model", model)
+        return Triple(model, relay, owner)
+    }
+}
+
+private class ConnectionRelay : RelayApi {
+    lateinit var listener: SocketListener
+    val sent = mutableListOf<tech.mengfei.agentboard.protocol.Envelope>()
+    var opens = 0
+    var replyToLists = true
+    override suspend fun request(method: String, url: String, body: String?) = HttpResult(200, "{}")
+    override fun openSocket(credentialId: String, url: String, listener: SocketListener) {
+        opens += 1
+        this.listener = listener
+    }
+    override fun send(credentialId: String, text: String): Boolean {
+        val message = tech.mengfei.agentboard.protocol.parseEnvelope(text)
+        sent += message
+        if (message.type == "board.list" && replyToLists) {
+            listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[{"boardId":"board-a","online":true,"generation":1}]}}""")
+        }
+        return true
+    }
+    fun authenticate() {
+        listener.onOpen()
+        val hello = sent.last { it.type == "client.hello" }
+        listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
+        listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[],"workspaces":[]}}""")
+    }
+    fun gap() {
+        listener.onMessage("""{"v":1,"id":"gap","type":"evt.gap","ts":2,"payload":{"boardId":"board-a","generation":1,"expectedSeq":3,"reason":"seq_gap"}}""")
+    }
+    fun newGenerationSnapshot(generation: Long) {
+        listener.onMessage("""{"v":1,"id":"snap-$generation","type":"evt.snapshot","ts":3,"payload":{"boardId":"board-a","generation":$generation,"seq":1,"tasks":[],"workspaces":[]}}""")
+    }
+    override fun closeSocket(credentialId: String) = Unit
+    override fun closeAll() = Unit
+}
+
 private class HoldingRelay : RelayApi {
     val started = CompletableDeferred<Unit>()
     private val pending = CompletableDeferred<HttpResult>()

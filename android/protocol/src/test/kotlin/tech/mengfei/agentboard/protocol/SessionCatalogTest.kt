@@ -908,7 +908,10 @@ class PresenceTest {
         assertEquals(PillKind.WEAK, pill.kind)
         assertEquals(CacheKind.UNSTABLE, pill.cache)
         assertTrue(pill.writesAllowed)
-        assertEquals("连接不稳定 · 显示本地缓存 · 可能已过期 · 900", pillCopy(pill, snapshotAt = 900).extra)
+        val copy = pillCopy(pill, snapshotAt = 900)
+        assertTrue(copy.extra!!.startsWith("看板在线，正在恢复任务数据"))
+        assertTrue(copy.extra!!.contains("接收于"))
+        assertFalse(copy.extra!!.contains("900"))
         assertTrue(resyncAfterList(1, 2, snapshotNeedsResync = false, sawSnapshot = true))
     }
 
@@ -950,7 +953,7 @@ class PresenceTest {
     fun noSnapshotAndZeroWorkspacesUseThePlanCopy() {
         val empty = linkPill(link(now = 1_000).copy(sawSnapshot = false, appliedGeneration = null, workspaceCount = 0))
         assertEquals(CacheKind.NO_DATA, empty.cache)
-        assertEquals("无法加载，暂无离线数据", pillCopy(empty).extra)
+        assertEquals("看板在线，正在等待完整数据…", pillCopy(empty).extra)
         val none = linkPill(link(now = 1_000).copy(workspaceCount = 0, unassignedCount = 0))
         assertEquals(NO_WORKSPACE_COPY, pillCopy(none).extra)
         val repair = linkPill(link(now = 1_000).copy(phase = SocketPhase.UNAUTHORIZED))

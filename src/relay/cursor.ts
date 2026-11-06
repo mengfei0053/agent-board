@@ -87,7 +87,7 @@ export class RelayCursor {
       this.done.add(task.id);
       frames.push(this.event("evt.task.done", {
         boardId,
-        eventId: `done-${this.generation}-${task.id}`,
+        eventId: `done-${this.generation}-${task.id}-${String(this.seq)}`,
         taskId: task.id,
         status: task.status,
         title: task.title,

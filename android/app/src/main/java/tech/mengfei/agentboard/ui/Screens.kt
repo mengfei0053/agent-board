@@ -355,7 +355,13 @@ private fun AddBoardScreen(state: UiState, model: BoardViewModel, padding: Paddi
 private fun TaskScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
         state.cacheSentence?.let {
-            Text(it, modifier = Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(it, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = model::reconnectActiveBoard) {
+                    Text(if (state.englishUi) "Reconnect" else "重新连接")
+                }
+            }
         }
         Banner(state.formError)
         state.createdHidden?.let { Text(it, modifier = Modifier.padding(horizontal = 20.dp)) }
