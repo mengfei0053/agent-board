@@ -65,6 +65,7 @@ button.link { background: transparent; border-color: transparent; color: #148273
 .result { padding: 4px 24px 24px; margin-bottom: 24px; }
 .result .section-heading { padding-left: 0; padding-right: 0; }
 .login { max-width: 460px; margin: 8vh auto 32px; padding: 36px; }
+.restoring { text-align: center; margin: 18vh auto 0; }
 .login h1 { font-size: 26px; margin-top: 16px; }
 .login button { width: 100%; margin-top: 18px; display: flex; justify-content: space-between; }
 .login .hint { margin-bottom: 0; }

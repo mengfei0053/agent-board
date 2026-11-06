@@ -58,6 +58,7 @@
     try { store?.removeItem(STORAGE_KEY); } catch { /* storage unavailable */ }
     $('admin-token').value = '';
     $('dashboard').hidden = true;
+    $('restoring').hidden = true;
     $('login').hidden = false;
     $('logout').hidden = true;
     $('boards').replaceChildren();
@@ -240,6 +241,7 @@
   }
 
   function showDashboard() {
+    $('restoring').hidden = true;
     $('login').hidden = true;
     $('dashboard').hidden = false;
     $('logout').hidden = false;
@@ -332,12 +334,22 @@
     });
   });
 
-  // Restore the session after a refresh. An invalid/expired token (401) logs out; a network
-  // error keeps the token so the next refresh can retry.
+  // The login form and dashboard start hidden in the HTML, so a refresh never flashes the login page.
+  // With a stored token we show a small placeholder and go straight to the dashboard; an invalid token
+  // (401) logs out and reveals the form. A network error keeps the token but reveals the form so the
+  // user is not left on a blank page.
   if (adminToken) {
+    $('restoring').hidden = false;
     void run(async () => {
-      await refresh();
-      showDashboard();
+      try {
+        await refresh();
+        showDashboard();
+      } catch (error) {
+        if (adminToken) { $('restoring').hidden = true; $('login').hidden = false; }
+        throw error;
+      }
     });
+  } else {
+    $('login').hidden = false;
   }
 })();

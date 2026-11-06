@@ -17,7 +17,7 @@
     </nav>
   </header>
   <main>
-    <section id="login" class="login panel">
+    <section id="login" class="login panel" hidden>
       <div class="eyebrow">RELAY CONSOLE</div>
       <h1>管理你的中继服务</h1>
       <p class="muted">连接看板与手机，安全地管理配对和访问权限。</p>
@@ -28,6 +28,8 @@
       </form>
       <p class="hint">令牌只保存在当前标签页的会话中：刷新页面不会退出，关闭标签页或点“退出管理”后需重新登录。不写入 Cookie 或 localStorage。</p>
     </section>
+
+    <p id="restoring" class="restoring muted" role="status" hidden>正在恢复会话…</p>
 
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 

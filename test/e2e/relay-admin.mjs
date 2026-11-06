@@ -134,8 +134,19 @@ try {
   await page.type('#admin-token', adminToken);
   await page.click('#login-form button');
   await page.waitForSelector('#dashboard:not([hidden])');
-  // Refresh keeps the session; one-time secrets are not restored.
+  // Refresh keeps the session without ever showing the login form, even for one frame.
+  await page.evaluateOnNewDocument(() => {
+    window.__loginShown = false;
+    const check = () => {
+      const login = document.getElementById('login');
+      if (login && !login.hidden) window.__loginShown = true;
+    };
+    new MutationObserver(check).observe(document, { subtree: true, childList: true, attributes: true });
+    const tick = () => { check(); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  });
   await page.reload({ waitUntil: 'networkidle0' });
+  assert.equal(await page.evaluate(() => window.__loginShown), false, 'login form must never flash on refresh');
   await page.waitForSelector('#dashboard:not([hidden])');
   assert.equal(await page.$eval('#login', (element) => element.hidden), true);
   assert.equal(await page.$eval('#result-secret', (element) => element.value), '');
