@@ -11,6 +11,104 @@ const pairStatus = document.getElementById("pair-code-status");
 const pairResult = document.getElementById("pair-code-result");
 const pairValue = document.getElementById("pair-code-value");
 
+const relayEls = {
+  form: document.getElementById("relay-form"),
+  url: document.getElementById("relay-url"),
+  boardId: document.getElementById("relay-board-id"),
+  label: document.getElementById("relay-board-label"),
+  admin: document.getElementById("relay-admin-token"),
+  token: document.getElementById("relay-board-token"),
+  save: document.getElementById("btn-relay-save"),
+  disconnect: document.getElementById("btn-relay-disconnect"),
+  status: document.getElementById("relay-status"),
+  pill: document.getElementById("relay-status-pill"),
+};
+const RELAY_STATUS_TEXT = { off: "未连接", connecting: "连接中…", connected: "已连接", reconnecting: "重连中…" };
+let relayPoll = null;
+
+function renderRelay(data, { fill = false } = {}) {
+  if (fill) {
+    relayEls.url.value = data.relayWsUrl || "";
+    relayEls.boardId.value = data.boardId || "";
+    relayEls.label.value = data.boardLabel && data.boardLabel !== data.boardId ? data.boardLabel : "";
+  }
+  relayEls.pill.textContent = data.enabled ? RELAY_STATUS_TEXT[data.status] || data.status : "未连接";
+  relayEls.disconnect.hidden = !(data.enabled && data.source !== "none");
+  const parts = [];
+  if (data.source === "env") parts.push("当前配置来自环境变量；在此保存后将改用这里的配置。");
+  if (data.source === "settings" && !data.enabled) parts.push("已保存配置，当前处于断开状态。");
+  if (data.enabled && data.status === "connected") parts.push(`已作为「${data.boardId}」连接到中继。`);
+  if (data.lastError && data.status !== "connected") parts.push(data.lastError);
+  relayEls.status.textContent = parts.join(" ");
+  const waiting = data.enabled && (data.status === "connecting" || data.status === "reconnecting");
+  if (waiting && !relayPoll) relayPoll = setInterval(loadRelay, 3000);
+  if (!waiting && relayPoll) { clearInterval(relayPoll); relayPoll = null; }
+}
+
+async function loadRelay(fill = false) {
+  try {
+    const response = await fetch("/api/settings/relay", { cache: "no-store" });
+    if (!response.ok) return;
+    renderRelay(await response.json(), { fill: fill === true });
+  } catch { /* keep the previous status */ }
+}
+
+async function relayRequest(url, options) {
+  const response = await fetch(url, { cache: "no-store", ...options });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "操作失败，请重试。");
+  return data;
+}
+
+async function saveRelay() {
+  const body = {
+    relayWsUrl: relayEls.url.value,
+    boardId: relayEls.boardId.value,
+    boardLabel: relayEls.label.value,
+    adminToken: relayEls.admin.value,
+    boardToken: relayEls.token.value,
+  };
+  relayEls.admin.value = "";
+  relayEls.token.value = "";
+  relayEls.save.disabled = true;
+  relayEls.status.textContent = "正在注册并连接…";
+  try {
+    const data = await relayRequest("/api/settings/relay", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    renderRelay(data, { fill: true });
+    if (data.status === "connected") relayEls.status.textContent = `已注册并连接为「${data.boardId}」。`;
+  } catch (err) {
+    relayEls.status.textContent = err instanceof Error ? err.message : "保存失败，请重试。";
+  } finally {
+    relayEls.save.disabled = false;
+  }
+}
+
+relayEls.save.addEventListener("click", () => void saveRelay());
+relayEls.form.addEventListener("keydown", (event) => {
+  // The relay block sits inside the settings form: Enter must not submit that form.
+  if (event.key !== "Enter" || event.target.tagName !== "INPUT") return;
+  event.preventDefault();
+  if (!relayEls.save.disabled) void saveRelay();
+});
+
+relayEls.disconnect.addEventListener("click", async () => {
+  if (!confirm("断开与中继的连接？手机将无法远程操控此看板，已保存的配置会保留。")) return;
+  relayEls.disconnect.disabled = true;
+  try {
+    renderRelay(await relayRequest("/api/settings/relay/disconnect", { method: "POST" }));
+  } catch (err) {
+    relayEls.status.textContent = err instanceof Error ? err.message : "操作失败，请重试。";
+  } finally {
+    relayEls.disconnect.disabled = false;
+  }
+});
+
+void loadRelay(true);
+
 pairButton.addEventListener("click", async () => {
   const adminToken = pairToken.value;
   pairToken.value = "";

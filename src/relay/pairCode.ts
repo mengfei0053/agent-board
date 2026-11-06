@@ -1,14 +1,25 @@
 import { loadRelayDialerConfig } from "./config.js";
 
-export async function createBoardPairCode(adminToken: string, env: NodeJS.ProcessEnv = process.env) {
-  const config = loadRelayDialerConfig(env);
-  if (!config.enabled) throw new Error("请先配置并启用看板中继连接。");
-  if (!adminToken.trim() || /[\r\n]/.test(adminToken)) throw new Error("请输入有效的中继管理员令牌。");
-  const url = new URL(config.relayWsUrl);
+/** Convert the relay ws(s) URL into the matching http(s) URL for a REST path. */
+export function relayHttpUrl(relayWsUrl: string, pathname: string): URL {
+  let url: URL;
+  try {
+    url = new URL(relayWsUrl);
+  } catch {
+    throw new Error("中继地址不是有效的 URL。");
+  }
   url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-  url.pathname = "/auth/pair/create";
+  url.pathname = pathname;
   url.search = "";
   url.hash = "";
+  return url;
+}
+
+export async function createBoardPairCode(adminToken: string, env: NodeJS.ProcessEnv = process.env) {
+  const config = loadRelayDialerConfig(env);
+  if (!config.enabled) throw new Error("请先在「设置 → 中继连接」配置并连接看板。");
+  if (!adminToken.trim() || /[\r\n]/.test(adminToken)) throw new Error("请输入有效的中继管理员令牌。");
+  const url = relayHttpUrl(config.relayWsUrl, "/auth/pair/create");
   let response: Response;
   try {
     response = await fetch(url, {

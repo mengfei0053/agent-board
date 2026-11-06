@@ -22,7 +22,7 @@ test("creates a one-board code on the configured relay without exposing credenti
     assert.ok(address && typeof address !== "string");
     const env = { RELAY_WS_URL: `ws://127.0.0.1:${address.port}/v1/ws`, BOARD_ID: "board-1", BOARD_TOKEN: "board-secret" };
     assert.deepEqual(await createBoardPairCode("admin-secret", env), { pairCode: code, expiresAt: 123456, boardId: "board-1" });
-    await assert.rejects(createBoardPairCode("admin-secret", {}), /配置并启用/);
+    await assert.rejects(createBoardPairCode("admin-secret", {}), /中继连接/);
   } finally {
     server.close();
     await once(server, "close");

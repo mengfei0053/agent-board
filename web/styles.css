@@ -2789,6 +2789,19 @@ button.topbar-brand[aria-expanded="true"] {
   gap: 14px;
 }
 .settings-pair-card [hidden] { display: none; }
+.relay-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px 16px;
+}
+.relay-advanced { margin-top: 12px; }
+.relay-advanced summary { cursor: pointer; font-size: 12.5px; color: var(--text-2); }
+.relay-advanced .pair-token-field { margin-top: 10px; }
+#relay-form input { font-family: var(--mono); font-size: 13px; padding: 9px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); width: 100%; box-sizing: border-box; }
+#relay-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.relay-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.relay-actions > button { height: 38px; padding: 0 16px; }
+.relay-actions [hidden] { display: none; }
 .pair-input-bar {
   display: flex;
   flex-wrap: wrap;

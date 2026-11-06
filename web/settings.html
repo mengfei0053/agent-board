@@ -56,6 +56,10 @@
               <span class="settings-nav-dot"></span>
               <span>快捷输入模板</span>
             </a>
+            <a class="settings-nav-item" href="#relay-section">
+              <span class="settings-nav-dot"></span>
+              <span>中继连接</span>
+            </a>
             <a class="settings-nav-item" href="#pair-code-section">
               <span class="settings-nav-dot"></span>
               <span>手机端配对</span>
@@ -151,6 +155,48 @@
                 </div>
               </header>
               <div id="quick-prompts-list" class="quick-prompt-list"></div>
+            </section>
+
+            <section class="settings-card settings-pair-card" id="relay-section" aria-labelledby="relay-title">
+              <header class="settings-block-head">
+                <div class="settings-title-row">
+                  <h2 id="relay-title">中继连接</h2>
+                  <span class="settings-section-pill" id="relay-status-pill">未连接</span>
+                </div>
+                <p class="settings-block-desc">把这个看板注册到公网中继，手机才能远程操控。填写中继地址、看板 ID 和中继管理员令牌（<code>ADMIN_TOKEN</code>），点「保存并连接」即可自动注册并立即连接，<strong>无需重启看板</strong>。管理员令牌只用于本次请求，不会保存。</p>
+              </header>
+              <div id="relay-form">
+                <div class="relay-grid">
+                  <label class="pair-token-field" for="relay-url">
+                    <span class="pair-token-label">中继地址</span>
+                    <input id="relay-url" type="text" placeholder="wss://relay.mengfei.tech/v1/ws" spellcheck="false" />
+                  </label>
+                  <label class="pair-token-field" for="relay-board-id">
+                    <span class="pair-token-label">看板 ID</span>
+                    <input id="relay-board-id" type="text" placeholder="例如 thinkbook-main" maxlength="64" spellcheck="false" />
+                  </label>
+                  <label class="pair-token-field" for="relay-board-label">
+                    <span class="pair-token-label">显示名称（可选）</span>
+                    <input id="relay-board-label" type="text" placeholder="默认同看板 ID" maxlength="80" />
+                  </label>
+                  <label class="pair-token-field" for="relay-admin-token">
+                    <span class="pair-token-label">中继管理员令牌</span>
+                    <input id="relay-admin-token" type="password" placeholder="输入 ADMIN_TOKEN…" autocomplete="off" />
+                  </label>
+                </div>
+                <details class="relay-advanced">
+                  <summary>已有看板令牌？直接填写</summary>
+                  <label class="pair-token-field" for="relay-board-token">
+                    <span class="pair-token-label">看板令牌（BOARD_TOKEN）</span>
+                    <input id="relay-board-token" type="password" placeholder="留空则沿用已保存的令牌" autocomplete="off" />
+                  </label>
+                </details>
+                <div class="relay-actions">
+                  <button type="button" id="btn-relay-save">保存并连接</button>
+                  <button type="button" class="secondary" id="btn-relay-disconnect" hidden>断开连接</button>
+                </div>
+              </div>
+              <p id="relay-status" class="settings-status muted" role="status"></p>
             </section>
 
             <section class="settings-card settings-pair-card" id="pair-code-section" aria-labelledby="pair-code-title">

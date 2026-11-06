@@ -83,7 +83,7 @@ import {
   MAX_UPLOAD_OVERHEAD_BYTES,
 } from "./limits.js";
 import { resolveAllowedDirectory } from "./paths.js";
-import { maybeStartEmbeddedRelay, type EmbeddedRelay } from "./relay/index.js";
+import { relayManager } from "./relay/index.js";
 import { createBoardPairCode } from "./relay/pairCode.js";
 import { extensionManager } from "./extensions.js";
 
@@ -786,9 +786,32 @@ app.post("/api/settings/pair-code", async (c) => {
   try {
     const body = await readJsonObject(c);
     if (typeof body.adminToken !== "string") throw new HttpError(400, "请输入中继管理员令牌。");
-    return c.json(await createBoardPairCode(body.adminToken));
+    return c.json(await createBoardPairCode(body.adminToken, relayManager.effectiveEnv()));
   } catch (e) {
     return errorJson(c, e);
+  }
+});
+
+app.get("/api/settings/relay", (c) => {
+  c.header("Cache-Control", "no-store");
+  return c.json(relayManager.settings());
+});
+
+app.put("/api/settings/relay", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try {
+    return c.json(await relayManager.save(await readJsonObject(c)));
+  } catch (e) {
+    return errorJson(c, e);
+  }
+});
+
+app.post("/api/settings/relay/disconnect", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try {
+    return c.json(await relayManager.disconnect());
+  } catch (e) {
+    return errorJson(c, e, 500);
   }
 });
 
@@ -910,18 +933,17 @@ app.use("/*", serveStatic({ root: webRoot }));
 async function main() {
   ensureUploadsDir();
   await initStore();
-  let relay: EmbeddedRelay | null = null;
   const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
     console.log(`agent-board http://${hostname}:${info.port}`);
     console.log(`database ${redactDatabaseUrl()}`);
-    relay = maybeStartEmbeddedRelay();
+    void relayManager.init();
   });
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     try {
-      if (relay) await relay.close();
+      await relayManager.close();
     } catch (err) {
       console.error("[shutdown] relay:", err);
     }
