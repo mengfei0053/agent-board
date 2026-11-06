@@ -384,10 +384,14 @@ function issueBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }
     sendJson(res, 400, { error: { code: "bad_request", message: "boardIds must be an array of strings" } });
     return;
   }
-  const issued = ctx.auth.issueBoardToken(body.boardIds as string[]);
+  if (body.rotate !== undefined && typeof body.rotate !== "boolean") {
+    sendJson(res, 400, { error: { code: "bad_request", message: "rotate must be a boolean" } });
+    return;
+  }
+  const issued = ctx.auth.issueBoardToken(body.boardIds as string[], { rotate: body.rotate !== false });
   if (!issued.ok) return sendAuthFailure(res, issued.code, issued.message);
   for (const credentialId of issued.revokedCredentialIds) ctx.hub.kickCredential(credentialId);
-  sendJson(res, 200, { boardToken: issued.boardToken, boardIds: issued.boardIds });
+  sendJson(res, 200, { boardToken: issued.boardToken, boardIds: issued.boardIds, rotated: body.rotate !== false });
 }
 
 function sendAuthFailure(res: ServerResponse, code: string, message: string): void {

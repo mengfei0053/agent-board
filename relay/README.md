@@ -52,6 +52,7 @@ Open **http://127.0.0.1:8787/admin** (or `https://<relay-host>/admin` behind TLS
 - View uptime, protocol version, online boards/phone connections, paired devices, and the count of unused pair codes. Use **刷新状态** to reload; there is no background polling.
 - View online/offline known boards, device names, allowed board IDs, and token expiration times. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
 - Create one-time phone pair codes for 1–20 board IDs (including offline boards); revoke devices and immediately disconnect their sockets.
+- **Add a board**: enter a board ID in "添加看板". The console issues a scoped `BOARD_TOKEN` with `rotate: false` (other boards' credentials are untouched), shows a ready-to-paste env snippet (`RELAY_WS_URL`, `BOARD_ID`, `BOARD_TOKEN`), and polls until the board connects. The boards table lists online boards first.
 - Revoke a board or issue a replacement scoped `BOARD_TOKEN`, with confirmation. **These operations also revoke the bootstrap credential and any old credential overlapping the specified boards. Other boards sharing those credentials may disconnect too.** Update affected board configurations before reconnecting. These actions do not stop tasks on the local board.
 - The admin token is held only in page memory, not in cookies, localStorage, or sessionStorage. Reloading/closing the page or logging out requires logging in again. Generated secrets are shown only after their creation and can be cleared from the page.
 
@@ -64,6 +65,8 @@ Static assets are in `public/`; distribute them alongside `dist/`. The Docker im
 pnpm test:relay-admin
 # override with CHROME_PATH if needed
 ```
+
+`POST /auth/board/issue` accepts `{ boardIds, rotate? }`. `rotate` defaults to `true` (revokes the bootstrap token and overlapping credentials); `rotate: false` only adds a credential.
 
 Create a pair code (it is not a long-lived env var):
 

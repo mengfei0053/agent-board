@@ -57,6 +57,10 @@ button.secondary { background: #fff; color: #36565e; border-color: #d7e1e5; }
 button.quiet { background: transparent; border-color: transparent; color: #6c8188; padding: 6px 8px; }
 button.danger { background: transparent; border-color: transparent; color: #bd4e45; padding: 6px 8px; }
 button.link { background: transparent; border-color: transparent; color: #148273; padding: 6px 8px; }
+.heading-tools { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.add-panel { margin-bottom: 24px; }
+.add-panel form { max-width: 520px; }
+.add-panel button[type=submit] { margin-top: 4px; }
 .warning { color: #a66f2e; font-size: 12px; }
 .result { padding: 4px 24px 24px; margin-bottom: 24px; }
 .result .section-heading { padding-left: 0; padding-right: 0; }

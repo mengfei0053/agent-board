@@ -138,3 +138,27 @@ test("admin state requires ADMIN_TOKEN, shares rate limits, and excludes credent
     method: "POST", headers, body: JSON.stringify({ boardIds: ["another"] }),
   })).status, 429);
 });
+
+test("adding a board with rotate=false keeps other boards' credentials and lists the new board", async (t) => {
+  const server = await startServer({ adminToken, boardToken, log: () => {} });
+  t.after(() => server.close());
+  const headers = { authorization: `Bearer ${adminToken}`, "content-type": "application/json" };
+  const issue = (body: unknown) => fetch(server.httpUrl + "/auth/board/issue", { method: "POST", headers, body: JSON.stringify(body) });
+
+  assert.equal((await issue({ boardIds: ["new-board"], rotate: "no" })).status, 400);
+  const added = await issue({ boardIds: ["new-board"], rotate: false });
+  assert.equal(added.status, 200);
+  const body = await added.json() as { boardToken: string; rotated: boolean };
+  assert.equal(body.rotated, false);
+
+  const state = await (await fetch(server.httpUrl + "/api/admin/state", { headers })).json() as {
+    boards: { boardId: string; credentialActive: boolean; online: boolean }[];
+  };
+  assert.deepEqual(state.boards.map((b) => [b.boardId, b.credentialActive, b.online]), [["new-board", true, false]]);
+
+  // The bootstrap token is still valid for other boards (not revoked).
+  const other = await issue({ boardIds: ["other-board"], rotate: false });
+  assert.equal(other.status, 200);
+  const rotated = await (await issue({ boardIds: ["new-board"] })).json() as { rotated: boolean };
+  assert.equal(rotated.rotated, true);
+});

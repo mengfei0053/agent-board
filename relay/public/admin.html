@@ -45,13 +45,25 @@
       <div class="notice info">当前为内存模式：服务重启会清空设备、配对码、动态令牌与撤销记录。这里只管理连接权限，不会执行或停止本机任务。</div>
 
       <section class="panel table-panel">
-        <div class="section-heading"><div><h2>看板</h2><p class="hint">包含本次运行中连接过、已授权或已撤销的看板。</p></div><span id="boards-total" class="count"></span></div>
+        <div class="section-heading"><div><h2>看板</h2><p class="hint">包含本次运行中连接过、已授权或已撤销的看板。</p></div><div class="heading-tools"><span id="boards-total" class="count"></span><button id="goto-add" class="secondary" type="button">+ 添加看板</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>看板</th><th>连接状态</th><th>凭证状态</th><th>连接时间</th><th>操作</th></tr></thead><tbody id="boards"></tbody></table></div>
       </section>
 
       <section class="panel table-panel">
         <div class="section-heading"><div><h2>配对设备</h2><p class="hint">撤销后立即断开手机连接，设备需要重新配对。</p></div><span id="devices-total" class="count"></span></div>
         <div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>授权看板</th><th>令牌到期</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div>
+      </section>
+
+      <section id="add-section" class="panel action-panel add-panel">
+        <h2>添加看板</h2>
+        <p class="hint">为新看板签发专属 BOARD_TOKEN，<strong>不会影响</strong>已连接的其他看板。把下方配置填到看板所在机器后重启看板，连上后会自动出现在上方列表。</p>
+        <form id="add-form">
+          <label for="add-board-id">看板 ID</label>
+          <input id="add-board-id" required placeholder="例如 thinkbook-main" autocomplete="off" spellcheck="false" maxlength="64">
+          <p class="hint">以字母或数字开头，只能包含字母、数字、点、下划线和短横线，最长 64 字符。</p>
+          <button type="submit">添加并生成配置</button>
+        </form>
+        <p id="add-wait" class="hint" hidden></p>
       </section>
 
       <div class="actions-grid">
@@ -67,8 +79,8 @@
           <p id="pair-count" class="hint"></p>
         </section>
         <section class="panel action-panel">
-          <h2>签发 / 轮换看板令牌</h2>
-          <p class="hint">生成限定看板范围的 BOARD_TOKEN，需要在看板进程中更新配置。</p>
+          <h2>轮换看板令牌</h2>
+          <p class="hint">为已有看板更换 BOARD_TOKEN（例如令牌泄露）。新增看板请用上方“添加看板”。</p>
           <form id="issue-form">
             <label for="issue-boards">看板 ID</label>
             <input id="issue-boards" required placeholder="thinkbook-main" autocomplete="off" spellcheck="false" maxlength="1300">
@@ -83,6 +95,11 @@
         <label for="result-secret">敏感凭证（仅此次显示，请妥善保存）</label>
         <textarea id="result-secret" readonly rows="2" spellcheck="false"></textarea>
         <button id="copy-result" class="secondary">复制凭证</button>
+        <div id="result-snippet-box" hidden>
+          <label for="result-snippet">看板启动配置（含令牌，请勿提交到仓库）</label>
+          <textarea id="result-snippet" readonly rows="6" spellcheck="false"></textarea>
+          <button id="copy-snippet" class="secondary">复制配置</button>
+        </div>
       </section>
     </div>
     <footer>Agent Board Relay <span>·</span> 仅中继，不执行 CLI</footer>

@@ -3,6 +3,7 @@
   const $ = (id) => document.getElementById(id);
   let adminToken = '';
   let busy = false;
+  let knownBoards = new Map();
 
   function notice(message, error = false) {
     $('notice').textContent = message;
@@ -12,7 +13,38 @@
 
   function clearResult() {
     $('result-secret').value = '';
+    $('result-snippet').value = '';
+    $('result-snippet-box').hidden = true;
     $('result').hidden = true;
+  }
+
+  let waitTimer = null;
+  function stopWaiting() {
+    if (waitTimer) clearInterval(waitTimer);
+    waitTimer = null;
+    $('add-wait').hidden = true;
+  }
+
+  // After adding a board, poll until it connects (max 3 minutes) so the user sees it appear.
+  function waitForBoard(boardId) {
+    stopWaiting();
+    const deadline = Date.now() + 180000;
+    $('add-wait').textContent = `等待看板 ${boardId} 连接…（请在看板机器上配置并重启看板）`;
+    $('add-wait').hidden = false;
+    waitTimer = setInterval(async () => {
+      if (busy) return;
+      try {
+        const state = await request('/api/admin/state');
+        renderState(state);
+        if (state.boards.some((board) => board.boardId === boardId && board.online)) {
+          stopWaiting();
+          notice(`看板 ${boardId} 已连接。`);
+        } else if (Date.now() > deadline) {
+          stopWaiting();
+          notice(`等待看板 ${boardId} 超时。请检查 RELAY_WS_URL / BOARD_ID / BOARD_TOKEN 后点“刷新状态”。`, true);
+        }
+      } catch { stopWaiting(); }
+    }, 3000);
   }
 
   function logout() {
@@ -23,6 +55,7 @@
     $('logout').hidden = true;
     $('boards').replaceChildren();
     $('devices').replaceChildren();
+    stopWaiting();
     clearResult();
   }
 
@@ -102,9 +135,12 @@
   function boardRows(boards) {
     const tbody = $('boards');
     tbody.replaceChildren();
-    for (const board of boards) {
+    const sorted = [...boards].sort((a, b) => Number(b.online) - Number(a.online));
+    for (const board of sorted) {
       const row = document.createElement('tr');
-      cell(row, board.label || board.boardId, board.label ? board.boardId : `代次 ${board.generation} · 序号 ${board.lastSeq}`);
+      cell(row, board.label || board.boardId, board.online
+        ? `${board.label ? board.boardId + ' · ' : ''}代次 ${board.generation} · 序号 ${board.lastSeq}`
+        : (board.label ? board.boardId : '尚未连接'));
       cell(row, badge(board.online ? '在线' : '离线', board.online ? 'live' : ''));
       cell(row, badge(board.revoked ? '已撤销' : board.credentialActive ? '可用' : '需新令牌', board.revoked ? 'danger' : ''));
       cell(row, date(board.connectedAt));
@@ -122,7 +158,7 @@
       }));
       tbody.append(row);
     }
-    if (!boards.length) empty(tbody, '暂无看板。连接一个看板，或在下方指定看板 ID 生成配对码。');
+    if (!boards.length) empty(tbody, '暂无看板。使用下方“添加看板”签发令牌并连接。');
   }
 
   function deviceRows(devices) {
@@ -145,7 +181,10 @@
   }
 
   async function refresh() {
-    const state = await request('/api/admin/state');
+    renderState(await request('/api/admin/state'));
+  }
+
+  function renderState(state) {
     boardRows(state.boards);
     deviceRows(state.devices);
     $('boards-count').textContent = state.boards.filter((board) => board.online).length;
@@ -158,6 +197,7 @@
     $('devices-total').textContent = `${state.devices.length} 台设备`;
     $('pair-count').textContent = `当前有效待使用配对码：${state.activePairCodes} 个`;
     $('updated').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+    knownBoards = new Map(state.boards.map((board) => [board.boardId, board]));
   }
 
   async function refreshAfterAction(message) {
@@ -218,6 +258,47 @@
       const result = await request('/auth/board/issue', { boardIds: ids });
       showResult('新的看板令牌', result.boardToken, `授权 ${result.boardIds.join(', ')} · 请更新对应看板进程的 BOARD_TOKEN。仅在本次中继运行期间有效。`);
       await refreshAfterAction('新令牌已签发，请妥善保存并更新看板配置。');
+    });
+  });
+  $('goto-add').addEventListener('click', () => {
+    $('add-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('add-board-id').focus();
+  });
+  $('add-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void run(async () => {
+      const [boardId] = boardIds('add-board-id');
+      if (boardId.includes(',')) throw new Error('一次只能添加一个看板。');
+      const existing = knownBoards.get(boardId);
+      if (existing && !existing.revoked) {
+        throw new Error(`看板 ${boardId} 已存在。如需更换令牌，请使用“轮换看板令牌”。`);
+      }
+      clearResult();
+      const result = await request('/auth/board/issue', { boardIds: [boardId], rotate: false });
+      const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/v1/ws`;
+      $('result-snippet').value = [
+        `export RELAY_WS_URL='${wsUrl}'`,
+        `export BOARD_ID='${boardId}'`,
+        `export BOARD_TOKEN='${result.boardToken}'`,
+        `export BOARD_LABEL='${boardId}'`,
+        'pnpm start   # 重启前请确认没有运行中的任务',
+      ].join('\n');
+      $('result-snippet-box').hidden = false;
+      showResult('新看板令牌', result.boardToken, `看板 ${boardId} · 仅显示一次。已有看板不受影响。把下方配置设置到看板进程后重启。`);
+      $('add-board-id').value = '';
+      await refreshAfterAction('看板已添加，等待连接。');
+      waitForBoard(boardId);
+    });
+  });
+  $('copy-snippet').addEventListener('click', () => {
+    void run(async () => {
+      try {
+        await navigator.clipboard.writeText($('result-snippet').value);
+        notice('配置已复制，其中包含令牌，请勿提交到仓库。');
+      } catch {
+        $('result-snippet').select();
+        notice('无法自动复制，请手动复制已选中的配置。', true);
+      }
     });
   });
   $('copy-result').addEventListener('click', () => {

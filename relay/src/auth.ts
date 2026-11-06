@@ -220,13 +220,19 @@ export class AuthStore {
     return { ok: true, credentialIds };
   }
 
+  /**
+   * `rotate: true` (default) revokes the bootstrap token and any credential covering these ids.
+   * `rotate: false` only adds a new scoped credential and leaves existing credentials untouched.
+   */
   issueBoardToken(
     boardIds: string[],
+    options: { rotate?: boolean } = {},
   ): { ok: true; boardToken: string; credentialId: string; boardIds: string[]; revokedCredentialIds: string[] } | AuthFailure {
     const ids = normalizeBoardIds(boardIds);
     if (!ids.ok) return ids;
-    const revokedCredentialIds = this.revokeCovering(ids.boardIds);
+    const revokedCredentialIds = options.rotate === false ? [] : this.revokeCovering(ids.boardIds);
     for (const boardId of ids.boardIds) this.revokedBoardIds.delete(boardId);
+    for (const boardId of ids.boardIds) this.boardIds.add(boardId);
     const boardToken = `bt_${randomBytes(32).toString("base64url")}`;
     const credential: Credential = {
       id: `cred_${randomBytes(8).toString("hex")}`,
