@@ -51,6 +51,7 @@ export type MappedTask = {
   iteration?: number;
   cwd?: string;
   model?: string;
+  thinkingEffort?: string;
   sessionId?: string;
   startedAt?: number;
   endedAt?: number;
@@ -78,6 +79,7 @@ type DetailTask = Pick<
   | "cwd"
   | "prompt"
   | "model"
+  | "thinkingEffort"
   | "sessionId"
   | "iteration"
   | "startedAt"
@@ -125,6 +127,7 @@ export function mapBoardTask(task: DetailTask, allowArchived = false): MappedTas
   if (Number.isInteger(task.iteration) && task.iteration > 0) mapped.iteration = task.iteration;
   if (task.cwd && task.cwd.length <= 1024 && !task.cwd.includes("://")) mapped.cwd = task.cwd;
   if (task.model) mapped.model = fit(task.model, 200);
+  if (task.thinkingEffort) mapped.thinkingEffort = fit(task.thinkingEffort, 32);
   if (task.sessionId) mapped.sessionId = fit(task.sessionId, 200);
   const startedAt = epoch(task.startedAt);
   if (startedAt != null) mapped.startedAt = startedAt;
@@ -167,6 +170,7 @@ export function wireMappedTask(task: MappedTask, mode: "snapshot" | "full"): Rec
   if (task.iteration != null) wire.iteration = task.iteration;
   if (task.cwd) wire.cwd = task.cwd;
   if (task.model) wire.model = task.model;
+  if (task.thinkingEffort) wire.thinkingEffort = task.thinkingEffort;
   if (task.sessionId) wire.sessionId = task.sessionId;
   if (task.startedAt != null) wire.startedAt = task.startedAt;
   if (task.endedAt != null) wire.endedAt = task.endedAt;
@@ -206,6 +210,7 @@ export function taskSignature(task: MappedTask): string {
     task.exitCode ?? "",
     task.cwd ?? "",
     task.model ?? "",
+    task.thinkingEffort ?? "",
     task.worktreeBranch ?? "",
     task.resumeCommand ?? "",
     task.prompt?.length ?? 0,

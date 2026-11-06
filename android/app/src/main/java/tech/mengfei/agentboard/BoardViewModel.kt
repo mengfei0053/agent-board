@@ -144,10 +144,15 @@ import tech.mengfei.agentboard.protocol.sessionRejected
 import tech.mengfei.agentboard.protocol.settingsAckEffect
 import tech.mengfei.agentboard.protocol.settingsEntry
 import tech.mengfei.agentboard.protocol.settingsGetEnvelope
+import tech.mengfei.agentboard.protocol.AgentModelCatalog
 import tech.mengfei.agentboard.protocol.BoardSettingsForm
+import tech.mengfei.agentboard.protocol.modelOptionsForAgent
+import tech.mengfei.agentboard.protocol.pickDefaultThinkingEffort
+import tech.mengfei.agentboard.protocol.readAgentModelCatalog
 import tech.mengfei.agentboard.protocol.readBoardSettingsForm
 import tech.mengfei.agentboard.protocol.settingsPutFormEnvelope
 import tech.mengfei.agentboard.protocol.settingsPutPromptsEnvelope
+import tech.mengfei.agentboard.protocol.supportedThinkingEfforts
 import tech.mengfei.agentboard.protocol.shouldSendLogSubscribe
 import tech.mengfei.agentboard.protocol.subLogsEnvelope
 import tech.mengfei.agentboard.protocol.subTasksEnvelope
@@ -260,6 +265,8 @@ data class UiState(
     val draftTitle: String = "",
     val draftPrompt: String = "",
     val draftAgent: String = "cursor",
+    val draftModel: String = "",
+    val draftThinkingEffort: String = "medium",
     val draftCwd: String = "",
     val draftUseGitWorktree: Boolean = false,
     val worktreeEnabled: Boolean = false,
@@ -271,8 +278,11 @@ data class UiState(
     val workspaceDeleteMode: String = "send",
     val confirmDeleteWorkspace: Boolean = false,
     val continuePrompt: String = "",
+    val continueModel: String = "",
+    val continueThinkingEffort: String = "",
     val continueOpen: Boolean = false,
     val quickPrompts: List<QuickPromptChip> = emptyList(),
+    val modelCatalog: AgentModelCatalog = AgentModelCatalog(),
     val settingsLoaded: Boolean = false,
     val boardForm: BoardSettingsForm? = null,
     val canPop: Boolean = false,
@@ -355,7 +365,32 @@ class BoardViewModel(
     fun updateDisplayName(value: String) = _state.updateCopy { copy(displayName = value) }
     fun updateDraftTitle(value: String) = _state.updateCopy { copy(draftTitle = value) }
     fun updateDraftPrompt(value: String) = _state.updateCopy { copy(draftPrompt = value) }
-    fun updateDraftAgent(value: String) = _state.updateCopy { copy(draftAgent = value) }
+    fun updateDraftAgent(value: String) {
+        val catalog = slot(activeId).modelCatalog
+        val current = _state.value
+        val validModels = modelOptionsForAgent(catalog, value)
+        val keptModel = if (current.draftModel.isNotBlank() && validModels.any { it.model.equals(current.draftModel, ignoreCase = true) }) {
+            current.draftModel
+        } else {
+            ""
+        }
+        val nextEffort = pickDefaultThinkingEffort(
+            supportedThinkingEfforts(catalog, value, keptModel),
+            current.draftThinkingEffort,
+        )
+        _state.updateCopy { copy(draftAgent = value, draftModel = keptModel, draftThinkingEffort = nextEffort) }
+    }
+    fun updateDraftModel(value: String) {
+        val clean = value.trim()
+        val catalog = slot(activeId).modelCatalog
+        val current = _state.value
+        val nextEffort = pickDefaultThinkingEffort(
+            supportedThinkingEfforts(catalog, current.draftAgent, clean),
+            current.draftThinkingEffort,
+        )
+        _state.updateCopy { copy(draftModel = clean, draftThinkingEffort = nextEffort) }
+    }
+    fun updateDraftThinkingEffort(value: String) = _state.updateCopy { copy(draftThinkingEffort = value.trim()) }
     fun updateDraftCwd(value: String) = _state.updateCopy { copy(draftCwd = value, draftUseGitWorktree = false) }
     fun updateDraftWorkspaceName(value: String) = _state.updateCopy { copy(draftWorkspaceName = value) }
     fun updateDraftWorkspacePath(value: String) = _state.updateCopy { copy(draftWorkspacePath = value) }
@@ -365,8 +400,27 @@ class BoardViewModel(
     }
 
     fun updateContinuePrompt(value: String) {
-        slot(activeId)?.continuePrompt = value
+        slot(activeId).continuePrompt = value
         _state.updateCopy { copy(continuePrompt = value) }
+    }
+
+    fun updateContinueModel(value: String) {
+        val holder = slot(activeId)
+        val clean = value.trim()
+        holder.continueModel = clean
+        val task = activeTask()
+        val agent = task?.agent ?: "pi"
+        val effectiveModel = clean.ifEmpty { task?.model.orEmpty() }
+        holder.continueThinkingEffort = pickDefaultThinkingEffort(
+            supportedThinkingEfforts(holder.modelCatalog, agent, effectiveModel),
+            holder.continueThinkingEffort.ifEmpty { task?.thinkingEffort.orEmpty() },
+        )
+        render()
+    }
+
+    fun updateContinueThinkingEffort(value: String) {
+        slot(activeId).continueThinkingEffort = value.trim()
+        render()
     }
 
     fun updateWorkspaceField(name: String? = null, path: String? = null, prompt: String? = null, skills: String? = null, mcp: String? = null) {
@@ -521,13 +575,18 @@ class BoardViewModel(
         val current = _state.value
         val selectedPath = current.workspaces.find { it.id == current.selectedWorkspaceId }?.path
         val nextCwd = cwdForNewTask(current.draftCwd, selectedPath, current.workspaces.map { it.path })
-        if (slot(session.sessionId)?.inflight == null) {
+        val holder = slot(session.sessionId)
+        if (holder.inflight == null) {
             commandNote = null
             formError = null
         }
-        _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd) }
+        val nextEffort = pickDefaultThinkingEffort(
+            supportedThinkingEfforts(holder.modelCatalog, current.draftAgent, current.draftModel),
+            current.draftThinkingEffort,
+        )
+        _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd, draftThinkingEffort = nextEffort) }
         push(Screen.Create(session.sessionId))
-        if (CAP_BOARD_SETTINGS in capabilities(session) && slot(session.sessionId)?.settingsLoaded != true) {
+        if (CAP_BOARD_SETTINGS in capabilities(session) && !holder.settingsLoaded) {
             requestBoardSettings(session)
         }
     }
@@ -541,10 +600,20 @@ class BoardViewModel(
     fun openContinue() {
         val task = activeTask() ?: return
         if (!canContinueStatus(task.status)) return
-        slot(activeId)?.continueOpen = true
+        val holder = slot(activeId)
+        holder.continueOpen = true
+        val efforts = supportedThinkingEfforts(
+            holder.modelCatalog,
+            task.agent ?: "pi",
+            holder.continueModel.ifEmpty { task.model.orEmpty() },
+        )
+        holder.continueThinkingEffort = pickDefaultThinkingEffort(
+            efforts,
+            holder.continueThinkingEffort.ifEmpty { task.thinkingEffort.orEmpty() },
+        )
         render()
         val session = session(activeId) ?: return
-        if (CAP_BOARD_SETTINGS in capabilities(session) && slot(session.sessionId)?.settingsLoaded != true) {
+        if (CAP_BOARD_SETTINGS in capabilities(session) && !holder.settingsLoaded) {
             requestBoardSettings(session)
         }
     }
@@ -1403,6 +1472,23 @@ class BoardViewModel(
                     holder.loadedQuickPrompts = prompts
                     holder.loadedBoard = readBoardSettingsForm(message.payload)
                     holder.boardForm = holder.loadedBoard
+                    readAgentModelCatalog(message.payload)?.let { catalog ->
+                        holder.modelCatalog = catalog
+                        if (sessionId == activeId) {
+                            val cur = _state.value
+                            val nextDraftEffort = pickDefaultThinkingEffort(
+                                supportedThinkingEfforts(catalog, cur.draftAgent, cur.draftModel),
+                                cur.draftThinkingEffort,
+                            )
+                            _state.updateCopy { copy(draftThinkingEffort = nextDraftEffort) }
+                            activeTask()?.let { t ->
+                                holder.continueThinkingEffort = pickDefaultThinkingEffort(
+                                    supportedThinkingEfforts(catalog, t.agent ?: "pi", holder.continueModel.ifEmpty { t.model.orEmpty() }),
+                                    holder.continueThinkingEffort.ifEmpty { t.thinkingEffort.orEmpty() },
+                                )
+                            }
+                        }
+                    }
                 }
                 holder.settingsLoaded = effect.markLoaded
             }
@@ -1453,20 +1539,25 @@ class BoardViewModel(
         val requestId = ids()
         val ts = clock()
         val selected = draft.workspaces.find { it.id == draft.selectedWorkspaceId }
-        val prompt = slot(session.sessionId).continuePrompt
+        val holder = slot(session.sessionId)
+        val prompt = holder.continuePrompt
+        val contModel = holder.continueModel.takeIf { it.isNotBlank() }
+        val contEffort = holder.continueThinkingEffort.takeIf { it.isNotBlank() }
         val built = when (cmd) {
             "cmd.create" -> validateCreate(
                 requestId, ts, session.boardId, draft.draftTitle, draft.draftPrompt, draft.draftAgent, draft.draftCwd, key,
                 useGitWorktree = draft.draftUseGitWorktree && freshWorktree(draft.draftCwd, draft.workspaces, currentPillNeedsResync()),
                 workspaceId = workspaceIdForCreate(draft.draftCwd, selected?.id, selected?.path),
+                model = draft.draftModel.takeIf { it.isNotBlank() },
+                thinkingEffort = draft.draftThinkingEffort.takeIf { it.isNotBlank() },
             )
             "cmd.workspace.create" -> validateWorkspaceCreate(requestId, ts, session.boardId, draft.draftWorkspaceName, draft.draftWorkspacePath, key)
             "cmd.workspace.delete" -> validateWorkspaceDelete(requestId, ts, session.boardId, taskId ?: return, key)
             "cmd.stop" -> validateStop(requestId, ts, session.boardId, taskId ?: return, key)
             "cmd.archive" -> archiveWriteEnvelope(requestId, ts, session.boardId, taskId ?: return, key)
             else -> {
-                val phone = validatePhoneContinue(requestId, ts, session.boardId, taskId ?: return, key, prompt)
-                if (phone is Validated.Invalid) phone else validateContinue(requestId, ts, session.boardId, taskId, key, prompt)
+                val phone = validatePhoneContinue(requestId, ts, session.boardId, taskId ?: return, key, prompt, contModel, contEffort)
+                if (phone is Validated.Invalid) phone else validateContinue(requestId, ts, session.boardId, taskId, key, prompt, contModel, contEffort)
             }
         }
         when (built) {
@@ -1580,7 +1671,10 @@ class BoardViewModel(
         if (current?.cmd == "cmd.continue") {
             val kept = if (interpreted?.retry == Retry.None && interpreted.settled) "" else holder.continuePrompt
             if (sessionId == activeId) holder.continuePrompt = kept
-            if (kept.isEmpty()) holder.continueOpen = false
+            if (kept.isEmpty()) {
+                holder.continueOpen = false
+                holder.continueModel = ""
+            }
         }
         val gate = completionForSession(activeId, sessionId, current?.cmd.orEmpty(), task?.id, interpreted?.retry == Retry.None && interpreted.settled)
         val openedTask = gate.taskId
@@ -1821,6 +1915,12 @@ class BoardViewModel(
         val holder = slot(session.sessionId)
         holder.detailArchived = archived
         holder.archiveDetail = if (archived) holder.archiveTasks.find { it.id == taskId } else null
+        val target = if (archived) holder.archiveDetail else holder.view.tasks.find { it.id == taskId }
+        holder.continueModel = ""
+        holder.continueThinkingEffort = pickDefaultThinkingEffort(
+            supportedThinkingEfforts(holder.modelCatalog, target?.agent ?: "pi", target?.model.orEmpty()),
+            target?.thinkingEffort.orEmpty(),
+        )
         push(Screen.Detail(session.sessionId, taskId))
         requestDetail(session, taskId)
         render()
@@ -1935,8 +2035,11 @@ class BoardViewModel(
             workspaceDeleteMode = modeFor(session, "cmd.workspace.delete", selection?.selectedId),
             worktreeEnabled = freshWorktree(_state.value.draftCwd, view?.workspaces.orEmpty(), holder?.view?.needsResync == true),
             continuePrompt = holder?.continuePrompt.orEmpty(),
+            continueModel = holder?.continueModel.orEmpty(),
+            continueThinkingEffort = holder?.continueThinkingEffort.orEmpty(),
             continueOpen = holder?.continueOpen == true,
             quickPrompts = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.quickPrompts.orEmpty() else emptyList(),
+            modelCatalog = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.modelCatalog ?: AgentModelCatalog() else AgentModelCatalog(),
             settingsLoaded = holder?.settingsLoaded == true,
             boardForm = holder?.boardForm,
             canPop = backStack.isNotEmpty(),
@@ -2135,6 +2238,8 @@ class BoardViewModel(
         var archiveDetail: RelayTask? = null
         var detailArchived = false
         var continuePrompt: String = ""
+        var continueModel: String = ""
+        var continueThinkingEffort: String = ""
         var continueOpen: Boolean = false
         var inflight: Inflight? = null
         val settled = mutableMapOf<String, Settled>()
@@ -2143,6 +2248,7 @@ class BoardViewModel(
         var workspaceDirty: Boolean = false
         var quickPrompts: List<QuickPromptChip> = emptyList()
         var loadedQuickPrompts: List<QuickPromptChip> = emptyList()
+        var modelCatalog: AgentModelCatalog = AgentModelCatalog()
         var boardForm: BoardSettingsForm? = null
         var loadedBoard: BoardSettingsForm? = null
         var settingsLoaded: Boolean = false

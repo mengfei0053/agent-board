@@ -58,6 +58,8 @@ fun validateCreate(
     idempotencyKey: String,
     useGitWorktree: Boolean = false,
     workspaceId: String? = null,
+    model: String? = null,
+    thinkingEffort: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) {
         return Validated.Invalid("boardId must be 1-64 letters, digits, '.', '_' or '-'")
@@ -82,6 +84,14 @@ fun validateCreate(
     if (!workspaceId.isNullOrBlank() && !isWorkspaceId(workspaceId)) {
         return Validated.Invalid("workspaceId is invalid")
     }
+    val cleanModel = model?.trim().orEmpty()
+    if (cleanModel.isNotEmpty() && (cleanModel.length > 200 || !isReadableText(cleanModel))) {
+        return Validated.Invalid("model must be 1-200 characters")
+    }
+    val cleanEffort = thinkingEffort?.trim().orEmpty()
+    if (cleanEffort.isNotEmpty() && (cleanEffort.length > 32 || !isReadableText(cleanEffort))) {
+        return Validated.Invalid("thinkingEffort must be 1-32 characters")
+    }
     return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
@@ -89,6 +99,8 @@ fun validateCreate(
         put("prompt", cleanPrompt)
         put("agent", agent)
         put("cwd", cwd)
+        if (cleanModel.isNotEmpty()) put("model", cleanModel)
+        if (cleanEffort.isNotEmpty()) put("thinkingEffort", cleanEffort)
         if (useGitWorktree) put("useGitWorktree", true)
         if (!workspaceId.isNullOrBlank()) put("workspaceId", workspaceId)
     }))
@@ -156,9 +168,11 @@ fun validatePhoneContinue(
     taskId: String,
     idempotencyKey: String,
     prompt: String,
+    model: String? = null,
+    thinkingEffort: String? = null,
 ): Validated<Envelope> {
     if (prompt.trim().isEmpty()) return Validated.Invalid("prompt is required, up to 20000 characters")
-    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt)
+    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt, model, thinkingEffort)
 }
 
 fun validateContinue(
@@ -168,12 +182,33 @@ fun validateContinue(
     taskId: String,
     idempotencyKey: String,
     prompt: String = "",
+    model: String? = null,
+    thinkingEffort: String? = null,
 ): Validated<Envelope> {
     val clean = prompt.trim()
     if (clean.length > 20_000 || (clean.isNotEmpty() && !isPromptText(clean))) {
         return Validated.Invalid("prompt is required, up to 20000 characters")
     }
-    return validateTaskCommand("cmd.continue", id, ts, boardId, taskId, idempotencyKey, null, clean)
+    val cleanModel = model?.trim().orEmpty()
+    if (cleanModel.isNotEmpty() && (cleanModel.length > 200 || !isReadableText(cleanModel))) {
+        return Validated.Invalid("model must be 1-200 characters")
+    }
+    val cleanEffort = thinkingEffort?.trim().orEmpty()
+    if (cleanEffort.isNotEmpty() && (cleanEffort.length > 32 || !isReadableText(cleanEffort))) {
+        return Validated.Invalid("thinkingEffort must be 1-32 characters")
+    }
+    return validateTaskCommand(
+        "cmd.continue",
+        id,
+        ts,
+        boardId,
+        taskId,
+        idempotencyKey,
+        null,
+        clean,
+        cleanModel.takeIf { it.isNotEmpty() },
+        cleanEffort.takeIf { it.isNotEmpty() },
+    )
 }
 
 private val archiveCursorPattern = Regex("^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f0-9]{8})?$")
@@ -229,6 +264,8 @@ private fun validateTaskCommand(
     idempotencyKey: String,
     reason: String?,
     prompt: String = "",
+    model: String? = null,
+    thinkingEffort: String? = null,
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!boardIdPattern.matches(taskId)) return Validated.Invalid("taskId is invalid")
@@ -241,6 +278,8 @@ private fun validateTaskCommand(
         put("idempotencyKey", idempotencyKey)
         if (!reason.isNullOrBlank()) put("reason", reason.take(500))
         if (prompt.isNotBlank()) put("prompt", prompt)
+        if (!model.isNullOrBlank()) put("model", model)
+        if (!thinkingEffort.isNullOrBlank()) put("thinkingEffort", thinkingEffort)
     }))
 }
 

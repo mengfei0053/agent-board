@@ -84,12 +84,16 @@ import tech.mengfei.agentboard.Screen
 import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
+import tech.mengfei.agentboard.protocol.AgentModelCatalog
 import tech.mengfei.agentboard.protocol.PAIR_CODE_LENGTH
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
 import tech.mengfei.agentboard.protocol.inspectPairCode
+import tech.mengfei.agentboard.protocol.modelOptionsForAgent
 import tech.mengfei.agentboard.protocol.pairIssueMessage
 import tech.mengfei.agentboard.protocol.pairSubmitAllowed
+import tech.mengfei.agentboard.protocol.pickDefaultThinkingEffort
+import tech.mengfei.agentboard.protocol.supportedThinkingEfforts
 import tech.mengfei.agentboard.protocol.trimOuter
 import tech.mengfei.agentboard.protocol.canContinueStatus
 import tech.mengfei.agentboard.protocol.formatDurationMs
@@ -565,7 +569,7 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
                 val board = state.sessions.find { it.sessionId == state.activeSessionId }
                 board?.let { MetaPill(it.displayName) }
                 MetaPill(workspaceDisplayName(task.workspaceId, state.workspaces, english))
-                Text(listOfNotNull(task.agent, task.model).joinToString(" · "), modifier = Modifier.align(Alignment.CenterVertically),
+                Text(listOfNotNull(task.agent, task.model, task.thinkingEffort).joinToString(" · "), modifier = Modifier.align(Alignment.CenterVertically),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -659,6 +663,21 @@ private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask
     // The composer is always visible for a continuable task: the web board has the same footer input.
     if (canContinue) SectionCard(stringResource(R.string.continue_task)) {
         Text(continueHint(task, englishNow()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val keepLabel = if (!task.model.isNullOrBlank()) {
+            "${stringResource(R.string.keep_current_model)} (${task.model})"
+        } else {
+            stringResource(R.string.keep_current_model)
+        }
+        ModelAndThinkingFields(
+            catalog = state.modelCatalog,
+            agent = task.agent ?: "pi",
+            selectedModel = state.continueModel,
+            effectiveModelForEfforts = state.continueModel.ifBlank { task.model.orEmpty() },
+            selectedEffort = state.continueThinkingEffort.ifBlank { task.thinkingEffort.orEmpty() },
+            emptyModelLabel = keepLabel,
+            onSelectModel = model::updateContinueModel,
+            onSelectEffort = model::updateContinueThinkingEffort,
+        )
         QuickFill(state) { model.updateContinuePrompt(it) }
         MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
             stringResource(R.string.describe_task), minLines = 3)
@@ -765,6 +784,7 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         TotalDurationLine(task, english)
         MetaLine("Agent", task.agent ?: "—")
         MetaLine(stringResource(R.string.model), task.model ?: "—")
+        MetaLine(stringResource(R.string.thinking_effort), task.thinkingEffort ?: "—")
         MetaLine("PID", task.pid?.toString() ?: "—")
         MetaLine(stringResource(R.string.exit_code), task.exitCode?.toString() ?: "—")
         MetaLine(stringResource(R.string.session), task.sessionId ?: "—")
@@ -853,6 +873,16 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                     }
                 }
             }
+            ModelAndThinkingFields(
+                catalog = state.modelCatalog,
+                agent = state.draftAgent,
+                selectedModel = state.draftModel,
+                effectiveModelForEfforts = state.draftModel,
+                selectedEffort = state.draftThinkingEffort,
+                emptyModelLabel = stringResource(R.string.default_model_option),
+                onSelectModel = model::updateDraftModel,
+                onSelectEffort = model::updateDraftThinkingEffort,
+            )
             MakeField(state.draftPrompt, model::updateDraftPrompt, "Prompt", stringResource(R.string.describe_task), minLines = 6)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -874,6 +904,236 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
             MakeField(state.draftCwd, model::updateDraftCwd, stringResource(R.string.cwd), "/home/me/src/app")
         }
         if (state.createMode == "lookup") TextButton(model::startDifferentCreate) { Text(stringResource(R.string.new_command)) }
+    }
+}
+
+@Composable
+private fun ModelAndThinkingFields(
+    catalog: AgentModelCatalog,
+    agent: String,
+    selectedModel: String,
+    effectiveModelForEfforts: String,
+    selectedEffort: String,
+    emptyModelLabel: String,
+    onSelectModel: (String) -> Unit,
+    onSelectEffort: (String) -> Unit,
+) {
+    var modelDialogOpen by remember { mutableStateOf(false) }
+    var effortOpen by remember { mutableStateOf(false) }
+    val efforts = remember(catalog, agent, effectiveModelForEfforts) {
+        supportedThinkingEfforts(catalog, agent, effectiveModelForEfforts)
+    }
+    val currentEffort = remember(efforts, selectedEffort) {
+        pickDefaultThinkingEffort(efforts, selectedEffort)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(stringResource(R.string.model), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(
+            onClick = { modelDialogOpen = true },
+            color = SurfaceDim,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, OutlineVariant),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    selectedModel.ifBlank { emptyModelLabel },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (selectedModel.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (selectedModel.isNotBlank()) {
+                    BoardIconButton(
+                        BoardIcon.Close,
+                        stringResource(R.string.clear_search),
+                        modifier = Modifier.size(22.dp),
+                    ) { onSelectModel("") }
+                }
+                BoardGlyph(BoardIcon.Chevron, Modifier.size(18.dp))
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(stringResource(R.string.thinking_effort), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            Surface(
+                onClick = { if (efforts.isNotEmpty()) effortOpen = true },
+                enabled = efforts.isNotEmpty(),
+                color = SurfaceDim,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, OutlineVariant),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (efforts.isNotEmpty()) currentEffort else stringResource(R.string.thinking_not_supported),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (efforts.isNotEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (efforts.isNotEmpty()) BoardGlyph(BoardIcon.Chevron, Modifier.size(18.dp))
+                }
+            }
+            DropdownMenu(expanded = effortOpen, onDismissRequest = { effortOpen = false }, containerColor = SurfaceHighest) {
+                efforts.forEach { effort ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                effort,
+                                fontWeight = if (effort == currentEffort) FontWeight.Bold else FontWeight.Normal,
+                                color = if (effort == currentEffort) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
+                        onClick = {
+                            effortOpen = false
+                            onSelectEffort(effort)
+                        },
+                    )
+                }
+            }
+        }
+    }
+    if (modelDialogOpen) {
+        ModelPickerDialog(
+            catalog = catalog,
+            agent = agent,
+            selectedModel = selectedModel,
+            emptyModelLabel = emptyModelLabel,
+            onSelect = { chosen ->
+                modelDialogOpen = false
+                onSelectModel(chosen)
+            },
+            onDismiss = { modelDialogOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun ModelPickerDialog(
+    catalog: AgentModelCatalog,
+    agent: String,
+    selectedModel: String,
+    emptyModelLabel: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val allOptions = remember(catalog, agent) { modelOptionsForAgent(catalog, agent) }
+    val historySet = remember(catalog, agent) { catalog.modelHistory[agent].orEmpty().toSet() }
+    val cleanQuery = query.trim()
+    val filtered = remember(allOptions, cleanQuery) {
+        if (cleanQuery.isEmpty()) allOptions
+        else {
+            val tokens = cleanQuery.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            allOptions.filter { item ->
+                val lower = item.model.lowercase()
+                tokens.all { token -> lower.contains(token) }
+            }
+        }
+    }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier.fillMaxWidth(.92f).heightIn(max = 560.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, OutlineVariant, RoundedCornerShape(18.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("${stringResource(R.string.model)} · $agent", style = MaterialTheme.typography.titleMedium)
+                TextButton(onDismiss) { Text(stringResource(R.string.log_close)) }
+            }
+            MakeField(
+                value = query,
+                onValueChange = { query = it },
+                label = stringResource(R.string.model),
+                placeholder = stringResource(R.string.model_search_placeholder),
+            )
+            LazyColumn(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item(key = "__default__") {
+                    ModelOptionRow(
+                        label = emptyModelLabel,
+                        badge = null,
+                        selected = selectedModel.isBlank(),
+                        onClick = { onSelect("") },
+                    )
+                }
+                if (cleanQuery.isNotEmpty() && allOptions.none { it.model.equals(cleanQuery, ignoreCase = true) }) {
+                    item(key = "__custom__") {
+                        ModelOptionRow(
+                            label = stringResource(R.string.use_custom_model, cleanQuery),
+                            badge = null,
+                            selected = selectedModel == cleanQuery,
+                            onClick = { onSelect(cleanQuery) },
+                        )
+                    }
+                }
+                if (filtered.isEmpty() && cleanQuery.isEmpty()) {
+                    item(key = "__empty__") {
+                        Text(
+                            stringResource(R.string.no_matching_models),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 12.dp, horizontal = 4.dp),
+                        )
+                    }
+                } else {
+                    items(filtered, key = { it.model }) { item ->
+                        val isRecent = item.model in historySet
+                        ModelOptionRow(
+                            label = item.model,
+                            badge = if (isRecent) stringResource(R.string.recent_models) else null,
+                            selected = item.model == selectedModel,
+                            onClick = { onSelect(item.model) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelOptionRow(
+    label: String,
+    badge: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else SurfaceDim,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else OutlineVariant),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+            )
+            if (badge != null) {
+                Text(
+                    badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
     }
 }
 

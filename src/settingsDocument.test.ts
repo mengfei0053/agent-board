@@ -8,6 +8,7 @@ import { _resetQuickPromptsForTests } from "./quickPrompts.js";
 import {
   readSettingsDocument,
   setSettingsMetaUpsertForTests,
+  setSettingsModelCatalogForTests,
   writeSettingsDocument,
 } from "./settingsDocument.js";
 
@@ -17,6 +18,7 @@ const PLACEHOLDER = "http://user:***@127.0.0.1:8899";
 
 afterEach(() => {
   setSettingsMetaUpsertForTests(null);
+  setSettingsModelCatalogForTests(null);
   _resetProxyEnvOverridesForTests({});
   _resetProcessEnvOverridesForTests({});
   _resetCliPathOverridesForTests({});
@@ -144,6 +146,30 @@ describe("settings document", () => {
     const cleared = await writeSettingsDocument({ clear: true }, { allowClear: true });
     assert.deepEqual(cleared.processEnv.pi, {});
     assert.deepEqual(cleared.processEnv.codex, {});
+  });
+
+  it("includes agentModels, thinkingEfforts, and modelHistory without leaking credentials", async () => {
+    setSettingsMetaUpsertForTests(async () => undefined);
+    setSettingsModelCatalogForTests({
+      agentModels: {
+        pi: [
+          { model: "mgp/antigravity/gemini-4-argon", thinkingEfforts: ["high", "low", "medium"] },
+          { model: `https://user:${SECRET}@example.com/model`, thinkingEfforts: ["max"] },
+        ],
+        claude: [{ model: "claude-sonnet-4-6", thinkingEfforts: ["medium", "high"] }],
+      },
+      modelHistory: {
+        pi: ["mgp/antigravity/gemini-4-argon", `https://user:${SECRET}@example.com/model`],
+      },
+    });
+    const doc = await readSettingsDocument();
+    assert.equal(doc.agentModels.pi[0]?.model, "mgp/antigravity/gemini-4-argon");
+    assert.deepEqual(doc.agentModels.pi[0]?.thinkingEfforts, ["low", "medium", "high"]);
+    assert.deepEqual(doc.thinkingEfforts.pi, ["low", "medium", "high", "max"]);
+    assert.deepEqual(doc.thinkingEfforts.codex, ["low", "medium", "high", "xhigh", "max"]);
+    assert.deepEqual(doc.thinkingEfforts.kimi, []);
+    assert.equal(doc.modelHistory.pi[0], "mgp/antigravity/gemini-4-argon");
+    assert.equal(JSON.stringify(doc).includes(SECRET), false);
   });
 });
 

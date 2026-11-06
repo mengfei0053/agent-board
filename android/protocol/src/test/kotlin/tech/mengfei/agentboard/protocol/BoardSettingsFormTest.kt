@@ -2,6 +2,8 @@ package tech.mengfei.agentboard.protocol
 
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.*
@@ -38,6 +40,100 @@ class BoardSettingsFormTest {
         assertFalse("clear" in envelope.payload)
         assertFalse("default" in envelope.payload.obj("cliPaths")!!)
         assertEquals("Fix this", readQuickPrompts(buildJsonObject { put("settings", envelope.payload) })!!.single().content)
+    }
+
+    @Test
+    fun readsAgentModelCatalogAndSelectsThinkingEfforts() {
+        val payload = buildJsonObject {
+            put("settings", buildJsonObject {
+                put("quickPrompts", buildJsonArray {})
+                put("agentModels", buildJsonObject {
+                    put("pi", buildJsonArray {
+                        add(buildJsonObject {
+                            put("model", "mgp/antigravity/gemini-4-argon")
+                            put("thinkingEfforts", buildJsonArray {
+                                add(JsonPrimitive("low"))
+                                add(JsonPrimitive("high"))
+                            })
+                        })
+                        add(buildJsonObject {
+                            put("model", "openai/gpt-5")
+                            put("thinkingEfforts", buildJsonArray {
+                                add(JsonPrimitive("medium"))
+                                add(JsonPrimitive("max"))
+                            })
+                        })
+                    })
+                })
+                put("thinkingEfforts", buildJsonObject {
+                    put("pi", buildJsonArray {
+                        add(JsonPrimitive("low"))
+                        add(JsonPrimitive("medium"))
+                        add(JsonPrimitive("high"))
+                        add(JsonPrimitive("max"))
+                    })
+                    put("kimi", buildJsonArray {})
+                })
+                put("modelHistory", buildJsonObject {
+                    put("pi", buildJsonArray {
+                        add(JsonPrimitive("openai/gpt-5"))
+                    })
+                })
+            })
+        }
+        val catalog = readAgentModelCatalog(payload)!!
+        val options = modelOptionsForAgent(catalog, "pi")
+        assertEquals(listOf("openai/gpt-5", "mgp/antigravity/gemini-4-argon"), options.map { it.model })
+        assertEquals(listOf("low", "high"), supportedThinkingEfforts(catalog, "pi", "mgp/antigravity/gemini-4-argon"))
+        assertEquals("high", pickDefaultThinkingEffort(supportedThinkingEfforts(catalog, "pi", "mgp/antigravity/gemini-4-argon")))
+        assertEquals(listOf("low", "medium", "high", "max"), supportedThinkingEfforts(catalog, "pi", ""))
+        assertEquals("medium", pickDefaultThinkingEffort(supportedThinkingEfforts(catalog, "pi", "")))
+        assertTrue(supportedThinkingEfforts(catalog, "kimi", "").isEmpty())
+        assertEquals("", pickDefaultThinkingEffort(supportedThinkingEfforts(catalog, "kimi", "")))
+    }
+
+    @Test
+    fun createAndContinueFramesIncludeOptionalModelAndThinkingEffort() {
+        val created = validateCreate(
+            id = "m1",
+            ts = 1L,
+            boardId = "board-1",
+            title = "Build feature",
+            prompt = "Implement it",
+            agent = "pi",
+            cwd = "/tmp/repo",
+            idempotencyKey = "idem-create-01",
+            model = "  mgp/antigravity/gemini-4-argon  ",
+            thinkingEffort = "  high  ",
+        ) as Validated.Ok
+        assertEquals("mgp/antigravity/gemini-4-argon", created.value.payload.text("model"))
+        assertEquals("high", created.value.payload.text("thinkingEffort"))
+
+        val defaultCreate = validateCreate(
+            id = "m2",
+            ts = 1L,
+            boardId = "board-1",
+            title = "Build feature",
+            prompt = "Implement it",
+            agent = "pi",
+            cwd = "/tmp/repo",
+            idempotencyKey = "idem-create-02",
+        ) as Validated.Ok
+        assertNull(defaultCreate.value.payload.text("model"))
+        assertNull(defaultCreate.value.payload.text("thinkingEffort"))
+
+        val continued = validatePhoneContinue(
+            id = "m3",
+            ts = 2L,
+            boardId = "board-1",
+            taskId = "task_01",
+            idempotencyKey = "idem-cont-01",
+            prompt = "Next round",
+            model = "claude-opus-4-6",
+            thinkingEffort = "max",
+        ) as Validated.Ok
+        assertEquals("claude-opus-4-6", continued.value.payload.text("model"))
+        assertEquals("max", continued.value.payload.text("thinkingEffort"))
     }
 
     private fun settingsPayload(): JsonObject = buildJsonObject {

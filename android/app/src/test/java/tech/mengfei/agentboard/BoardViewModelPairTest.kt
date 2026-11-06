@@ -28,6 +28,7 @@ import tech.mengfei.agentboard.protocol.MigrationState
 import tech.mengfei.agentboard.protocol.PhoneSession
 import tech.mengfei.agentboard.protocol.SWITCHED_PREFIX
 import tech.mengfei.agentboard.protocol.decodeCatalog
+import tech.mengfei.agentboard.protocol.text
 
 /**
  * Holds the pair HTTP call inside [BoardViewModel.pair], then releases a successful body
@@ -264,6 +265,43 @@ class BoardConnectionTest {
             assertNull(model.state.value.commandNote)
             assertNull(model.state.value.formError)
             assertEquals(1, model.state.value.quickPrompts.size)
+            assertEquals(
+                listOf("mgp/antigravity/gemini-4-argon"),
+                model.state.value.modelCatalog.agentModels["pi"]?.map { it.model },
+            )
+            model.updateDraftAgent("pi")
+            model.updateDraftModel("mgp/antigravity/gemini-4-argon")
+            model.updateDraftThinkingEffort("high")
+            model.updateDraftTitle("Ship model picker")
+            model.updateDraftPrompt("Run with selected model")
+            model.submitCreate()
+            val createCmd = relay.sent.last { it.type == "cmd.create" }
+            assertEquals("pi", createCmd.text("agent"))
+            assertEquals("mgp/antigravity/gemini-4-argon", createCmd.text("model"))
+            assertEquals("high", createCmd.text("thinkingEffort"))
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun continueTaskForwardsSelectedModelAndThinkingEffort() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticateWithCompletedTask()
+            val settingsGetAfterOpen: tech.mengfei.agentboard.protocol.Envelope
+            model.openTask("task_1")
+            model.openContinue()
+            settingsGetAfterOpen = relay.sent.last { it.type == "cmd.settings.get" }
+            relay.executeSettings(settingsGetAfterOpen.id)
+            model.updateContinuePrompt("Continue with new model")
+            model.updateContinueModel("mgp/antigravity/gemini-4-argon")
+            model.updateContinueThinkingEffort("xhigh")
+            model.submitContinue()
+            val contCmd = relay.sent.last { it.type == "cmd.continue" }
+            assertEquals("task_1", contCmd.text("taskId"))
+            assertEquals("Continue with new model", contCmd.text("prompt"))
+            assertEquals("mgp/antigravity/gemini-4-argon", contCmd.text("model"))
+            assertEquals("xhigh", contCmd.text("thinkingEffort"))
         } finally { owner.clear() }
     }
 
@@ -320,11 +358,17 @@ private class ConnectionRelay : RelayApi {
         listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
         listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
     }
+    fun authenticateWithCompletedTask() {
+        listener.onOpen()
+        val hello = sent.last { it.type == "client.hello" }
+        listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
+        listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[{"id":"task_1","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","thinkingEffort":"medium","sessionId":"sess_1"}],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
+    }
     fun acceptSettings(ref: String) {
         listener.onMessage("""{"v":1,"id":"settings-accepted","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"accepted","commandId":"cmd-1"}}""")
     }
     fun executeSettings(ref: String) {
-        listener.onMessage("""{"v":1,"id":"settings-exec","type":"ack","ts":3,"payload":{"ref":"$ref","stage":"executed","settings":{"quickPrompts":[{"id":"q1","label":"Fix","content":"Fix bug"}]}}}""")
+        listener.onMessage("""{"v":1,"id":"settings-exec","type":"ack","ts":3,"payload":{"ref":"$ref","stage":"executed","settings":{"quickPrompts":[{"id":"q1","label":"Fix","content":"Fix bug"}],"agentModels":{"pi":[{"model":"mgp/antigravity/gemini-4-argon","thinkingEfforts":["low","medium","high","xhigh"]}]},"thinkingEfforts":{"pi":["low","medium","high","xhigh"]},"modelHistory":{"pi":["mgp/antigravity/gemini-4-argon"]}}}}""")
     }
     override fun closeSocket(credentialId: String) = Unit
     override fun closeAll() = Unit

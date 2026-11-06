@@ -9,6 +9,30 @@ import kotlinx.serialization.json.put
 
 data class QuickPromptChip(val id: String, val label: String, val content: String)
 
+data class AgentModelItem(
+    val model: String,
+    val thinkingEfforts: List<String> = emptyList(),
+)
+
+data class AgentModelCatalog(
+    val agentModels: Map<String, List<AgentModelItem>> = emptyMap(),
+    val thinkingEfforts: Map<String, List<String>> = emptyMap(),
+    val modelHistory: Map<String, List<String>> = emptyMap(),
+)
+
+val DEFAULT_THINKING_EFFORTS_BY_KIND: Map<String, List<String>> = mapOf(
+    "pi" to listOf("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+    "claude" to listOf("low", "medium", "high", "xhigh", "max"),
+    "cursor" to listOf("low", "medium", "high", "xhigh", "max"),
+    "devin" to listOf("low", "medium", "high", "xhigh", "max"),
+    "codex" to listOf("low", "medium", "high", "xhigh", "max"),
+    "kimi" to emptyList(),
+)
+
+private val EFFORT_CANONICAL_ORDER = listOf(
+    "none", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+)
+
 val BOARD_AGENT_KEYS = listOf("codex", "agent", "pi", "claude", "devin", "kimi")
 val BOARD_PROXY_KEYS = listOf("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
 
@@ -182,6 +206,124 @@ fun readQuickPrompts(payload: JsonObject): List<QuickPromptChip>? {
         prompts.add(QuickPromptChip(id, label, content))
     }
     return prompts
+}
+
+fun readAgentModelCatalog(payload: JsonObject): AgentModelCatalog? {
+    val settings = payload.obj("settings") ?: return null
+    val modelsByKind = linkedMapOf<String, List<AgentModelItem>>()
+    settings.obj("agentModels")?.let { rawModels ->
+        for (kind in AGENT_KINDS) {
+            val arr = rawModels.array(kind) ?: continue
+            val seen = HashSet<String>()
+            val items = ArrayList<AgentModelItem>(arr.size)
+            for (element in arr) {
+                when (element) {
+                    is JsonPrimitive -> {
+                        if (!element.isString) continue
+                        val model = element.content.trim()
+                        if (model.isNotEmpty() && model.length <= 200 && seen.add(model)) {
+                            items.add(AgentModelItem(model, emptyList()))
+                        }
+                    }
+                    is JsonObject -> {
+                        val model = element.text("model")?.trim().orEmpty()
+                        if (model.isEmpty() || model.length > 200 || !seen.add(model)) continue
+                        val efforts = element.array("thinkingEfforts")
+                            ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.trim()?.lowercase() }
+                            ?.filter { it.isNotEmpty() && it.length <= 32 }
+                            ?.distinct()
+                            .orEmpty()
+                        items.add(AgentModelItem(model, efforts))
+                    }
+                    else -> continue
+                }
+            }
+            modelsByKind[kind] = items
+        }
+    }
+    val effortsByKind = linkedMapOf<String, List<String>>()
+    settings.obj("thinkingEfforts")?.let { rawEfforts ->
+        for (kind in AGENT_KINDS) {
+            val arr = rawEfforts.array(kind) ?: continue
+            val list = arr.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.trim()?.lowercase() }
+                .filter { it.isNotEmpty() && it.length <= 32 }
+                .distinct()
+            effortsByKind[kind] = list
+        }
+    }
+    val historyByKind = linkedMapOf<String, List<String>>()
+    settings.obj("modelHistory")?.let { rawHistory ->
+        for (kind in AGENT_KINDS) {
+            val arr = rawHistory.array(kind) ?: continue
+            val list = arr.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.trim() }
+                .filter { it.isNotEmpty() && it.length <= 200 }
+                .distinct()
+            historyByKind[kind] = list
+        }
+    }
+    return AgentModelCatalog(
+        agentModels = modelsByKind,
+        thinkingEfforts = effortsByKind,
+        modelHistory = historyByKind,
+    )
+}
+
+/** Recent models first (from modelHistory), followed by all synced agentModels for [agent]. */
+fun modelOptionsForAgent(catalog: AgentModelCatalog?, agent: String): List<AgentModelItem> {
+    val key = agent.trim()
+    val known = catalog?.agentModels?.get(key).orEmpty()
+    val byName = known.associateBy { it.model }
+    val history = catalog?.modelHistory?.get(key).orEmpty()
+    val out = ArrayList<AgentModelItem>(known.size + history.size)
+    val seen = HashSet<String>()
+    for (recent in history) {
+        val trimmed = recent.trim()
+        if (trimmed.isEmpty() || !seen.add(trimmed)) continue
+        out.add(byName[trimmed] ?: AgentModelItem(trimmed, emptyList()))
+    }
+    for (item in known) {
+        if (seen.add(item.model)) out.add(item)
+    }
+    return out
+}
+
+/** Supported thinking efforts for [agent] and optional [selectedModel], matching web board logic. */
+fun supportedThinkingEfforts(catalog: AgentModelCatalog?, agent: String, selectedModel: String = ""): List<String> {
+    val key = agent.trim()
+    val list = catalog?.agentModels?.get(key).orEmpty()
+    val trimmedModel = selectedModel.trim()
+    if (trimmedModel.isNotEmpty()) {
+        val matched = list.find { it.model == trimmedModel }
+            ?: list.find { it.model.equals(trimmedModel, ignoreCase = true) }
+        if (matched != null && matched.thinkingEfforts.isNotEmpty()) {
+            return matched.thinkingEfforts
+        }
+    }
+    val aggregated = LinkedHashSet<String>()
+    for (item in list) {
+        for (effort in item.thinkingEfforts) {
+            if (effort.isNotBlank()) aggregated.add(effort)
+        }
+    }
+    if (aggregated.isNotEmpty()) {
+        val ordered = EFFORT_CANONICAL_ORDER.filter { it in aggregated }.toMutableList()
+        for (effort in aggregated) {
+            if (effort !in ordered) ordered.add(effort)
+        }
+        return ordered
+    }
+    val explicit = catalog?.thinkingEfforts?.get(key)
+    if (explicit != null) return explicit
+    return DEFAULT_THINKING_EFFORTS_BY_KIND[key] ?: DEFAULT_THINKING_EFFORTS_BY_KIND.getValue("claude")
+}
+
+fun pickDefaultThinkingEffort(efforts: List<String>, preferred: String = ""): String {
+    if (efforts.isEmpty()) return ""
+    val cleanPreferred = preferred.trim()
+    if (cleanPreferred.isNotEmpty() && cleanPreferred in efforts) return cleanPreferred
+    if ("medium" in efforts) return "medium"
+    if ("high" in efforts) return "high"
+    return efforts.firstOrNull { it != "off" && it != "none" } ?: efforts.first()
 }
 
 /** True only when this command's executed body is a complete settings document. */

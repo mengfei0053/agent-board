@@ -330,14 +330,16 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError(parsed.code, parsed.message));
       return;
     }
-    const prompt = message.type === "cmd.continue" ? readContinuePrompt(message.payload) : { ok: true as const, prompt: undefined };
-    if (!prompt.ok) {
-      this.fail(message, new RelayCommandError(prompt.code, prompt.message));
+    const cont = message.type === "cmd.continue"
+      ? readContinueOptions(message.payload)
+      : { ok: true as const, prompt: undefined, model: undefined, thinkingEffort: undefined };
+    if (!cont.ok) {
+      this.fail(message, new RelayCommandError(cont.code, cont.message));
       return;
     }
     const task = message.type === "cmd.stop"
       ? await this.opts.facade.stop(parsed.taskId)
-      : await this.opts.facade.continue(parsed.taskId, prompt.prompt);
+      : await this.opts.facade.continue(parsed.taskId, cont.prompt, cont.model, cont.thinkingEffort);
     const mapped = mapBoardTask(task);
     if (!mapped) throw new RelayCommandError("board_http", "board request failed");
     if (this.closed) return;
@@ -597,6 +599,59 @@ function isLiveCommand(type: string): boolean {
     || type === "cmd.settings.put";
 }
 
+function readOptionalModel(
+  payload: Record<string, unknown>,
+): { ok: true; model?: string } | { ok: false; code: string; message: string } {
+  if (!("model" in payload) || payload.model == null || payload.model === "") return { ok: true };
+  if (typeof payload.model !== "string") return { ok: false, code: "bad_request", message: "model must be a string" };
+  const model = payload.model.trim();
+  if (!model) return { ok: true };
+  if (model.length > 200) return { ok: false, code: "bad_request", message: "model is too long" };
+  if ([...model].some((ch) => ch < " " || ch === "\u007f")) {
+    return { ok: false, code: "bad_request", message: "model is invalid" };
+  }
+  return { ok: true, model };
+}
+
+function readOptionalThinkingEffort(
+  payload: Record<string, unknown>,
+): { ok: true; thinkingEffort?: string } | { ok: false; code: string; message: string } {
+  if (!("thinkingEffort" in payload) || payload.thinkingEffort == null || payload.thinkingEffort === "") {
+    return { ok: true };
+  }
+  if (typeof payload.thinkingEffort !== "string") {
+    return { ok: false, code: "bad_request", message: "thinkingEffort must be a string" };
+  }
+  const thinkingEffort = payload.thinkingEffort.trim();
+  if (!thinkingEffort) return { ok: true };
+  if (thinkingEffort.length > 32) {
+    return { ok: false, code: "bad_request", message: "thinkingEffort is too long" };
+  }
+  if ([...thinkingEffort].some((ch) => ch < " " || ch === "\u007f")) {
+    return { ok: false, code: "bad_request", message: "thinkingEffort is invalid" };
+  }
+  return { ok: true, thinkingEffort };
+}
+
+function readContinueOptions(
+  payload: Record<string, unknown>,
+):
+  | { ok: true; prompt?: string; model?: string; thinkingEffort?: string }
+  | { ok: false; code: string; message: string } {
+  const prompt = readContinuePrompt(payload);
+  if (!prompt.ok) return prompt;
+  const model = readOptionalModel(payload);
+  if (!model.ok) return model;
+  const effort = readOptionalThinkingEffort(payload);
+  if (!effort.ok) return effort;
+  return {
+    ok: true,
+    prompt: prompt.prompt,
+    model: model.model,
+    thinkingEffort: effort.thinkingEffort,
+  };
+}
+
 function readContinuePrompt(
   payload: Record<string, unknown>,
 ): { ok: true; prompt?: string } | { ok: false; code: string; message: string } {
@@ -634,6 +689,10 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
   }
   const cwdError = localCwdError(payload.cwd);
   if (cwdError) return { ok: false, code: "bad_request", message: cwdError };
+  const model = readOptionalModel(payload);
+  if (!model.ok) return model;
+  const effort = readOptionalThinkingEffort(payload);
+  if (!effort.ok) return effort;
   if ("useGitWorktree" in payload && payload.useGitWorktree != null && typeof payload.useGitWorktree !== "boolean") {
     return { ok: false, code: "bad_request", message: "useGitWorktree must be a boolean" };
   }
@@ -644,17 +703,20 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
     }
     workspaceId = payload.workspaceId;
   }
+  const input: Parameters<BoardFacade["create"]>[0] = {
+    kind: agent,
+    title: payload.title,
+    prompt: payload.prompt,
+    cwd: payload.cwd,
+  };
+  if (model.model) input.model = model.model;
+  if (effort.thinkingEffort) input.thinkingEffort = effort.thinkingEffort;
+  if (workspaceId) input.workspaceId = workspaceId;
+  if (payload.useGitWorktree === true) input.useGitWorktree = true;
   return {
     ok: true,
     key: key.key,
-    input: {
-      kind: agent,
-      title: payload.title,
-      prompt: payload.prompt,
-      cwd: payload.cwd,
-      ...(workspaceId ? { workspaceId } : {}),
-      ...(payload.useGitWorktree === true ? { useGitWorktree: true } : {}),
-    },
+    input,
   };
 }
 

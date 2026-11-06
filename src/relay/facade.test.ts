@@ -117,6 +117,17 @@ describe("board facade create gates", () => {
       "bad_request",
     );
     assert.equal(calls.length, 3);
+
+    await facade.create({
+      kind: "pi",
+      title: "With model and effort",
+      prompt: "go",
+      cwd: dir,
+      model: "  mgp/antigravity/gemini-4-argon  ",
+      thinkingEffort: "  high  ",
+    });
+    assert.equal(calls[3]?.model, "mgp/antigravity/gemini-4-argon");
+    assert.equal(calls[3]?.thinkingEffort, "high");
   });
 
   it("creates and deletes workspaces with the board's safety rules", async () => {

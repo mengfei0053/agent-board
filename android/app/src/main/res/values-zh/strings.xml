@@ -53,6 +53,15 @@
     <string name="started">开始时间</string>
     <string name="ended">结束时间</string>
     <string name="model">模型</string>
+    <string name="thinking_effort">思考强度</string>
+    <string name="default_model_option">默认模型（不指定）</string>
+    <string name="keep_current_model">沿用当前模型</string>
+    <string name="model_search_placeholder">搜索或输入模型 ID…</string>
+    <string name="use_custom_model">使用「%1$s」</string>
+    <string name="recent_models">最近使用</string>
+    <string name="all_models">可选模型</string>
+    <string name="no_matching_models">无匹配模型</string>
+    <string name="thinking_not_supported">当前 Agent 无思考强度选项</string>
     <string name="exit_code">退出码</string>
     <string name="session">会话</string>
     <string name="resume_label">继续会话</string>

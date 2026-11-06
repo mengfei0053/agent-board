@@ -101,7 +101,7 @@ describe("facade settings and workspace cards", () => {
     assert.equal(rejected.message, "task is still running");
     assert.equal(getTask(draft.id)?.status, "running");
 
-    upsertTask({ ...getTask(draft.id)!, status: "stopped" });
+  upsertTask({ ...getTask(draft.id)!, status: "stopped", sessionId: "sess-1" });
     const archived = await facade.archive(draft.id);
     assert.deepEqual(archived, { taskId: draft.id });
     assert.equal(getTask(draft.id)?.status, "archived");
@@ -110,9 +110,11 @@ describe("facade settings and workspace cards", () => {
     const stopped = await reject(facade.stop(draft.id));
     assert.equal(stopped.code, "archived_readonly");
     assert.equal(getTask(draft.id)?.status, "archived");
-    const continued = await facade.continue(draft.id, "more");
+    const continued = await facade.continue(draft.id, "more", "mgp/antigravity/gemini-4-argon", "high");
     assert.equal(continued.status, "queued");
     assert.equal(continued.iteration, 2);
+    assert.equal(continued.model, "mgp/antigravity/gemini-4-argon");
+    assert.equal(continued.thinkingEffort, "high");
     assert.equal(continued.prompts?.[1]?.prompt, "more");
     assert.equal(getTask(draft.id)?.status, "queued");
   });

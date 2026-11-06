@@ -826,6 +826,41 @@ describe("connector session", () => {
     assert.equal(logs.join("\n").includes(secret), false);
     session.close();
   });
+
+  it("forwards optional model and thinkingEffort on cmd.create and cmd.continue", async () => {
+    const facade = memoryFacade({
+      tasks: [makeTask({ id: "t_cont", status: "succeeded", model: "old-model", thinkingEffort: "low" })],
+    });
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+
+    session.handleCommand(createCmd({
+      idempotencyKey: "create-model-effort-1",
+      model: "mgp/antigravity/gemini-4-argon",
+      thinkingEffort: "high",
+    }));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "create-model-effort-1"));
+    const createAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "create-model-effort-1");
+    const createdTask = createAck?.payload.task as { model?: string; thinkingEffort?: string };
+    assert.equal(createdTask.model, "mgp/antigravity/gemini-4-argon");
+    assert.equal(createdTask.thinkingEffort, "high");
+
+    session.handleCommand(frame("cmd.continue", {
+      boardId: "thinkbook",
+      idempotencyKey: "cont-model-effort-1",
+      taskId: "t_cont",
+      prompt: "keep going",
+      model: "claude-opus-4-6",
+      thinkingEffort: "max",
+    }, "cmd-cont-model"));
+    await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "cont-model-effort-1"));
+    const contAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "cont-model-effort-1");
+    const contTask = contAck?.payload.task as { model?: string; thinkingEffort?: string };
+    assert.equal(contTask.model, "claude-opus-4-6");
+    assert.equal(contTask.thinkingEffort, "max");
+    session.close();
+  });
 });
 
 function openSession(facade: MemoryFacade, send: RelaySender, idempotency: CreateIdempotency): ConnectorSession {

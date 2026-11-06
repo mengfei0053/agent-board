@@ -84,6 +84,8 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
         kind: input.kind,
         cwd: input.cwd,
         prompt: input.prompt,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.thinkingEffort ? { thinkingEffort: input.thinkingEffort } : {}),
         status: "queued",
         summary: undefined,
       });
@@ -117,11 +119,13 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       return { ...task };
     },
     task: (id: string) => tasks.find((item) => item.id === id),
-    continue: async (id: string, prompt?: string) => {
+    continue: async (id: string, prompt?: string, model?: string, thinkingEffort?: string) => {
       const task = tasks.find((item) => item.id === id);
       if (!task) throw new Error("not found");
       task.status = "running";
       if (prompt) task.prompt = prompt;
+      if (model) task.model = model;
+      if (thinkingEffort) task.thinkingEffort = thinkingEffort;
       return { ...task };
     },
     createWorkspace: async (input: FacadeWorkspaceInput) => {

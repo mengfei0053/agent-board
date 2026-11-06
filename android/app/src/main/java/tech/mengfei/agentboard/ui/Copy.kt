@@ -80,6 +80,8 @@ private val EXACT = mapOf(
     "workspaceId is invalid" to "工作区 ID 无效。",
     "limit is invalid" to "分页大小无效。",
     "cursor is invalid" to "分页游标无效。",
+    "model must be 1-200 characters" to "模型名称需为 1–200 个字符。",
+    "thinkingEffort must be 1-32 characters" to "思考强度需为 1–32 个字符。",
     "idempotencyKey must be 8-80 visible ASCII characters" to "幂等键无效。",
     "boardId must be 1-64 letters, digits, '.', '_' or '-'" to "看板 ID 无效。",
 )

@@ -76,6 +76,10 @@ export function redactDatabaseUrl(url?: string): string {
 
 let pool: pg.Pool | null = null;
 
+export function hasPool(): boolean {
+  return pool !== null;
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
     pool = new Pool({ connectionString: databaseUrl() });

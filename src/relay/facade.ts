@@ -3,7 +3,7 @@ import { publish as publishBoardEvent, subscribe } from "../bus.js";
 import { workspaceGitStatus, type GitWorkspaceStatus } from "../gitStatus.js";
 import { getGitWorktreeEligibility } from "../gitWorktree.js";
 import { HttpError } from "../httpError.js";
-import { assertTextLimit, MAX_PROMPT_CHARS, MAX_TITLE_CHARS } from "../limits.js";
+import { assertTextLimit, MAX_MODEL_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS } from "../limits.js";
 import {
   archiveTerminalTask,
   boardSnapshot,
@@ -27,6 +27,8 @@ export type FacadeCreateInput = {
   title: string;
   prompt: string;
   cwd: string;
+  model?: string;
+  thinkingEffort?: string;
   /** Only `true` is forwarded. `false` and omission leave the workspace path. */
   useGitWorktree?: boolean;
   /**
@@ -51,7 +53,7 @@ export type BoardFacade = {
   stop(id: string): Promise<Task>;
   /** Raw task for `cmd.detail`. Not the clipped list snapshot. */
   task(id: string): Task | undefined;
-  continue(id: string, prompt?: string): Promise<Task>;
+  continue(id: string, prompt?: string, model?: string, thinkingEffort?: string): Promise<Task>;
   /** Same store path as `POST /api/workspaces` (`name` + `path` only). */
   createWorkspace(input: FacadeWorkspaceInput): Promise<Workspace>;
   /**
@@ -91,7 +93,7 @@ export type BoardFacadeDeps = {
   createAndStart?: (input: CreateTaskInput) => Promise<Task>;
   stopTask?: (id: string) => Promise<Task>;
   task?: (id: string) => Task | undefined;
-  continueTask?: (id: string, prompt?: string) => Promise<Task>;
+  continueTask?: (id: string, prompt?: string, model?: string, thinkingEffort?: string) => Promise<Task>;
   subscribe?: (fn: (ev: BoardEvent) => void) => () => void;
   resolveAllowedDirectory?: (input: string, label?: string) => string;
   upsertWorkspace?: (ws: Workspace) => Promise<Workspace>;
@@ -168,9 +170,9 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
       }
     },
     task: (id) => (deps.task ? deps.task(id) : readStoredTask(id)),
-    continue: async (id, prompt) => {
+    continue: async (id, prompt, model, thinkingEffort) => {
       try {
-        return await cont(id, prompt);
+        return await cont(id, prompt, model, thinkingEffort);
       } catch (err) {
         if (err instanceof Error && err.message === "task is still running; stop it before continue") {
           throw new RelayCommandError("bad_request", err.message);
@@ -195,11 +197,19 @@ async function createWithHttpGates(
   try {
     assertTextLimit(input.title, MAX_TITLE_CHARS, "title");
     assertTextLimit(input.prompt, MAX_PROMPT_CHARS, "prompt");
+    if (input.model != null) assertTextLimit(input.model, MAX_MODEL_CHARS, "model");
+    if (input.thinkingEffort != null) assertTextLimit(input.thinkingEffort, 32, "thinkingEffort");
   } catch (err) {
     throw relayErrorFrom(err);
   }
   if (!input.title.trim()) throw new RelayCommandError("bad_request", "title is required");
   if (!input.prompt.trim()) throw new RelayCommandError("bad_request", "prompt is required");
+  if (input.model != null && (typeof input.model !== "string" || /[\u0000-\u001f\u007f]/.test(input.model))) {
+    throw new RelayCommandError("bad_request", "model is invalid");
+  }
+  if (input.thinkingEffort != null && (typeof input.thinkingEffort !== "string" || /[\u0000-\u001f\u007f]/.test(input.thinkingEffort))) {
+    throw new RelayCommandError("bad_request", "thinkingEffort is invalid");
+  }
   if (input.useGitWorktree != null && typeof input.useGitWorktree !== "boolean") {
     throw new RelayCommandError("bad_request", "useGitWorktree must be a boolean");
   }
@@ -215,11 +225,15 @@ async function createWithHttpGates(
   } catch (err) {
     throw relayErrorFrom(err);
   }
+  const model = input.model?.trim() || undefined;
+  const thinkingEffort = input.thinkingEffort?.trim() || undefined;
   const body: CreateTaskInput = {
     kind: input.kind,
     title: input.title.trim(),
     prompt: input.prompt,
     cwd,
+    ...(model ? { model } : {}),
+    ...(thinkingEffort ? { thinkingEffort } : {}),
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.useGitWorktree === true ? { useGitWorktree: true } : {}),
   };

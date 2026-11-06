@@ -20,12 +20,16 @@ test("cmd.create keeps idempotency fields and drops unknown ones", () => {
       prompt: "Investigate the flaky login test and propose a fix.",
       agent: "cursor",
       cwd: "/home/me/src/app",
+      model: "mgp/antigravity/gemini-4-argon",
+      thinkingEffort: "high",
       note: "ignore me",
     },
   });
   assert.equal(parsed.ok, true);
   if (!parsed.ok || parsed.kind !== "cmd.create") return;
   assert.equal(parsed.idempotencyKey, "android-req-7f3a");
+  assert.equal(parsed.envelope.payload?.model, "mgp/antigravity/gemini-4-argon");
+  assert.equal(parsed.envelope.payload?.thinkingEffort, "high");
   assert.equal(parsed.envelope.payload?.note, undefined);
 });
 
@@ -200,10 +204,14 @@ test("task detail fields and cmd.detail round-trip", () => {
     idempotencyKey: "idem-continue",
     taskId: "task_01",
     prompt: "keep going\nplease",
+    model: "claude-sonnet-4-6",
+    thinkingEffort: "medium",
   }));
   assert.equal(continued.ok, true);
   if (!continued.ok || continued.kind !== "cmd.continue") return;
   assert.equal(continued.envelope.payload?.prompt, "keep going\nplease");
+  assert.equal(continued.envelope.payload?.model, "claude-sonnet-4-6");
+  assert.equal(continued.envelope.payload?.thinkingEffort, "medium");
 });
 
 function frame(type: string, id: string, payload: Record<string, unknown>) {
@@ -333,6 +341,16 @@ test("board.register accepts the capability names and lookup accepts the new com
       },
       quickPrompts: [],
       codexSandbox: true,
+      agentModels: {
+        pi: [{ model: "mgp/antigravity/gemini-4-argon", thinkingEfforts: ["low", "high"] }],
+      },
+      thinkingEfforts: {
+        pi: ["low", "high"],
+        kimi: [],
+      },
+      modelHistory: {
+        pi: ["mgp/antigravity/gemini-4-argon"],
+      },
       leaked: secret,
     },
   }));
@@ -341,10 +359,17 @@ test("board.register accepts the capability names and lookup accepts the new com
   const settings = ack.envelope.payload?.settings as {
     leaked?: string;
     proxyEnv: { codex: { HTTP_PROXY: { override: string; hasCredential: boolean } } };
+    agentModels?: { pi: Array<{ model: string; thinkingEfforts: string[] }> };
+    thinkingEfforts?: { pi: string[] };
+    modelHistory?: { pi: string[] };
   };
   assert.equal(settings.leaked, undefined);
   assert.equal(settings.proxyEnv.codex.HTTP_PROXY.override, "http://user:***@127.0.0.1:8899");
   assert.equal(settings.proxyEnv.codex.HTTP_PROXY.hasCredential, true);
+  assert.equal(settings.agentModels?.pi[0]?.model, "mgp/antigravity/gemini-4-argon");
+  assert.deepEqual(settings.agentModels?.pi[0]?.thinkingEfforts, ["low", "high"]);
+  assert.deepEqual(settings.thinkingEfforts?.pi, ["low", "high"]);
+  assert.deepEqual(settings.modelHistory?.pi, ["mgp/antigravity/gemini-4-argon"]);
   assert.equal(JSON.stringify(ack.envelope).includes(secret), false);
   const archiveAck = parseMessage(frame("ack", "ack-archive", {
     ref: "phone-archive-1",

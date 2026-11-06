@@ -118,7 +118,7 @@ WebSocket frames are limited to `WS_MESSAGES_PER_SEC` (default 40) per socket. E
 }
 ```
 
-`idempotencyKey` is required, 8–80 visible ASCII characters, and is scoped to the board and the command type. `agent` and `cwd` are optional. Optional `workspaceId` files the task in that workspace and uses the workspace path as cwd, the same as web `POST /api/tasks`. Omit it to keep path matching. Optional `useGitWorktree` is a strict boolean. Omit it or send `false` for the usual create. `true` asks the board to make a git worktree from `cwd` when that path is a git work tree root. The relay forwards only `true` and rejects any other type. The relay does not create worktrees.
+`idempotencyKey` is required, 8–80 visible ASCII characters, and is scoped to the board and the command type. `agent`, `cwd`, `model` (1–200 characters), and `thinkingEffort` (1–32 characters) are optional. Optional `workspaceId` files the task in that workspace and uses the workspace path as cwd, the same as web `POST /api/tasks`. Omit it to keep path matching. Optional `useGitWorktree` is a strict boolean. Omit it or send `false` for the usual create. `true` asks the board to make a git worktree from `cwd` when that path is a git work tree root. The relay forwards only `true` and rejects any other type. The relay does not create worktrees.
 
 The relay answers `accepted` immediately, then `executed` when the board acks:
 
@@ -195,7 +195,7 @@ The board should ack when it accepts the work. Completion is `evt.task.done`, no
 }
 ```
 
-`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters. Terminal and archived tasks can continue. Continuing an archived task resumes its original session, queues the next iteration, removes it from the archive list, and returns it to the active board.
+`cmd.continue` and `cmd.stop` use the same ack layers. Both require `idempotencyKey`. Optional `prompt` on `cmd.continue` is the extra instruction from the web task popup. Omit it and the board uses `请基于当前上下文继续完成任务`. `prompt` may contain newlines and is at most 20,000 characters. `cmd.continue` also accepts optional `model` (1–200 characters) and `thinkingEffort` (1–32 characters) to override the next iteration's model and thinking effort. Terminal and archived tasks can continue. Continuing an archived task resumes its original session, queues the next iteration, removes it from the archive list, and returns it to the active board.
 
 `cmd.detail` reads one task for the phone detail screen. It uses the same ack and idempotency key as the other commands. The executed ack's `task` is a full detail card (`detail: "full"`). Opening the screen sends a new key; it does not change the task. An archived task uses the same card with `status: "archived"`. That status is rejected on `evt.snapshot` and `evt.task`, so old phones never see it in the hot list.
 
@@ -211,7 +211,7 @@ These handlers run in the embedded dialer (`src/relay/`), the standalone connect
 
 `cmd.workspace.update` payload: `boardId`, `idempotencyKey`, `workspaceId`, `name`, `path`, and `settings` with all three keys. The board uses the same checks as `PATCH /api/workspaces/:id`: a present `settings` object replaces the stored object, and existing tasks keep `task.cwd`. The ack is the same workspace object as get. A failed save does not invent a success.
 
-`cmd.settings.get` payload: `boardId`, `idempotencyKey`. The ack `settings` is the `GET /api/settings` document. Proxy userinfo is `***` and `hasCredential` is set. Do not log that document.
+`cmd.settings.get` payload: `boardId`, `idempotencyKey`. The ack `settings` is the `GET /api/settings` document (including optional `agentModels`, `thinkingEfforts`, and `modelHistory` per agent kind). Proxy userinfo is `***` and `hasCredential` is set. Do not log that document.
 
 `cmd.settings.put` payload: `boardId`, `idempotencyKey`, plus the same partial body as `PUT /api/settings` (`cliPaths`, `proxyEnv`, `quickPrompts`, `codexSandbox`). `clear: true` is rejected with `bad_request` and writes nothing; that rejection is not stored. A value containing `***` as the URL userinfo is forwarded unchanged so the board keeps the stored secret. The relay forwards the new proxy URL to the board and does not write it to the log or the idempotency record. The stored result is the board ack after proxy userinfo is replaced with `***`. A second frame with the same key returns that redacted document and is not forwarded, even when the body differs. The ack is the committed redacted document, not a synthetic success. Omitted groups are left unchanged.
 

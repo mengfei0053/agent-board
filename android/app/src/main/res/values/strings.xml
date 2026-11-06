@@ -53,6 +53,15 @@
     <string name="started">Started</string>
     <string name="ended">Ended</string>
     <string name="model">Model</string>
+    <string name="thinking_effort">Thinking effort</string>
+    <string name="default_model_option">Default model (unspecified)</string>
+    <string name="keep_current_model">Keep current model</string>
+    <string name="model_search_placeholder">Search or type model ID…</string>
+    <string name="use_custom_model">Use “%1$s”</string>
+    <string name="recent_models">Recently used</string>
+    <string name="all_models">Available models</string>
+    <string name="no_matching_models">No matching models</string>
+    <string name="thinking_not_supported">Not supported for this agent</string>
     <string name="exit_code">Exit code</string>
     <string name="session">Session</string>
     <string name="resume_label">Resume command</string>

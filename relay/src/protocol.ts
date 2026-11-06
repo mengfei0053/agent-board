@@ -96,6 +96,7 @@ export type Task = {
   iteration?: number;
   cwd?: string;
   model?: string;
+  thinkingEffort?: string;
   sessionId?: string;
   startedAt?: number;
   endedAt?: number;
@@ -382,6 +383,12 @@ function parseCmdCreate(payload: unknown, id: string, ts: number): Incoming {
   const cwd = optionalText(record.value, "cwd", 1, 1024);
   if (!cwd.ok) return failure("bad_request", cwd.message, id);
   if (cwd.value) body.cwd = cwd.value;
+  const model = optionalText(record.value, "model", 1, 200);
+  if (!model.ok) return failure("bad_request", model.message, id);
+  if (model.value) body.model = model.value.trim();
+  const thinkingEffort = optionalText(record.value, "thinkingEffort", 1, 32);
+  if (!thinkingEffort.ok) return failure("bad_request", thinkingEffort.message, id);
+  if (thinkingEffort.value) body.thinkingEffort = thinkingEffort.value.trim();
   const worktree = readOptionalBoolean(record.value, "useGitWorktree");
   if (!worktree.ok) return failure("bad_request", worktree.message, id);
   if (worktree.value === true) body.useGitWorktree = true;
@@ -406,6 +413,12 @@ function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.conti
   const prompt = optionalMultiline(record.value.prompt, "prompt", 20_000);
   if (!prompt.ok) return failure("bad_request", prompt.message, id);
   if (prompt.value) body.prompt = prompt.value;
+  const model = optionalText(record.value, "model", 1, 200);
+  if (!model.ok) return failure("bad_request", model.message, id);
+  if (model.value) body.model = model.value.trim();
+  const thinkingEffort = optionalText(record.value, "thinkingEffort", 1, 32);
+  if (!thinkingEffort.ok) return failure("bad_request", thinkingEffort.message, id);
+  if (thinkingEffort.value) body.thinkingEffort = thinkingEffort.value.trim();
   return {
     ok: true,
     kind,
@@ -1013,6 +1026,7 @@ function readOptionalBoolean(
 }
 
 const CLI_KINDS = ["pi", "claude", "agent", "devin", "codex", "kimi"] as const;
+const AGENT_MODEL_KINDS = ["pi", "claude", "cursor", "agent", "devin", "codex", "kimi"] as const;
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"] as const;
 
 /** Same userinfo rule as the board (`src/proxyEnv.ts`). Idempotent on `user:***@`. */
@@ -1183,15 +1197,112 @@ function readBoardSettings(value: unknown): { ok: true; value: JsonObject } | { 
   const quickPrompts = readQuickPromptDocument(value.quickPrompts);
   if (!quickPrompts.ok) return quickPrompts;
   if (typeof value.codexSandbox !== "boolean") return { ok: false, message: "settings.codexSandbox must be a boolean" };
+  const settings: JsonObject = {
+    cliPaths: cliPaths.value,
+    proxyEnv: proxyEnv.value,
+    quickPrompts: quickPrompts.value,
+    codexSandbox: value.codexSandbox,
+  };
+  if (value.agentModels !== undefined) {
+    const agentModels = readAgentModelsDocument(value.agentModels);
+    if (!agentModels.ok) return agentModels;
+    settings.agentModels = agentModels.value;
+  }
+  if (value.thinkingEfforts !== undefined) {
+    const thinkingEfforts = readThinkingEffortsDocument(value.thinkingEfforts);
+    if (!thinkingEfforts.ok) return thinkingEfforts;
+    settings.thinkingEfforts = thinkingEfforts.value;
+  }
+  if (value.modelHistory !== undefined) {
+    const modelHistory = readModelHistoryDocument(value.modelHistory);
+    if (!modelHistory.ok) return modelHistory;
+    settings.modelHistory = modelHistory.value;
+  }
   return {
     ok: true,
-    value: {
-      cliPaths: cliPaths.value,
-      proxyEnv: proxyEnv.value,
-      quickPrompts: quickPrompts.value,
-      codexSandbox: value.codexSandbox,
-    },
+    value: settings,
   };
+}
+
+function readAgentModelsDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings.agentModels must be an object" };
+  const out: JsonObject = {};
+  for (const [kind, rawList] of Object.entries(value)) {
+    if (!(AGENT_MODEL_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, message: `unknown settings.agentModels kind: ${kind}` };
+    }
+    if (!Array.isArray(rawList)) return { ok: false, message: `settings.agentModels.${kind} must be an array` };
+    if (rawList.length > 500) return { ok: false, message: `settings.agentModels.${kind} exceeds 500 items` };
+    const items: Json[] = [];
+    for (const rawItem of rawList) {
+      if (typeof rawItem === "string") {
+        const model = readText(rawItem, `settings.agentModels.${kind}.model`, 1, 200);
+        if (!model.ok) return model;
+        items.push({ model: redactProxyCredential(model.value.trim()), thinkingEfforts: [] });
+        continue;
+      }
+      if (!isRecord(rawItem)) return { ok: false, message: `settings.agentModels.${kind} entry must be an object` };
+      const model = readText(rawItem.model, `settings.agentModels.${kind}.model`, 1, 200);
+      if (!model.ok) return model;
+      const efforts: Json[] = [];
+      if (rawItem.thinkingEfforts !== undefined) {
+        if (!Array.isArray(rawItem.thinkingEfforts)) {
+          return { ok: false, message: `settings.agentModels.${kind}.thinkingEfforts must be an array` };
+        }
+        if (rawItem.thinkingEfforts.length > 16) {
+          return { ok: false, message: `settings.agentModels.${kind}.thinkingEfforts exceeds 16 items` };
+        }
+        for (const rawEffort of rawItem.thinkingEfforts) {
+          const effort = readText(rawEffort, `settings.agentModels.${kind}.thinkingEfforts`, 1, 32);
+          if (!effort.ok) return effort;
+          efforts.push(effort.value.trim().toLowerCase());
+        }
+      }
+      items.push({ model: redactProxyCredential(model.value.trim()), thinkingEfforts: efforts });
+    }
+    out[kind] = items;
+  }
+  return { ok: true, value: out };
+}
+
+function readThinkingEffortsDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings.thinkingEfforts must be an object" };
+  const out: JsonObject = {};
+  for (const [kind, rawList] of Object.entries(value)) {
+    if (!(AGENT_MODEL_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, message: `unknown settings.thinkingEfforts kind: ${kind}` };
+    }
+    if (!Array.isArray(rawList)) return { ok: false, message: `settings.thinkingEfforts.${kind} must be an array` };
+    if (rawList.length > 16) return { ok: false, message: `settings.thinkingEfforts.${kind} exceeds 16 items` };
+    const efforts: Json[] = [];
+    for (const rawEffort of rawList) {
+      const effort = readText(rawEffort, `settings.thinkingEfforts.${kind}`, 1, 32);
+      if (!effort.ok) return effort;
+      efforts.push(effort.value.trim().toLowerCase());
+    }
+    out[kind] = efforts;
+  }
+  return { ok: true, value: out };
+}
+
+function readModelHistoryDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value)) return { ok: false, message: "settings.modelHistory must be an object" };
+  const out: JsonObject = {};
+  for (const [kind, rawList] of Object.entries(value)) {
+    if (!(AGENT_MODEL_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, message: `unknown settings.modelHistory kind: ${kind}` };
+    }
+    if (!Array.isArray(rawList)) return { ok: false, message: `settings.modelHistory.${kind} must be an array` };
+    if (rawList.length > 20) return { ok: false, message: `settings.modelHistory.${kind} exceeds 20 items` };
+    const models: Json[] = [];
+    for (const rawModel of rawList) {
+      const model = readText(rawModel, `settings.modelHistory.${kind}`, 1, 200);
+      if (!model.ok) return model;
+      models.push(redactProxyCredential(model.value.trim()));
+    }
+    out[kind] = models;
+  }
+  return { ok: true, value: out };
 }
 
 function readCliPathDocument(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
@@ -1447,6 +1558,7 @@ function taskToJson(task: Task): JsonObject {
   if (task.iteration != null) json.iteration = task.iteration;
   if (task.cwd) json.cwd = task.cwd;
   if (task.model) json.model = task.model;
+  if (task.thinkingEffort) json.thinkingEffort = task.thinkingEffort;
   if (task.sessionId) json.sessionId = task.sessionId;
   if (task.startedAt != null) json.startedAt = task.startedAt;
   if (task.endedAt != null) json.endedAt = task.endedAt;
@@ -1495,6 +1607,9 @@ function readTaskDetail(
   const model = optionalMultiline(value.model, "task.model", 200);
   if (!model.ok) return model;
   if (model.value) fields.model = model.value;
+  const thinkingEffort = optionalMultiline(value.thinkingEffort, "task.thinkingEffort", 32);
+  if (!thinkingEffort.ok) return thinkingEffort;
+  if (thinkingEffort.value) fields.thinkingEffort = thinkingEffort.value;
   const sessionId = optionalMultiline(value.sessionId, "task.sessionId", 200);
   if (!sessionId.ok) return sessionId;
   if (sessionId.value) fields.sessionId = sessionId.value;
