@@ -3230,7 +3230,10 @@ function renderWorkspaces() {
   updateWorkspaceCounts();
   const current = selectedWorkspaceId ? workspaces.get(selectedWorkspaceId) : null;
   if (wsBannerName) wsBannerName.textContent = current ? current.name : "未选择工作区";
-  if (wsBannerPath) wsBannerPath.textContent = current ? current.path : "请在左侧新建或选择工作区";
+  if (wsBannerPath) {
+    wsBannerPath.textContent = current ? current.path : "请在左侧新建或选择工作区";
+    wsBannerPath.title = current ? current.path : "";
+  }
   const canMutate = Boolean(current);
   document.getElementById("ws-edit").disabled = !canMutate;
   document.getElementById("ws-delete").disabled = !canMutate;
@@ -3245,7 +3248,7 @@ const GIT_COLLAPSE_KEY = "agent-board.gitPanelCollapsed";
 
 function applyGitCollapsed() {
   if (!gitPanel || !gitToggle) return;
-  const collapsed = localStorage.getItem(GIT_COLLAPSE_KEY) === "1";
+  const collapsed = localStorage.getItem(GIT_COLLAPSE_KEY) !== "0";
   gitPanel.classList.toggle("is-collapsed", collapsed);
   gitToggle.textContent = collapsed ? "展开" : "收起";
   gitToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");

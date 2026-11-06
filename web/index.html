@@ -78,23 +78,22 @@
             <strong id="ws-banner-name">—</strong>
             <span class="muted ws-banner-path" id="ws-banner-path"></span>
           </div>
+          <section class="git-panel is-collapsed" id="git-panel" hidden aria-label="Git 状态">
+            <div class="git-panel-head">
+              <h2>Git</h2>
+              <span class="git-panel-summary muted" id="git-panel-summary">加载中…</span>
+              <div class="git-panel-actions">
+                <button type="button" class="secondary" id="git-refresh">刷新</button>
+                <button type="button" class="secondary" id="git-toggle" aria-expanded="false" aria-controls="git-panel-body">展开</button>
+              </div>
+            </div>
+            <div id="git-panel-body" class="git-panel-body"></div>
+          </section>
           <div class="ws-banner-actions">
             <button type="button" class="secondary" id="ws-edit" title="编辑工作区">编辑</button>
             <button type="button" class="secondary-danger" id="ws-delete" title="删除工作区">删除</button>
           </div>
         </div>
-
-        <section class="git-panel" id="git-panel" hidden aria-label="Git 状态">
-          <div class="git-panel-head">
-            <h2>Git</h2>
-            <span class="git-panel-summary muted" id="git-panel-summary">加载中…</span>
-            <div class="git-panel-actions">
-              <button type="button" class="secondary" id="git-refresh">刷新</button>
-              <button type="button" class="secondary" id="git-toggle" aria-expanded="true" aria-controls="git-panel-body">收起</button>
-            </div>
-          </div>
-          <div id="git-panel-body" class="git-panel-body"></div>
-        </section>
 
         <section class="swimlanes" id="swimlanes">
           <div class="lane" data-tab="draft">
