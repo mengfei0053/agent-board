@@ -4,7 +4,7 @@ import { getPool } from "./db.js";
 import { HttpError } from "./httpError.js";
 import { spawnCollect } from "./spawnCollect.js";
 
-export const CLI_COMMAND_KEYS = ["pi", "claude", "agent", "devin", "codex"] as const;
+export const CLI_COMMAND_KEYS = ["pi", "claude", "agent", "devin", "codex", "kimi"] as const;
 export type CliCommandKey = (typeof CLI_COMMAND_KEYS)[number];
 
 export const CLI_COMMAND_DEFAULTS: Record<CliCommandKey, string> = {
@@ -13,6 +13,7 @@ export const CLI_COMMAND_DEFAULTS: Record<CliCommandKey, string> = {
   agent: "agent",
   devin: "devin",
   codex: "codex",
+  kimi: "kimi",
 };
 
 /** Human labels for settings UI (kind → spawn binary). */
@@ -22,6 +23,7 @@ export const CLI_COMMAND_LABELS: Record<CliCommandKey, string> = {
   agent: "Cursor CLI (agent)",
   devin: "Devin CLI (devin)",
   codex: "Codex CLI (codex)",
+  kimi: "Kimi Code CLI (kimi)",
 };
 
 const META_KEY = "cli_paths";

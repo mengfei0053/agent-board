@@ -9,7 +9,7 @@ import kotlinx.serialization.json.put
 
 data class QuickPromptChip(val id: String, val label: String, val content: String)
 
-val BOARD_AGENT_KEYS = listOf("codex", "agent", "pi", "claude", "devin")
+val BOARD_AGENT_KEYS = listOf("codex", "agent", "pi", "claude", "devin", "kimi")
 val BOARD_PROXY_KEYS = listOf("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
 
 data class AgentSettingsForm(

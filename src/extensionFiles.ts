@@ -7,7 +7,7 @@ import { parse, stringify } from "smol-toml";
 import { dataDir } from "./db.js";
 import type { McpServers } from "./workspaceMcp.js";
 
-export const EXTENSION_AGENTS = ["pi", "claude", "cursor", "devin", "codex"] as const;
+export const EXTENSION_AGENTS = ["pi", "claude", "cursor", "devin", "codex", "kimi"] as const;
 export type ExtensionAgent = typeof EXTENSION_AGENTS[number];
 type ObjectMap = Record<string, unknown>;
 type Ownership = Record<string, { original?: unknown; applied: unknown; pending?: unknown; before?: unknown }>;
@@ -19,12 +19,14 @@ export function extensionPaths(home = homedir(), env = process.env) {
   const pi = env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
   const codex = env.CODEX_HOME || join(home, ".codex");
   const claude = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+  const kimi = env.KIMI_CODE_HOME || join(home, ".kimi-code");
   return {
     pi: { mcp: join(pi, "mcp.json"), skills: join(pi, "skills") },
     claude: { mcp: env.CLAUDE_CONFIG_DIR ? join(claude, ".claude.json") : join(home, ".claude.json"), skills: join(claude, "skills") },
     cursor: { mcp: join(home, ".cursor", "mcp.json"), skills: join(home, ".cursor", "skills") },
     devin: { mcp: join(devin, "mcp_config.json"), skills: join(devin, "skills") },
     codex: { mcp: join(codex, "config.toml"), skills: join(codex, "skills") },
+    kimi: { mcp: join(kimi, "mcp.json"), skills: join(kimi, "skills") },
   };
 }
 

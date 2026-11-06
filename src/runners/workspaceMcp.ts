@@ -73,11 +73,15 @@ export function prepareWorkspaceMcp(kind: CliCommandKey, cwd: string, raw?: stri
   const servers: McpServers = parseWorkspaceMcp(raw) ?? {};
   const serverNames = Object.keys(servers);
   const result: PreparedMcp = { args: [], cleanup() {}, serverNames };
-  if (kind === "agent" || kind === "devin") {
+  if (kind === "agent" || kind === "devin" || kind === "kimi") {
     const desired = Object.fromEntries(Object.entries(servers).map(([name, server]) => [name,
       kind === "devin" ? { ...server, transport: server.url ? "http" : "stdio" } : server,
     ]));
-    const path = kind === "agent" ? join(cwd, ".cursor", "mcp.json") : join(cwd, ".devin", "mcp_config.local.json");
+    const path = kind === "agent"
+      ? join(cwd, ".cursor", "mcp.json")
+      : kind === "devin"
+        ? join(cwd, ".devin", "mcp_config.local.json")
+        : join(cwd, ".kimi-code", "mcp.json");
     syncProjectMcp(path, desired);
     if (kind === "agent" && serverNames.length) result.args.push("--approve-mcps");
     return result;

@@ -35,7 +35,7 @@ describe("workspace MCP validation", () => {
 });
 
 describe("native MCP configuration", () => {
-  it("maps all five clients and removes private temporary configs after use", () => {
+  it("maps all six clients and removes private temporary configs after use", () => {
     const cwd = mkdtempSync(join(tmpdir(), "board-mcp-test-"));
     try {
       const codex = prepareWorkspaceMcp("codex", cwd, config);
@@ -54,11 +54,14 @@ describe("native MCP configuration", () => {
         assert.equal(existsSync(path), false);
       }
       assert.deepEqual(prepareWorkspaceMcp("agent", cwd, config).args, ["--approve-mcps"]);
+      assert.deepEqual(prepareWorkspaceMcp("kimi", cwd, config).args, []);
+      const kimi = JSON.parse(readFileSync(join(cwd, ".kimi-code/mcp.json"), "utf8"));
+      assert.equal(kimi.mcpServers.remote.headers.Authorization, "secret-marker");
       prepareWorkspaceMcp("devin", cwd, config);
       const devin = JSON.parse(readFileSync(join(cwd, ".devin/mcp_config.local.json"), "utf8"));
       assert.equal(devin.mcpServers.remote.transport, "http");
       assert.equal(devin.mcpServers.local.transport, "stdio");
-      for (const [kind, path] of [["agent", ".cursor/mcp.json"], ["devin", ".devin/mcp_config.local.json"]] as const) {
+      for (const [kind, path] of [["agent", ".cursor/mcp.json"], ["devin", ".devin/mcp_config.local.json"], ["kimi", ".kimi-code/mcp.json"]] as const) {
         prepareWorkspaceMcp(kind, cwd, "");
         assert.deepEqual(JSON.parse(readFileSync(join(cwd, path), "utf8")).mcpServers, {});
       }
@@ -105,7 +108,7 @@ describe("native MCP configuration", () => {
     const script = join(cwd, "fake-cli");
     writeFileSync(script, '#!/usr/bin/env node\nconsole.log(JSON.stringify({argv:process.argv.slice(2)}));\n', { mode: 0o700 });
     try {
-      for (const kind of ["claude", "pi", "codex", "agent", "devin"] as const) {
+      for (const kind of ["claude", "pi", "codex", "agent", "devin", "kimi"] as const) {
         const logs: string[] = [];
         const handle = spawnLogged(script, ["resume", "session-id", "next prompt"], cwd, {
           onStatus() {}, onLog: (line) => logs.push(line),

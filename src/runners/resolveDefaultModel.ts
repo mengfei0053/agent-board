@@ -22,7 +22,7 @@ function readTomlModel(path: string): string | undefined {
     const text = readCapped(path);
     if (text == null) return undefined;
     // Prefer top-level `model = "..."` (ignore [profiles.*] blocks roughly by first match)
-    const m = text.match(/^\s*model\s*=\s*"([^"]+)"/m);
+    const m = text.match(/^\s*(?:default_)?model\s*=\s*"([^"]+)"/m);
     if (m?.[1]?.trim()) return m[1].trim();
   } catch {
     /* ignore */
@@ -64,6 +64,11 @@ export function resolveDefaultModel(kind: AgentKind): string | undefined {
 
   if (kind === "codex") {
     const m = readTomlModel(join(home, ".codex/config.toml"));
+    if (m) return m;
+  }
+  if (kind === "kimi") {
+    const root = process.env.KIMI_CODE_HOME || join(home, ".kimi-code");
+    const m = readTomlModel(join(root, "config.toml"));
     if (m) return m;
   }
   if (kind === "claude") {

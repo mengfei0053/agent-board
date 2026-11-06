@@ -62,6 +62,11 @@ describe("resolveDefaultModel (U14)", () => {
       backups,
     );
     backupAndWrite(
+      join(home, ".kimi-code/config.toml"),
+      `default_model = "${marker}-kimi"\n`,
+      backups,
+    );
+    backupAndWrite(
       join(home, ".claude/settings.json"),
       JSON.stringify({ model: `${marker}-claude` }),
       backups,
@@ -70,11 +75,12 @@ describe("resolveDefaultModel (U14)", () => {
 
   after(() => restoreAll(backups));
 
-  it("reads pi / cursor / devin / codex / claude configs", () => {
+  it("reads pi / cursor / devin / codex / kimi / claude configs", () => {
     assert.equal(resolveDefaultModel("pi"), `${marker}-pi`);
     assert.equal(resolveDefaultModel("cursor"), `${marker}-cursor`);
     assert.equal(resolveDefaultModel("devin"), `${marker}-devin`);
     assert.equal(resolveDefaultModel("codex"), `${marker}-codex`);
+    assert.equal(resolveDefaultModel("kimi"), `${marker}-kimi`);
     assert.equal(resolveDefaultModel("claude"), `${marker}-claude`);
   });
 

@@ -147,7 +147,7 @@ document.getElementById("btn-copy-pair-code").addEventListener("click", async ()
   }
 });
 
-const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex"];
+const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex", "kimi"];
 const PROXY_ORDER = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
 
 const KIND_LABELS = {
@@ -156,6 +156,7 @@ const KIND_LABELS = {
   agent: "Cursor",
   devin: "Devin",
   codex: "Codex",
+  kimi: "Kimi Code",
 };
 
 const PROXY_LABELS = {

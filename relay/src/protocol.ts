@@ -1011,7 +1011,7 @@ function readOptionalBoolean(
   return { ok: true, value: record[field] };
 }
 
-const CLI_KINDS = ["pi", "claude", "agent", "devin", "codex"] as const;
+const CLI_KINDS = ["pi", "claude", "agent", "devin", "codex", "kimi"] as const;
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"] as const;
 
 /** Same userinfo rule as the board (`src/proxyEnv.ts`). Idempotent on `user:***@`. */

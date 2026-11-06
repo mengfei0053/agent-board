@@ -60,6 +60,17 @@ describe("extractTextFromEventLine", () => {
     );
   });
 
+  it("reads Kimi Code top-level assistant content", () => {
+    assert.equal(
+      extractTextFromEventLine(JSON.stringify({ role: "assistant", content: "  kimi reply  " })),
+      "kimi reply",
+    );
+    assert.equal(
+      extractTextFromEventLine(JSON.stringify({ role: "meta", type: "session.resume_hint", content: "resume" })),
+      undefined,
+    );
+  });
+
   it("reads event_msg / result / generic assistant", () => {
     assert.equal(
       extractTextFromEventLine(

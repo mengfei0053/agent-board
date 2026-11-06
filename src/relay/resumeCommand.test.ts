@@ -11,6 +11,7 @@ describe("relay resume command", () => {
     assert.equal(resumeCommand({ kind: "cursor", sessionId: SID }), `agent --resume ${SID}`);
     assert.equal(resumeCommand({ kind: "codex", sessionId: SID }), `codex exec resume ${SID}`);
     assert.equal(resumeCommand({ kind: "devin", sessionId: SID }), `devin -r ${SID}`);
+    assert.equal(resumeCommand({ kind: "kimi", sessionId: SID }), `kimi --session ${SID}`);
     assert.equal(
       resumeCommand({ kind: "pi", sessionId: SID, cwd: "/tmp/agent-board" }),
       `cd /tmp/agent-board && pi --session-id ${SID}`,

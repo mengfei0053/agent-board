@@ -1,6 +1,6 @@
 # agent-board
 
-本机 Agent 看板：左侧**工作区** CRUD，右侧五列泳道（草稿 / Todo / 进行中 / 已完成 / 归档）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
+本机 Agent 看板：左侧**工作区** CRUD，右侧五列泳道（草稿 / Todo / 进行中 / 已完成 / 归档）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
 ## 界面预览
 
@@ -23,7 +23,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 工作区 | 左侧增删改查；右键菜单（设置 / 编辑 / 删除）；空间设置页可配提示词 / skills / MCP；cwd = 工作区 path。选中工作区后显示该路径下全部 Git 仓库的分支、领先/落后与变更文件（只读） |
-| 设置 | `/settings` 统一管理并分发 MCP / Skills（支持 pi、Claude、Cursor、Devin、Codex），按 Agent 配置 CLI 路径、进程代理、自定义环境变量与 Codex 沙箱，并提供全局快捷输入和手机配对 |
+| 设置 | `/settings` 统一管理并分发 MCP / Skills（支持 pi、Claude、Cursor、Devin、Codex、Kimi Code），按 Agent 配置 CLI 路径、进程代理、自定义环境变量与 Codex 沙箱，并提供全局快捷输入和手机配对 |
 | 草稿 / Todo | 「新建草稿」仅入库；「新建 Todo」创建并开跑；拖拽泳道可改状态。工作区是带可用 HEAD 的 git 根目录时，新建弹窗可选「在 git worktree 中启动」（默认关） |
 | Git worktree | 勾选后在 `<工作区>/.agent-board/worktrees/<任务 id>` 创建分支 `agent-board/<任务 id>`，任务 cwd 指向该目录。删除任务时移除干净的 worktree 目录；有未提交改动则保留并提示。请自行将 `.agent-board/` 写入 `.gitignore` 或本机 excludesfile，看板不会修改仓库的 ignore 文件 |
 | 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
@@ -42,15 +42,16 @@
 | Cursor | `~/.cursor/mcp.json` | `~/.cursor/skills/` |
 | Devin CLI | `~/.config/devin/mcp_config.json` | `~/.config/devin/skills/` |
 | Codex | `~/.codex/config.toml` | `~/.codex/skills/` |
+| Kimi Code | `~/.kimi-code/mcp.json` | `~/.kimi-code/skills/` |
 
-会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。Agent 目录存在同名 Skill 时自动勾选；勾选直接覆盖对应 Agent 的同名目录，取消勾选直接删除该目录，不恢复旧版本。切换只作用于当前技能和目标 Agent；「重新同步」会按全部勾选状态覆盖分发。卸载会删除各 Agent 的同名技能，保留管理中心主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复。其他名称的技能保持原样。MCP 同名配置冲突会单独报告，修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
+会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。Agent 目录存在同名 Skill 时自动勾选；勾选直接覆盖对应 Agent 的同名目录，取消勾选直接删除该目录，不恢复旧版本。切换只作用于当前技能和目标 Agent；「重新同步」会按全部勾选状态覆盖分发。卸载会删除各 Agent 的同名技能，保留管理中心主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复。其他名称的技能保持原样。MCP 同名配置冲突会单独报告，修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
 
 工作区 MCP 继续按原有规则覆盖全局设置；各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。删除技能链接不会删除链接指向的外部目录。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
 
 ## 要求
 
 - Node 20+（本机开发）或 Docker / Docker Compose（一键启动）
-- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`、`codex`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
+- 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`、`codex`、`kimi`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
 - Postgres（本机或 Compose 内置）
 
 ## 一键启动（Docker Compose）
@@ -107,7 +108,7 @@ pnpm install && pnpm dev
 
 ### Docker 与 CLI（重要）
 
-看板通过 **Node `spawn` 调用本机 CLI**（`pi` / `claude` / `agent` / `devin` / `codex`）。`app` 镜像**不包含**这些二进制，也不带你的登录态（API key / OAuth cookie）。
+看板通过 **Node `spawn` 调用本机 CLI**（`pi` / `claude` / `agent` / `devin` / `codex` / `kimi`）。`app` 镜像**不包含**这些二进制，也不带你的登录态（API key / OAuth cookie）。
 
 因此：
 

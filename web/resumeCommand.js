@@ -7,11 +7,12 @@
  * - claude: `--resume` — src/runners/claude.ts `buildClaudeArgs`
  * - cursor: binary `agent` + `--resume` — src/runners/cursor.ts (`resolveCliCommand("agent")`)
  * - codex: `codex exec resume <id>` — src/runners/codex.ts (approval/json flags stay on the board)
+ * - kimi: `--session <id>` — src/runners/kimi.ts `buildKimiArgs`
  * - devin: `-r <id>` — src/runners/devin.ts. `-c` attaches the newest session in cwd
  *   and is intentionally not used once a session id is known.
  */
 
-/** @typedef {"pi" | "claude" | "cursor" | "devin" | "codex"} ResumeKind */
+/** @typedef {"pi" | "claude" | "cursor" | "devin" | "codex" | "kimi"} ResumeKind */
 
 /** Shown in the detail meta row when the task has no session id yet. */
 export const NO_SESSION_LABEL = "尚无会话";
@@ -23,6 +24,7 @@ export const RESUME_BIN = {
   cursor: "agent",
   devin: "devin",
   codex: "codex",
+  kimi: "kimi",
 };
 
 /** Settings / cliPaths key for a task kind (`cursor` → `agent`). */
@@ -88,6 +90,9 @@ export function resumeCommand(input = {}) {
       break;
     case "codex":
       cmd = `${qBin} exec resume ${qId}`;
+      break;
+    case "kimi":
+      cmd = `${qBin} --session ${qId}`;
       break;
     case "devin":
       cmd = `${qBin} -r ${qId}`;

@@ -264,8 +264,8 @@ async function createTaskViaWebhook(c: Context) {
 
   const agent = body.agent ?? body.kind;
   const kindRaw = typeof agent === "string" ? agent.toLowerCase() : "";
-  if (!["pi", "claude", "cursor", "devin", "codex"].includes(kindRaw)) {
-    return c.json({ error: "agent must be pi|claude|cursor|devin|codex (alias: kind)" }, 400);
+  if (!(AGENT_KINDS as readonly string[]).includes(kindRaw)) {
+    return c.json({ error: "agent must be pi|claude|cursor|devin|codex|kimi (alias: kind)" }, 400);
   }
   const kind = kindRaw as AgentKind;
 
@@ -467,8 +467,8 @@ app.post("/api/tasks", async (c) => {
   try {
     const body = await readJsonObject(c);
     const kindRaw = body.kind;
-    if (typeof kindRaw !== "string" || !["pi", "claude", "cursor", "devin", "codex"].includes(kindRaw)) {
-      return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
+    if (typeof kindRaw !== "string" || !(AGENT_KINDS as readonly string[]).includes(kindRaw)) {
+      return c.json({ error: "kind must be pi|claude|cursor|devin|codex|kimi" }, 400);
     }
     const prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
     const title = body.title == null ? undefined : requireString(body, "title", { max: MAX_TITLE_CHARS });
@@ -735,7 +735,7 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 app.get("/api/agent-models", async (c) => {
   const kindRaw = c.req.query("kind")?.trim();
   if (kindRaw && !AGENT_KINDS.includes(kindRaw as AgentKind)) {
-    return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
+    return c.json({ error: "kind must be pi|claude|cursor|devin|codex|kimi" }, 400);
   }
   const models = await readAgentModels(kindRaw as AgentKind | undefined);
   return c.json({ models });
@@ -744,7 +744,7 @@ app.get("/api/agent-models", async (c) => {
 app.get("/api/models", async (c) => {
   const kindRaw = c.req.query("kind")?.trim();
   if (kindRaw && !AGENT_KINDS.includes(kindRaw as AgentKind)) {
-    return c.json({ error: "kind must be pi|claude|cursor|devin|codex" }, 400);
+    return c.json({ error: "kind must be pi|claude|cursor|devin|codex|kimi" }, 400);
   }
   const models = await readAgentModels(kindRaw as AgentKind | undefined);
   return c.json({ models });

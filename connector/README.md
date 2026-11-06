@@ -4,7 +4,7 @@ In the agent-board monorepo this package lives in `connector/` and the relay liv
 
 Side process for the machine that runs agent-board. It dials the relay, registers as a board, and maps phone commands onto local HTTP. The relay never dials `127.0.0.1:8791`.
 
-`cmd.create` requires `agent` (`pi`, `claude`, `cursor`, `devin`, or `codex`) and a local `cwd`. That becomes `POST /api/tasks` with `{ kind, prompt, title, cwd, start: true }`. `cmd.stop` and `cmd.continue` call `/api/tasks/:id/stop` and `/continue`. The connector reads ThinkBook `GET /api/events` and sends `evt.snapshot` after every successful `board.register`.
+`cmd.create` requires `agent` (`pi`, `claude`, `cursor`, `devin`, `codex`, or `kimi`) and a local `cwd`. That becomes `POST /api/tasks` with `{ kind, prompt, title, cwd, start: true }`. `cmd.stop` and `cmd.continue` call `/api/tasks/:id/stop` and `/continue`. The connector reads ThinkBook `GET /api/events` and sends `evt.snapshot` after every successful `board.register`.
 
 `evt.task.done` is sent once per task, the first time status enters `succeeded`, `failed`, or `stopped`. `archived` is not a completion. A reconnect registers again, takes the relay's new generation, resets `seq`, and sends a fresh snapshot without repeating old completion events.
 

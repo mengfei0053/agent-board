@@ -154,7 +154,7 @@ lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup
 }
 ```
 
-- Relay 线协议允许省略 agent/cwd，但当前看板的嵌入连接器仍要求显式传入：agent 必须为 pi / claude / cursor / devin / codex，缺失或未知返回 unknown_agent；cwd 缺失返回 cwd_required。不要假定连接器会补默认值。
+- Relay 线协议允许省略 agent/cwd，但当前看板的嵌入连接器仍要求显式传入：agent 必须为 pi / claude / cursor / devin / codex / kimi，缺失或未知返回 unknown_agent；cwd 缺失返回 cwd_required。不要假定连接器会补默认值。
 - cwd 是**看板主机**上的绝对目录（最多 1,024 字符），不是 Relay 的路径。即使传了 workspaceId，当前嵌入连接器也要求 cwd；实际执行时 workspaceId 对应的目录优先。
 - useGitWorktree 是严格 boolean；仅 true 向看板转发隔离请求，false/省略使用原目录。Relay 本身不操作 Git。
 - cmd.create 创建并启动任务，不支持本机 HTTP 的 start、model、attachments 等未声明字段；unknown 字段不会转发。

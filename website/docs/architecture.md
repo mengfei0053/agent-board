@@ -87,7 +87,7 @@ flowchart LR
 | --- | --- |
 | `src/server.ts` | Node.js、TypeScript、Hono；HTTP 路由、请求校验、SSE、静态页面、启动和关闭入口 |
 | `src/manager.ts` | 任务生命周期编排、进程句柄、按任务串行操作、输出与后台任务汇总 |
-| `src/runners/` | pi、Claude Code、Cursor CLI、Devin CLI、Codex CLI 适配；命令参数、日志解析、会话续跑和停止 |
+| `src/runners/` | pi、Claude Code、Cursor CLI、Devin CLI、Codex CLI、Kimi Code CLI 适配；命令参数、日志解析、会话续跑和停止 |
 | `src/store.ts`、`src/db.ts` | 内存镜像、PostgreSQL 表结构与读写、写队列、旧数据迁移和启动恢复 |
 | `src/bus.ts`、`src/types.ts` | 进程内事件发布订阅，以及工作区、任务、泳道和事件的数据类型 |
 | `src/relay/` | 嵌入拨号、协议映射、命令队列、幂等、快照与事件同步；`facade.ts` 封装看板能力 |
@@ -155,6 +155,7 @@ sequenceDiagram
 | Cursor CLI | `agent create-chat` 获取会话，使用 `agent -p`、`stream-json` 和 `--resume` |
 | Devin CLI | `devin -p` 的文本输出；已有会话 ID 时通过 `-r` 续跑 |
 | Codex CLI | `codex exec --json`；从事件获取 thread ID，续跑使用 `exec ... resume` |
+| Kimi Code CLI | `kimi --prompt --output-format stream-json`；从 `session.resume_hint` 获取 session ID，续跑使用 `--session` |
 
 `runners/common.ts` 集中处理 `spawn`、stdout/stderr 按行读取、退出和错误、进程组停止与超时升级为 `SIGKILL`。CLI 路径和按 Agent 配置的代理环境变量在启动子进程时应用。看板调用 CLI，模型访问和登录凭证由各 CLI 自身管理。
 

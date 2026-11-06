@@ -3,7 +3,7 @@ import { createState, createMockServer, listen, launchBrowser, json, readBody } 
 
 let catalog = {
   revision: 0, mcp: [], skills: [], syncResults: [], skillStore: "/tmp/board-skills",
-  agents: ["pi", "claude", "cursor", "devin", "codex"].map(id => ({ id, mcp: `/tmp/${id}/mcp.json`, skills: `/tmp/${id}/skills` })),
+  agents: ["pi", "claude", "cursor", "devin", "codex", "kimi"].map(id => ({ id, mcp: `/tmp/${id}/mcp.json`, skills: `/tmp/${id}/skills` })),
 };
 let conflict = false;
 const server = createMockServer(createState(), async (req, res, url) => {

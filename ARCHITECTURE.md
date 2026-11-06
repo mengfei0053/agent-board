@@ -1,6 +1,6 @@
 # agent-board 架构与本机功能细节
 
-Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android 客户端及独立 connector 组成。本机服务执行 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI** 任务，以 PostgreSQL 持久化，通过 SSE 向浏览器推送，通过嵌入 Relay 拨号支持手机遥控。
+Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android 客户端及独立 connector 组成。本机服务执行 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI** 任务，以 PostgreSQL 持久化，通过 SSE 向浏览器推送，通过嵌入 Relay 拨号支持手机遥控。
 
 完整的模块职责、部署拓扑、执行流程、数据模型、远程协议及测试入口见文档站的 **[项目架构](./website/docs/architecture.md)**。本文保留本机功能的实现约定，远程消息字段以 [PROTOCOL.md](./PROTOCOL.md) 为准。
 
@@ -88,7 +88,7 @@ Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android �
   | 字段 | 必填 | 说明 |
   |---|---|---|
   | `prompt` | ✅ | 任务内容 |
-  | `agent` | ✅ | `pi` | `claude` | `cursor` | `devin` | `codex`（也可用别名 `kind`） |
+  | `agent` | ✅ | `pi` | `claude` | `cursor` | `devin` | `codex` | `kimi`（也可用别名 `kind`） |
   | `cwd` | ✅ | 工作目录（须已存在） |
   | `model` | | 可选模型 |
   | `title` | | 可选标题 |

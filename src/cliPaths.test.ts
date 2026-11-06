@@ -47,7 +47,8 @@ describe("parseCliPathsJson / resolveCliCommand", () => {
     assert.equal(cliPaths.agent.override, "/bin/agent");
     assert.equal(cliPaths.agent.effective, "/bin/agent");
     assert.equal(cliPaths.pi.default, "pi");
-    assert.equal(CLI_COMMAND_KEYS.length, 5);
+    assert.equal(CLI_COMMAND_KEYS.length, 6);
+    assert.equal(cliPaths.kimi.default, "kimi");
   });
 });
 

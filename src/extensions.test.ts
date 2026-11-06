@@ -33,25 +33,28 @@ function makeSkill(root: string) {
 }
 
 test("native paths include Cursor and XDG Devin and honor tool environment overrides", () => {
-  const paths = extensionPaths("/example", { XDG_CONFIG_HOME: "/xdg", CODEX_HOME: "/codex", PI_CODING_AGENT_DIR: "/pi" });
+  const paths = extensionPaths("/example", { XDG_CONFIG_HOME: "/xdg", CODEX_HOME: "/codex", PI_CODING_AGENT_DIR: "/pi", KIMI_CODE_HOME: "/kimi" });
   assert.equal(paths.cursor.mcp, "/example/.cursor/mcp.json");
   assert.equal(paths.devin.skills, "/xdg/devin/skills");
   assert.equal(paths.codex.mcp, "/codex/config.toml");
   assert.equal(paths.pi.mcp, "/pi/mcp.json");
+  assert.equal(paths.kimi.mcp, "/kimi/mcp.json");
+  assert.equal(paths.kimi.skills, "/kimi/skills");
 });
 
-test("MCP CRUD distributes to all five formats, preserves other settings, masks credentials and survives reload", async () => {
+test("MCP CRUD distributes to all six formats, preserves other settings, masks credentials and survives reload", async () => {
   const f = fixture();
   write(f.paths.cursor.mcp, { otherSetting: true, mcpServers: { manual: { command: "keep" } } });
   mkdirSync(join(f.paths.codex.mcp, ".."), { recursive: true });
   writeFileSync(f.paths.codex.mcp, 'model = "keep-model"\n[mcp_servers.manual]\ncommand = "keep"\n');
-  const apps = ["pi", "claude", "cursor", "devin", "codex"];
+  const apps = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
   let result = await f.manager.mutate("save-mcp", { revision: 0, name: "tools", config: { url: "https://example.com/mcp", headers: { Authorization: "secret" } }, apps });
   assert.ok(result.syncResults.every(r => r.ok));
   assert.equal(result.mcp[0].config.headers!.Authorization, "••••••••");
   assert.equal(read(f.paths.devin.mcp).mcpServers.tools.transport, "http");
   assert.equal(read(f.paths.claude.mcp).mcpServers.tools.type, "http");
   assert.equal(read(f.paths.cursor.mcp).otherSetting, true);
+  assert.equal(read(f.paths.kimi.mcp).mcpServers.tools.headers.Authorization, "secret");
   const codex = parse(readFileSync(f.paths.codex.mcp, "utf8")) as any;
   assert.equal(codex.model, "keep-model");
   assert.equal(codex.mcp_servers.tools.http_headers.Authorization, "secret");

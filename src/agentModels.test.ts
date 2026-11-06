@@ -9,6 +9,7 @@ import {
   parseCursorModelsOutput,
   parseDevinModelsOutput,
   parseCodexModelsOutput,
+  parseKimiModelsOutput,
   fetchAgentModelsFromCli,
   PI_THINKING_EFFORTS,
   CLAUDE_DEFAULT_EFFORTS,
@@ -130,6 +131,21 @@ describe("agentModels output parsers", () => {
       { model: "swe-2-high", thinkingEfforts: ["high"] },
       { model: "swe-2-max", thinkingEfforts: ["max"] },
     ]);
+  });
+
+  it("parses Kimi provider model aliases", () => {
+    const parsed = parseKimiModelsOutput(JSON.stringify({
+      providers: { "managed:kimi-code": { apiKey: "not-a-model" } },
+      models: {
+        "kimi-code/k3": { model: "k3", supportEfforts: ["low", "high"] },
+        "kimi-code/k3.1-pro": { model: "k3.1-pro" },
+      },
+    }));
+    assert.deepEqual(parsed, [
+      { model: "kimi-code/k3", thinkingEfforts: [] },
+      { model: "kimi-code/k3.1-pro", thinkingEfforts: [] },
+    ]);
+    assert.deepEqual(parseKimiModelsOutput("not-json"), []);
   });
 
   it("parses codex debug models JSON and skips hidden models", () => {

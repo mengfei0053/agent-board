@@ -5,6 +5,7 @@ import { buildClaudeArgs } from "./claude.js";
 import { approvalFlags, baseExecFlags, buildCodexArgs, resumeFlags } from "./codex.js";
 import { buildCursorArgs } from "./cursor.js";
 import { buildDevinArgs } from "./devin.js";
+import { buildKimiArgs } from "./kimi.js";
 import { runners } from "./index.js";
 
 describe("U16 runner buildArgs (no spawn)", () => {
@@ -259,6 +260,40 @@ describe("U16 runner buildArgs (no spawn)", () => {
     });
   });
 
+  describe("kimi", () => {
+    it("starts a streamed non-interactive run with a model", () => {
+      const r = buildKimiArgs({ prompt: "build", model: "kimi-code/k3" });
+      assert.deepEqual(r.args, [
+        "--output-format", "stream-json",
+        "--model", "kimi-code/k3",
+        "--prompt", "build",
+      ]);
+      assert.equal(r.continueNewSession, false);
+    });
+
+    it("continues the explicit session without attaching to the cwd latest session", () => {
+      const r = buildKimiArgs(
+        { prompt: "orig", sessionId: "session_1" },
+        { continuePrompt: "more" },
+      );
+      assert.deepEqual(r.args, [
+        "--output-format", "stream-json",
+        "--session", "session_1",
+        "--prompt", "more",
+      ]);
+      assert.equal(r.continueNewSession, false);
+      assert.ok(!r.args.includes("--continue"));
+    });
+
+    it("continues without a session by preserving the original prompt", () => {
+      const r = buildKimiArgs({ prompt: "orig" }, { continuePrompt: "next" });
+      assert.equal(r.continueNewSession, true);
+      assert.ok(!r.args.includes("--session"));
+      assert.match(r.prompt, /orig/);
+      assert.match(r.prompt, /next/);
+    });
+  });
+
   describe("same-session model switch", () => {
     const sessionId = "original-session";
     const model = "next-model";
@@ -270,6 +305,7 @@ describe("U16 runner buildArgs (no spawn)", () => {
       { kind: "codex", build: () => buildCodexArgs(input, opts), sessionFlag: "resume", modelFlag: "-m" },
       { kind: "cursor", build: () => buildCursorArgs(input, opts), sessionFlag: "--resume", modelFlag: "--model" },
       { kind: "devin", build: () => buildDevinArgs(input, opts), sessionFlag: "-r", modelFlag: "--model" },
+      { kind: "kimi", build: () => buildKimiArgs(input, opts), sessionFlag: "--session", modelFlag: "--model" },
     ];
     for (const { kind, build, sessionFlag, modelFlag } of cases) {
       it(`${kind} sends the new model with the original resume handle`, () => {
@@ -317,6 +353,7 @@ describe("U16 runner buildArgs (no spawn)", () => {
         "codex",
         "cursor",
         "devin",
+        "kimi",
         "pi",
       ]);
       for (const k of Object.keys(runners)) {

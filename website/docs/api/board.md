@@ -50,7 +50,7 @@ description: 看板后端的任务、工作区、Git、设置、上传、Webhook
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id`、`title` | string | 任务标识、标题 |
-| `kind` | string | `pi`、`claude`、`cursor`、`devin`、`codex` |
+| `kind` | string | `pi`、`claude`、`cursor`、`devin`、`codex`、`kimi` |
 | `workspaceId`、`cwd`、`prompt` | string | 工作区、实际执行目录、初始指令 |
 | `status` | string | `draft`、`queued`、`running`、`blocked`、`succeeded`、`failed`、`stopped`、`archived` |
 | `iteration` | number | 创建时为 1，续跑递增 |
@@ -296,7 +296,7 @@ data: {"type":"task_delete","taskIds":["task1"]}
 | 接口 | 请求 | 成功响应 |
 | --- | --- | --- |
 | GET `/api/model-history` | 无 | `200 {history}` |
-| POST `/api/model-history/import` | `{history:{pi?:string[],claude?:string[],cursor?:string[],devin?:string[],codex?:string[]}}` | `200 {history}` |
+| POST `/api/model-history/import` | `{history:{pi?:string[],claude?:string[],cursor?:string[],devin?:string[],codex?:string[],kimi?:string[]}}` | `200 {history}` |
 
 history 按 kind 返回最近使用的模型，每种最多 20 条，返回包含五种 kind 的数组。导入时每种也最多 20 条，单个模型去空白后非空且不超过 200 字符；已有数据库记录不覆盖使用时间，不支持通过此接口删除历史。
 

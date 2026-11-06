@@ -167,7 +167,7 @@ describe("integration I1–I12", () => {
       }
       return [{ model: "gpt-6.1-terra", thinkingEfforts: ["low", "medium", "high", "xhigh"] }];
     });
-    assert.equal(firstSync.updated.length, 5);
+    assert.equal(firstSync.updated.length, 6);
     assert.equal(firstSync.failed.length, 0);
 
     const initialResp = await jsonOf(await app.request("/api/agent-models"));

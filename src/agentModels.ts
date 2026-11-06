@@ -12,6 +12,7 @@ export const AGENT_KINDS: readonly AgentKind[] = [
   "cursor",
   "devin",
   "codex",
+  "kimi",
 ];
 
 export const PI_THINKING_EFFORTS = [
@@ -385,6 +386,26 @@ export function parseDevinModelsOutput(stdout: string): AgentModelRecord[] {
   return normalizeAgentModelRecords(records);
 }
 
+/** Parse `kimi provider list --json`; keys are the aliases accepted by --model. */
+export function parseKimiModelsOutput(stdout: string): AgentModelRecord[] {
+  const cleaned = stripAnsi(stdout || "").trim();
+  if (!cleaned) return [];
+  try {
+    const parsed = JSON.parse(cleaned) as { models?: unknown };
+    if (!parsed.models || typeof parsed.models !== "object" || Array.isArray(parsed.models)) {
+      return [];
+    }
+    // Kimi Code currently has no non-interactive thinking-effort flag.
+    const records = Object.keys(parsed.models).map((model) => ({
+      model,
+      thinkingEfforts: [],
+    }));
+    return normalizeAgentModelRecords(records);
+  } catch {
+    return [];
+  }
+}
+
 /** Parse `codex debug models` JSON output. */
 export function parseCodexModelsOutput(stdout: string): AgentModelRecord[] {
   const cleaned = stripAnsi(stdout || "").trim();
@@ -620,6 +641,20 @@ export async function fetchAgentModelsFromCli(
     return parsed;
   }
 
+  if (kind === "kimi") {
+    const res = await spawnCollect(cmd, ["provider", "list", "--json"], {
+      env,
+      timeoutMs,
+      maxBytes,
+    });
+    if (res.code !== 0 || res.timedOut) {
+      throw new Error(res.stderr.trim() || `kimi provider list exited ${res.code}`);
+    }
+    const parsed = parseKimiModelsOutput(res.stdout);
+    if (!parsed.length) throw new Error("kimi returned no models");
+    return parsed;
+  }
+
   if (kind === "codex") {
     const res = await spawnCollect(cmd, ["debug", "models"], {
       env,
@@ -680,6 +715,7 @@ export async function readAgentModels(
     cursor: [],
     devin: [],
     codex: [],
+    kimi: [],
   };
   const params: unknown[] = [];
   const where =

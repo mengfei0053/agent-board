@@ -1,7 +1,7 @@
 import type { AgentKind, OutputTurn, PromptTurn, SideJob, Task } from "../types.js";
 import { resumeCommand } from "./resumeCommand.js";
 
-const AGENTS: readonly AgentKind[] = ["pi", "claude", "cursor", "devin", "codex"];
+const AGENTS: readonly AgentKind[] = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
 
 export const TERMINAL_STATUSES = new Set(["succeeded", "failed", "stopped"]);
 

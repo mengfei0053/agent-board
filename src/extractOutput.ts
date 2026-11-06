@@ -123,6 +123,12 @@ export function extractTextFromEventLine(line: string): string | undefined {
   }
 
 
+  // Kimi Code stream-json: top-level assistant message
+  if (ev.role === "assistant") {
+    const text = textFromContent(ev.content);
+    if (text) return text;
+  }
+
   // Codex exec --json: item.completed with agent_message / assistant_message
   if (t === "item.completed" || t === "item.updated") {
     const item = ev.item;

@@ -1,4 +1,4 @@
-export const AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex"] as const;
+export const AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex", "kimi"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
 export const PROTOCOL_STATUSES = ["queued", "running", "paused", "succeeded", "failed", "stopped"] as const;
@@ -68,7 +68,7 @@ export function buildCreateBody(payload: Record<string, unknown>): { ok: true; i
   }
   const agent = payload.agent;
   if (typeof agent !== "string" || !isAgentKind(agent)) {
-    return { ok: false, code: "unknown_agent", message: "agent must be pi, claude, cursor, devin, or codex" };
+    return { ok: false, code: "unknown_agent", message: "agent must be pi, claude, cursor, devin, codex, or kimi" };
   }
   const cwd = payload.cwd;
   if (typeof cwd !== "string" || !isSafePath(cwd)) {

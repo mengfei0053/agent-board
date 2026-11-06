@@ -21,7 +21,7 @@ export function sessionFromJsonLine(line: string): string | undefined {
     const ev = JSON.parse(line) as Record<string, any>;
     const type = typeof ev.type === "string" ? ev.type : "";
 
-    if (type === "session") {
+    if (type === "session" || type === "session.resume_hint") {
       return clean(ev.id) || clean(ev.session_id) || clean(ev.sessionId);
     }
     if (type === "thread.started" || type === "thread.created") {

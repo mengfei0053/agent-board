@@ -32,6 +32,14 @@ describe("sessionFromJsonLine", () => {
       "s1",
     );
     assert.equal(
+      sessionFromJsonLine(JSON.stringify({
+        role: "meta",
+        type: "session.resume_hint",
+        session_id: "session_kimi_1",
+      })),
+      "session_kimi_1",
+    );
+    assert.equal(
       sessionFromJsonLine(JSON.stringify({ session_id: "nope" })),
       undefined,
     );

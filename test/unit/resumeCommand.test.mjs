@@ -18,6 +18,7 @@ describe("resumeCommand", () => {
     assert.equal(resumeCommand({ kind: "cursor", sessionId: SID }), `agent --resume ${SID}`);
     assert.equal(resumeCommand({ kind: "codex", sessionId: SID }), `codex exec resume ${SID}`);
     assert.equal(resumeCommand({ kind: "devin", sessionId: SID }), `devin -r ${SID}`);
+    assert.equal(resumeCommand({ kind: "kimi", sessionId: SID }), `kimi --session ${SID}`);
   });
 
   it("uses the real resume flags, not board-only or invented ones", () => {
@@ -41,10 +42,14 @@ describe("resumeCommand", () => {
     const devin = resumeCommand({ kind: "devin", sessionId: SID });
     assert.match(devin, /-r /);
     assert.doesNotMatch(devin, /(^|\s)-c(\s|$)|--permission-mode|-p/);
+
+    const kimi = resumeCommand({ kind: "kimi", sessionId: SID });
+    assert.match(kimi, /^kimi --session /);
+    assert.doesNotMatch(kimi, /--continue|stream-json|--prompt/);
   });
 
   it("returns null when sessionId is missing", () => {
-    for (const kind of ["pi", "claude", "cursor", "devin", "codex"]) {
+    for (const kind of ["pi", "claude", "cursor", "devin", "codex", "kimi"]) {
       assert.equal(resumeCommand({ kind, sessionId: undefined, cwd: "/tmp/proj" }), null);
       assert.equal(resumeCommand({ kind, sessionId: "" }), null);
       assert.equal(resumeCommand({ kind, sessionId: "   " }), null);

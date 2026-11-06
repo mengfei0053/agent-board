@@ -6,6 +6,7 @@ const RESUME_BIN: Record<string, CliCommandKey> = {
   cursor: "agent",
   devin: "devin",
   codex: "codex",
+  kimi: "kimi",
 };
 
 /** Same quoting as the web board's copyable resume command. */
@@ -46,6 +47,9 @@ export function resumeCommand(input: {
       break;
     case "codex":
       cmd = `${qBin} exec resume ${qId}`;
+      break;
+    case "kimi":
+      cmd = `${qBin} --session ${qId}`;
       break;
     case "devin":
       cmd = `${qBin} -r ${qId}`;

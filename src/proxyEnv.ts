@@ -246,6 +246,7 @@ const RUNNER_ENV_ALLOW: Record<CliCommandKey, readonly string[]> = {
     "CODEX_API_KEY",
     "CODEX_HOME",
   ],
+  kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY", "KIMI_BASE_URL", "KIMI_CODE_HOME"],
 };
 
 export function runnerEnvAllowList(kind: CliCommandKey): readonly string[] {

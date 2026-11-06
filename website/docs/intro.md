@@ -9,7 +9,7 @@ Agent Board 是运行在本机的 Agent 任务看板。它把工作区和任务�
 ## 主要功能
 
 - 管理多个工作区，查看 Git 仓库状态，并为工作区配置提示词、skills 和 MCP。
-- 使用 pi、Claude Code、Cursor CLI、Devin CLI 或 Codex CLI 运行任务，实时查看日志，停止或继续任务。
+- 使用 pi、Claude Code、Cursor CLI、Devin CLI、Codex CLI 或 Kimi Code CLI 运行任务，实时查看日志，停止或继续任务。
 - 可选地在独立 Git worktree 中启动任务。
 - 通过 Relay 和 Android 客户端远程查看和操作任务。
 

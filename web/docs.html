@@ -63,7 +63,7 @@
           <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
           <tbody>
             <tr><td><code>prompt</code></td><td>✅</td><td>任务内容</td></tr>
-            <tr><td><code>agent</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code> | <code>devin</code> | <code>codex</code>（别名 <code>kind</code>）</td></tr>
+            <tr><td><code>agent</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code> | <code>devin</code> | <code>codex</code> | <code>kimi</code>（别名 <code>kind</code>）</td></tr>
             <tr><td><code>cwd</code></td><td>✅</td><td>工作目录（须已存在）</td></tr>
             <tr><td><code>model</code></td><td></td><td>可选模型</td></tr>
             <tr><td><code>title</code></td><td></td><td>可选标题</td></tr>
@@ -104,7 +104,7 @@ npm start</code></pre>
         <table class="docs-table">
           <thead><tr><th>字段</th><th>必填</th><th>说明</th></tr></thead>
           <tbody>
-            <tr><td><code>kind</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code> | <code>devin</code> | <code>codex</code></td></tr>
+            <tr><td><code>kind</code></td><td>✅</td><td><code>pi</code> | <code>claude</code> | <code>cursor</code> | <code>devin</code> | <code>codex</code> | <code>kimi</code></td></tr>
             <tr><td><code>cwd</code></td><td>✅</td><td>工作目录</td></tr>
             <tr><td><code>prompt</code></td><td>✅</td><td>任务内容</td></tr>
             <tr><td><code>title</code> / <code>model</code></td><td></td><td>可选</td></tr>
@@ -195,14 +195,14 @@ npm start</code></pre>
     
       <section id="settings">
         <h3>MCP / Skills 统一管理</h3>
-        <p>设置页提供 pi、Claude、Cursor、Devin CLI、Codex 的分发矩阵，保存到本机用户级配置；工作区 MCP 仍可覆盖。MCP 支持 stdio / HTTP，同名冲突会单独报告，可重试。Skill 支持本地目录和 GitHub HTTPS 仓库的完整包安装，检测到同名目录会自动勾选；勾选直接覆盖，取消勾选直接删除目标 Agent 的同名技能。卸载保留管理中心主副本，允许从本机导入恢复。</p>
+        <p>设置页提供 pi、Claude、Cursor、Devin CLI、Codex、Kimi Code 的分发矩阵，保存到本机用户级配置；工作区 MCP 仍可覆盖。MCP 支持 stdio / HTTP，同名冲突会单独报告，可重试。Skill 支持本地目录和 GitHub HTTPS 仓库的完整包安装，检测到同名目录会自动勾选；勾选直接覆盖，取消勾选直接删除目标 Agent 的同名技能。卸载保留管理中心主副本，允许从本机导入恢复。</p>
         <p><code>GET /api/settings/extensions</code> 返回 <code>revision</code>、<code>mcp</code>、<code>skills</code>、<code>agents</code>、<code>skillStore</code> 和 <code>syncResults</code>。凭据字段显示占位符，编辑时保留占位符即可保留原值。<code>GET /api/settings/extensions/local-skills</code> 列出可导入的本机技能和卸载后保留的主副本。</p>
         <p><code>POST /api/settings/extensions/:action</code> 必须携带最新 <code>revision</code>，过期返回 409。可用操作：</p>
         <ul>
           <li><code>save-mcp</code>：<code>{ revision, name, config: { command?, args?, env?, url?, headers? }, apps: ["cursor", "devin"] }</code></li>
           <li><code>set-apps</code>：<code>{ revision, resource: "mcp" | "skills", name, agent, enabled: true | false }</code>，修改单个 Agent；也兼容 <code>{ revision, resource, name, apps }</code> 整组选项。</li>
           <li><code>delete</code>：<code>{ revision, resource, name }</code></li>
-          <li><code>import-mcp</code>：<code>{ revision, agent: "pi" | "claude" | "cursor" | "devin" | "codex" }</code>；仅导入支持的连接字段，其他认证字段与 SSE 会明确拒绝。</li>
+          <li><code>import-mcp</code>：<code>{ revision, agent: "pi" | "claude" | "cursor" | "devin" | "codex" | "kimi" }</code>；仅导入支持的连接字段，其他认证字段与 SSE 会明确拒绝。</li>
           <li><code>install-skill</code>：<code>{ revision, name, apps, path? }</code> 或 <code>{ revision, name, apps, url, ref?, subdir? }</code>；目录必须包含有效的 <code>SKILL.md</code>，最多 2000 个文件 / 20 MB。</li>
           <li><code>sync</code>：<code>{ revision }</code>，按管理清单重新分发。</li>
         </ul>
@@ -211,7 +211,7 @@ npm start</code></pre>
         <p>页面：<a href="/settings"><code>/settings</code></a>（看板左上角菜单也可进入）。UI 顶部按 Agent 切换，同屏编辑该 Agent 的 CLI 路径、代理与其他环境变量。</p>
         <p><code>GET /api/settings</code> — 返回 <code>cliPaths</code>、按 kind 分桶的 <code>proxyEnv</code>（覆盖值、生效值；空键可显示是否继承看板进程环境）和 <code>processEnv</code>（自定义环境变量，无配置时为空对象）。</p>
         <pre><code>curl -sS http://127.0.0.1:8791/api/settings</code></pre>
-        <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code>、<code>proxyEnv</code>、<code>processEnv</code>、<code>quickPrompts</code>、<code>codexSandbox</code> 中的任意一组。代理按 <code>pi</code> / <code>claude</code> / <code>agent</code> / <code>devin</code> / <code>codex</code> 分别配置；空字符串清除该项覆盖。<code>processEnv</code> 按 kind 整体替换（提交的对象即该 kind 的完整集合，空对象清空），变量名须匹配 <code>[A-Za-z_][A-Za-z0-9_]*</code>，代理键与控制面密钥不可设置。</p>
+        <p><code>PUT /api/settings</code> 可传 <code>cliPaths</code>、<code>proxyEnv</code>、<code>processEnv</code>、<code>quickPrompts</code>、<code>codexSandbox</code> 中的任意一组。代理按 <code>pi</code> / <code>claude</code> / <code>agent</code> / <code>devin</code> / <code>codex</code> / <code>kimi</code> 分别配置；空字符串清除该项覆盖。<code>processEnv</code> 按 kind 整体替换（提交的对象即该 kind 的完整集合，空对象清空），变量名须匹配 <code>[A-Za-z_][A-Za-z0-9_]*</code>，代理键与控制面密钥不可设置。</p>
         <pre><code>curl -sS -X PUT http://127.0.0.1:8791/api/settings \
   -H 'content-type: application/json' \
   -d '{

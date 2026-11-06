@@ -1,4 +1,4 @@
-const labels = { pi: "pi", claude: "Claude", cursor: "Cursor", devin: "Devin", codex: "Codex" };
+const labels = { pi: "pi", claude: "Claude", cursor: "Cursor", devin: "Devin", codex: "Codex", kimi: "Kimi Code" };
 const agents = Object.keys(labels);
 const el = id => document.getElementById(id);
 let documentState;

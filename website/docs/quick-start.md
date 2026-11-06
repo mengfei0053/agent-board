@@ -9,7 +9,7 @@ title: 快速开始
 
 - Node.js 20 或更高版本、pnpm。
 - Docker 和 Docker Compose，或已有的 PostgreSQL。
-- 按需安装 pi、Claude Code、Cursor CLI、Devin CLI 或 Codex CLI，并完成对应的登录配置。
+- 按需安装 pi、Claude Code、Cursor CLI、Devin CLI、Codex CLI 或 Kimi Code CLI，并完成对应的登录配置。
 
 ## 启动看板
 

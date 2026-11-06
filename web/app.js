@@ -127,7 +127,7 @@ const createModelClear = document.getElementById("create-model-clear");
 const createThinkingEffortSelect = document.getElementById("create-thinking-effort");
 const createKindSelect = form?.elements?.namedItem?.("kind") || form?.querySelector?.('select[name="kind"]');
 
-const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex"];
+const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
 const EFFORT_CANONICAL_ORDER = [
   "none",
   "off",
@@ -145,6 +145,7 @@ const DEFAULT_EFFORTS_BY_KIND = {
   cursor: ["low", "medium", "high", "xhigh", "max"],
   devin: ["low", "medium", "high", "xhigh", "max"],
   codex: ["low", "medium", "high", "xhigh", "max"],
+  kimi: [],
 };
 /** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
 let agentModelsByKind = {
@@ -153,6 +154,7 @@ let agentModelsByKind = {
   cursor: [],
   devin: [],
   codex: [],
+  kimi: [],
 };
 let agentModelsLoad = null;
 let agentModelsLoaded = false;
@@ -172,7 +174,7 @@ function normalizeModelItem(raw) {
 }
 
 function normalizeAgentModelsPayload(rawModels) {
-  const next = { pi: [], claude: [], cursor: [], devin: [], codex: [] };
+  const next = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
   if (!rawModels || typeof rawModels !== "object") return next;
   for (const kind of SUPPORTED_AGENT_KINDS) {
     const list = Array.isArray(rawModels[kind]) ? rawModels[kind] : [];
