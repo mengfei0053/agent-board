@@ -20,6 +20,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.navigationBarsPadding
+import kotlinx.coroutines.delay
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
@@ -86,6 +92,8 @@ import tech.mengfei.agentboard.protocol.pairIssueMessage
 import tech.mengfei.agentboard.protocol.pairSubmitAllowed
 import tech.mengfei.agentboard.protocol.trimOuter
 import tech.mengfei.agentboard.protocol.canContinueStatus
+import tech.mengfei.agentboard.protocol.formatDurationMs
+import tech.mengfei.agentboard.protocol.taskTotalDurationMs
 import tech.mengfei.agentboard.protocol.canStopStatus
 import tech.mengfei.agentboard.protocol.continueHint
 import tech.mengfei.agentboard.protocol.deriveWsUrl
@@ -572,10 +580,16 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
         }
         ConversationCard(task, english)
         TaskInfoCard(state, task, english)
+        var logFullscreen by remember(task.id) { mutableStateOf(false) }
         SectionCard(stringResource(R.string.raw_logs)) {
             if (state.logs.isEmpty()) {
                 Text(stringResource(R.string.no_logs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.log_lines, state.logs.size), modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton({ logFullscreen = true }) { Text(stringResource(R.string.log_fullscreen)) }
+                }
                 SelectionContainer {
                     Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(10.dp))
                         .background(SurfaceDim).border(1.dp, OutlineVariant, RoundedCornerShape(10.dp))
@@ -588,31 +602,79 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
                 }
             }
         }
+        if (logFullscreen) LogFullscreen(task.title, state.logs) { logFullscreen = false }
+    }
+}
+
+/** Full-screen, selectable log viewer. Follows the newest line until the user scrolls up. */
+@Composable
+private fun LogFullscreen(title: String, logs: List<tech.mengfei.agentboard.protocol.LogLine>, onClose: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val listState = rememberLazyListState()
+    var follow by remember { mutableStateOf(true) }
+    var copied by remember { mutableStateOf(false) }
+    // The user leaving the bottom turns following off; reaching it again turns it back on.
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
+            follow = last >= logs.lastIndex
+        }
+    }
+    LaunchedEffect(logs.size, follow) {
+        if (follow && logs.isNotEmpty()) listState.scrollToItem(logs.lastIndex)
+    }
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding().navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClose) { Text(stringResource(R.string.log_close)) }
+                Text(title, modifier = Modifier.weight(1f).padding(horizontal = 4.dp), maxLines = 1,
+                    style = MaterialTheme.typography.titleSmall)
+                TextButton({
+                    clipboard.setText(AnnotatedString(logs.joinToString("\n") { "${it.stream}: ${it.line}" })); copied = true
+                }) { Text(stringResource(if (copied) R.string.copied else R.string.log_copy_all)) }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.log_lines, logs.size), modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!follow) TextButton({ follow = true }) { Text(stringResource(R.string.log_follow)) }
+            }
+            SelectionContainer(Modifier.weight(1f)) {
+                LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp), state = listState) {
+                    items(logs.size) { index ->
+                        val line = logs[index]
+                        Text("${line.stream}: ${line.line}", fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp))
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask) {
+    val canContinue = canContinueStatus(task.status)
+    // Make sure quick prompts / model settings are loaded as soon as the composer is on screen.
+    LaunchedEffect(task.id, canContinue) { if (canContinue && !state.continueOpen) model.openContinue() }
+    // The composer is always visible for a continuable task: the web board has the same footer input.
+    if (canContinue) SectionCard(stringResource(R.string.continue_task)) {
+        Text(continueHint(task, englishNow()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        QuickFill(state) { model.updateContinuePrompt(it) }
+        MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
+            stringResource(R.string.describe_task), minLines = 3)
+        MakeAction(actionLabel(state.continueMode, stringResource(R.string.continue_task)), model::submitContinue,
+            Modifier.fillMaxWidth(), primary = true,
+            enabled = state.continuePrompt.trim().isNotEmpty() && state.continueMode != "busy" && state.writesAllowed)
+        if (state.continueResend) TextButton(model::resendContinue) { Text(stringResource(R.string.resend_continue)) }
+    }
     SectionCard(stringResource(R.string.task_actions)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MakeAction(stringResource(R.string.continue_task), model::openContinue, Modifier.weight(1f),
-                primary = true, enabled = canContinueStatus(task.status) && state.writesAllowed && !state.continueOpen)
             MakeAction(actionLabel(state.stopMode, stringResource(R.string.stop)), model::submitStop, Modifier.weight(1f),
                 danger = true, enabled = (canStopStatus(task.status) || state.stopMode != "send") && state.stopMode != "busy" && state.writesAllowed)
             if (state.archiveWrite) MakeAction(stringResource(R.string.archive_task), model::submitArchive, Modifier.weight(1f),
                 enabled = state.writesAllowed && task.status in listOf("succeeded", "failed", "stopped"))
         }
-        if (state.continueOpen && canContinueStatus(task.status)) {
-            Text(continueHint(task, englishNow()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            QuickFill(state) { model.updateContinuePrompt(it) }
-            MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
-                stringResource(R.string.describe_task), minLines = 3)
-            MakeAction(actionLabel(state.continueMode, stringResource(R.string.continue_task)), model::submitContinue,
-                Modifier.fillMaxWidth(), primary = true,
-                enabled = state.continuePrompt.trim().isNotEmpty() && state.continueMode != "busy" && state.writesAllowed)
-        }
         if (state.stopResend) TextButton(model::resendStop) { Text(stringResource(R.string.resend_stop)) }
-        if (state.continueResend) TextButton(model::resendContinue) { Text(stringResource(R.string.resend_continue)) }
     }
 }
 
@@ -700,6 +762,7 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         MetaLine(stringResource(R.string.iteration), (task.iteration ?: 1).toString())
         MetaLine(stringResource(R.string.started), epochLabel(task.startedAt))
         MetaLine(stringResource(R.string.ended), epochLabel(task.endedAt))
+        TotalDurationLine(task, english)
         MetaLine("Agent", task.agent ?: "—")
         MetaLine(stringResource(R.string.model), task.model ?: "—")
         MetaLine("PID", task.pid?.toString() ?: "—")
@@ -711,6 +774,21 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         MetaLine(stringResource(R.string.cwd), task.cwd ?: "—")
         task.worktreeBranch?.takeIf { it.isNotBlank() }?.let { MetaLine(stringResource(R.string.git_branch), it) }
     }
+}
+
+/** Sum of each round's working time (idle gaps excluded). Ticks every second while the task is active. */
+@Composable
+private fun TotalDurationLine(task: RelayTask, english: Boolean) {
+    val active = task.status == "queued" || task.status == "running" || task.status == "paused"
+    val now by produceState(System.currentTimeMillis(), task.id, active) {
+        value = System.currentTimeMillis()
+        while (active) {
+            delay(1000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val total = taskTotalDurationMs(task, now)
+    MetaLine(stringResource(R.string.total_duration), total?.let { formatDurationMs(it, english) } ?: "—")
 }
 
 @Composable

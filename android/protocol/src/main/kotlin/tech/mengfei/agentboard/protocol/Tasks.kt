@@ -14,7 +14,10 @@ data class RelayTurn(
     val iteration: Int,
     val prompt: String? = null,
     val output: String? = null,
+    /** Epoch ms when this turn's prompt was submitted. */
     val at: Long? = null,
+    /** Epoch ms of this turn's last reply. Older boards omit it. */
+    val outputAt: Long? = null,
 )
 
 data class RelaySideJob(
@@ -530,7 +533,7 @@ private fun readTurns(obj: JsonObject): List<RelayTurn>? {
     return array.mapNotNull { item ->
         val row = item as? JsonObject ?: return@mapNotNull null
         val iteration = row.intValue("iteration") ?: return@mapNotNull null
-        RelayTurn(iteration, row.text("prompt"), row.text("output"), row.longValue("at"))
+        RelayTurn(iteration, row.text("prompt"), row.text("output"), row.longValue("at"), row.longValue("outputAt"))
     }
 }
 
@@ -902,5 +905,58 @@ class ResyncScheduler {
         if (!armed) return false
         armed = false
         return true
+    }
+}
+
+/**
+ * Total working time of a task, matching the web board: the sum of each round's
+ * start-to-reply time, without the idle gaps between rounds. The current round ends at its
+ * terminal time (or `now` while it is still active). Returns null when nothing can be computed,
+ * for example a draft or a board that sends no timestamps.
+ */
+fun taskTotalDurationMs(task: RelayTask, nowMs: Long): Long? {
+    if (task.status == "queued" && task.startedAt == null && task.turns.isNullOrEmpty()) return null
+    val current = task.iteration ?: 1
+    val active = task.status == "queued" || task.status == "running" || task.status == "paused"
+    val starts = LinkedHashMap<Int, Long>()
+    val ends = HashMap<Int, Long>()
+    task.turns.orEmpty().forEach { turn ->
+        turn.at?.takeIf { it > 0 }?.let { starts[turn.iteration] = it }
+        turn.outputAt?.takeIf { it > 0 }?.let { ends[turn.iteration] = it }
+    }
+    if (starts[1] == null) task.startedAt?.takeIf { it > 0 }?.let { starts[1] = it }
+    var total = 0L
+    var any = false
+    for ((iteration, start) in starts) {
+        if (iteration > current) continue
+        val end = when {
+            active && iteration == current -> nowMs
+            else -> ends[iteration] ?: if (iteration == current) task.endedAt?.takeIf { it > 0 } ?: task.updatedAt.takeIf { it > 0 } else null
+        } ?: continue
+        if (end < start) continue
+        total += end - start
+        any = true
+    }
+    return if (any) total else null
+}
+
+/** 12秒 · 3分钟5秒 · 2小时1分钟. Same units and rounding as the web board. */
+fun formatDurationMs(ms: Long, english: Boolean = false): String {
+    val totalSec = if (ms > 0) maxOf(1L, Math.round(ms / 1000.0)) else 0L
+    val hours = totalSec / 3600
+    val minutes = (totalSec % 3600) / 60
+    val seconds = totalSec % 60
+    val h = if (english) "h" else "小时"
+    val m = if (english) "min" else "分钟"
+    val s = if (english) "s" else "秒"
+    val sep = if (english) " " else ""
+    return when {
+        hours > 0 -> buildList {
+            add("$hours$h")
+            if (minutes > 0) add("$minutes$m")
+            if (seconds > 0) add("$seconds$s")
+        }.joinToString(sep)
+        minutes > 0 -> if (seconds > 0) "$minutes$m$sep$seconds$s" else "$minutes$m"
+        else -> "$seconds$s"
     }
 }

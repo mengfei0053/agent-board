@@ -82,6 +82,12 @@
     <string name="resend_stop">再发一次停止</string>
     <string name="resend_continue">再发一次继续</string>
     <string name="raw_logs">原始日志</string>
+    <string name="total_duration">总耗时</string>
+    <string name="log_fullscreen">全屏查看</string>
+    <string name="log_copy_all">复制全部</string>
+    <string name="log_close">关闭</string>
+    <string name="log_lines">%1$d 行</string>
+    <string name="log_follow">跟随最新</string>
     <string name="no_logs">暂无日志。订阅期间的新行会显示在这里。</string>
     <string name="side_agent">子代理</string>
     <string name="side_background">后台</string>

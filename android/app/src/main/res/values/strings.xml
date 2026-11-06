@@ -82,6 +82,12 @@
     <string name="resend_stop">Send a new stop</string>
     <string name="resend_continue">Send a new continue</string>
     <string name="raw_logs">Raw logs</string>
+    <string name="total_duration">Total time</string>
+    <string name="log_fullscreen">Full screen</string>
+    <string name="log_copy_all">Copy all</string>
+    <string name="log_close">Close</string>
+    <string name="log_lines">%1$d lines</string>
+    <string name="log_follow">Follow latest</string>
     <string name="no_logs">No logs yet. New lines from this subscription show up here.</string>
     <string name="side_agent">Sub-agent</string>
     <string name="side_background">Background</string>

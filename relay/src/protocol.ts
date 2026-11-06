@@ -121,6 +121,7 @@ export type TaskTurn = {
   prompt?: string;
   output?: string;
   at?: number;
+  outputAt?: number;
 };
 
 export type TaskSideJob = {
@@ -1466,6 +1467,7 @@ function taskToJson(task: Task): JsonObject {
     if (turn.prompt) row.prompt = turn.prompt;
     if (turn.output) row.output = turn.output;
     if (turn.at != null) row.at = turn.at;
+    if (turn.outputAt != null) row.outputAt = turn.outputAt;
     return row;
   });
   if (task.sideJobs) json.sideJobs = task.sideJobs.map((job) => {
@@ -1567,6 +1569,9 @@ function readTurns(value: unknown): { ok: true; value?: TaskTurn[] } | { ok: fal
     const at = optionalBoundedInt(item.at, "task.turns.at", 0, Number.MAX_SAFE_INTEGER);
     if (!at.ok) return at;
     if (at.value != null) turn.at = at.value;
+    const outputAt = optionalBoundedInt(item.outputAt, "task.turns.outputAt", 0, Number.MAX_SAFE_INTEGER);
+    if (!outputAt.ok) return outputAt;
+    if (outputAt.value != null) turn.outputAt = outputAt.value;
     turns.push(turn);
   }
   return { ok: true, value: turns };

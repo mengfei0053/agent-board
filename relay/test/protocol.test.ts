@@ -172,7 +172,7 @@ test("task detail fields and cmd.detail round-trip", () => {
       resumeCommand: "cd /home/me/src/app && agent --resume sess-123",
       detail: "full",
       prompt: "line one\nline two",
-      turns: [{ iteration: 1, prompt: "line one\nline two", output: "reply" }],
+      turns: [{ iteration: 1, prompt: "line one\nline two", output: "reply", at: 1_000, outputAt: 61_000 }],
       sideJobs: [{ id: "j1", kind: "monitor", title: "watch", status: "running" }],
     },
   }));
@@ -182,6 +182,7 @@ test("task detail fields and cmd.detail round-trip", () => {
   assert.equal(task.detail, "full");
   assert.equal(task.resumeCommand?.includes("agent --resume"), true);
   assert.equal(task.turns?.length, 1);
+  assert.deepEqual((task.turns as Array<{ at?: number; outputAt?: number }>)[0] && { at: (task.turns as Array<{ at?: number }>)[0].at, outputAt: (task.turns as Array<{ outputAt?: number }>)[0].outputAt }, { at: 1_000, outputAt: 61_000 });
 
   const detail = parseMessage(frame("cmd.detail", "detail-1", {
     boardId: "thinkbook-main",

@@ -75,4 +75,34 @@ describe("relay map", () => {
     assert.equal((full.turns as Array<{ output?: string }>)[1]?.output, "answer");
     assert.equal((full.sideJobs as Array<{ title: string }>)[0]?.title, "watch");
   });
+
+  it("keeps the prompt time and the output time of each turn so the phone can total the duration", () => {
+    const t0 = Date.parse("2026-11-06T10:00:00.000Z");
+    const mapped = mapBoardTask(makeTask({
+      iteration: 2,
+      prompts: [
+        { iteration: 1, prompt: "first", at: "2026-11-06T10:00:00.000Z" },
+        { iteration: 2, prompt: "second", at: "2026-11-06T11:00:00.000Z" },
+      ],
+      outputs: [
+        { iteration: 1, text: "a", at: "2026-11-06T10:02:00.000Z" },
+        { iteration: 2, text: "b", at: "2026-11-06T11:05:00.000Z" },
+      ],
+    }))!;
+    assert.deepEqual(mapped.turns?.map((turn) => [turn.iteration, turn.at, turn.outputAt]), [
+      [1, t0, t0 + 2 * 60_000],
+      [2, t0 + 60 * 60_000, t0 + 65 * 60_000],
+    ]);
+    const full = wireMappedTask(mapped, "full");
+    assert.equal((full.turns as Array<{ outputAt?: number }>)[1]?.outputAt, t0 + 65 * 60_000);
+  });
+
+  it("does not invent an output time when a turn has no reply yet", () => {
+    const mapped = mapBoardTask(makeTask({
+      iteration: 1,
+      prompts: [{ iteration: 1, prompt: "go", at: "2026-11-06T10:00:00.000Z" }],
+      outputs: [],
+    }))!;
+    assert.equal(mapped.turns?.[0]?.outputAt, undefined);
+  });
 });

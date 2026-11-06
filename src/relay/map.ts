@@ -20,7 +20,10 @@ export type RelayTurn = {
   iteration: number;
   prompt?: string;
   output?: string;
+  /** Epoch ms when the prompt was submitted. */
   at?: number;
+  /** Epoch ms of the last output for this turn. Lets the phone compute the same total duration as the web board. */
+  outputAt?: number;
 };
 
 export type RelaySideJob = {
@@ -262,6 +265,7 @@ function addOutput(byIter: Map<number, RelayTurn>, output: OutputTurn): void {
   if (text) turn.output = text;
   const at = epoch(output.at);
   if (at != null && turn.at == null) turn.at = at;
+  if (at != null) turn.outputAt = at;
   byIter.set(output.iteration, turn);
 }
 
