@@ -1,7 +1,13 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  let adminToken = '';
+  // Kept in sessionStorage so a page refresh does not log you out. It is per-tab, never shared
+  // across tabs, never written to cookies/localStorage, and is dropped when the tab is closed or on logout.
+  const STORAGE_KEY = 'relay-admin-token';
+  const store = (() => {
+    try { return window.sessionStorage; } catch { return null; }
+  })();
+  let adminToken = store?.getItem(STORAGE_KEY) || '';
   let busy = false;
   let knownBoards = new Map();
 
@@ -49,6 +55,7 @@
 
   function logout() {
     adminToken = '';
+    try { store?.removeItem(STORAGE_KEY); } catch { /* storage unavailable */ }
     $('admin-token').value = '';
     $('dashboard').hidden = true;
     $('login').hidden = false;
@@ -142,19 +149,26 @@
         ? `${board.label ? board.boardId + ' · ' : ''}代次 ${board.generation} · 序号 ${board.lastSeq}`
         : (board.label ? board.boardId : '尚未连接'));
       cell(row, badge(board.online ? '在线' : '离线', board.online ? 'live' : ''));
-      cell(row, badge(board.revoked ? '已撤销' : board.credentialActive ? '可用' : '需新令牌', board.revoked ? 'danger' : ''));
+      cell(row, badge(board.revoked ? '已解除注册' : board.credentialActive ? '可用' : '需新令牌', board.revoked ? 'danger' : ''));
       cell(row, date(board.connectedAt));
       const actions = cell(row, '');
-      actions.append(button('配对', 'link', async () => {
+      actions.append(button('生成配对码', 'link', async () => {
         $('pair-boards').value = board.boardId;
         $('pair-boards').focus();
         $('pair-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
       }));
-      if (!board.revoked) actions.append(button('撤销', 'danger', async () => {
-        if (!confirm(`撤销看板 ${board.boardId}？\n将断开连接，并撤销通用初始令牌及覆盖此 ID 的令牌，可能使其他看板一起断线。不会停止本机任务。\n恢复需要重新签发并配置令牌。`)) return;
-        await request('/auth/revoke/board', { boardId: board.boardId });
+      if (!board.revoked) actions.append(button('解除注册', 'danger', async () => {
+        if (!confirm(`解除看板 ${board.boardId} 的注册？\n• 立即断开该看板，并禁止此 ID 再次注册\n• 只影响这一个看板，其他看板和通用令牌不受影响\n• 不会停止看板机器上的任务\n之后可通过“添加看板”重新添加。`)) return;
+        await request('/auth/board/unregister', { boardId: board.boardId });
         clearResult();
-        await refreshAfterAction('看板权限已撤销。');
+        await refreshAfterAction(`看板 ${board.boardId} 已解除注册。`);
+      }));
+      if (!board.online) actions.append(button('删除', 'danger', async () => {
+        if (!confirm(`删除看板 ${board.boardId}？\n• 从列表中彻底移除，并作废它的令牌和未使用的配对码\n• 只能访问该看板的手机将被撤销授权\n• 不可恢复；以后需要重新“添加看板”`)) return;
+        const result = await request('/auth/board/delete', { boardId: board.boardId });
+        clearResult();
+        const extra = result.revokedDevices ? `，同时撤销了 ${result.revokedDevices} 台设备` : '';
+        await refreshAfterAction(`看板 ${board.boardId} 已删除${extra}。`);
       }));
       tbody.append(row);
     }
@@ -225,15 +239,20 @@
     $('result').scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
+  function showDashboard() {
+    $('login').hidden = true;
+    $('dashboard').hidden = false;
+    $('logout').hidden = false;
+  }
+
   $('login-form').addEventListener('submit', (event) => {
     event.preventDefault();
     void run(async () => {
       adminToken = $('admin-token').value.trim();
       $('admin-token').value = '';
       try { await refresh(); } catch (error) { logout(); throw error; }
-      $('login').hidden = true;
-      $('dashboard').hidden = false;
-      $('logout').hidden = false;
+      try { store?.setItem(STORAGE_KEY, adminToken); } catch { /* keep working in memory */ }
+      showDashboard();
     });
   });
   $('logout').addEventListener('click', () => { logout(); notice('已退出管理。'); });
@@ -312,5 +331,13 @@
       }
     });
   });
-  window.addEventListener('pagehide', () => { logout(); });
+
+  // Restore the session after a refresh. An invalid/expired token (401) logs out; a network
+  // error keeps the token so the next refresh can retry.
+  if (adminToken) {
+    void run(async () => {
+      await refresh();
+      showDashboard();
+    });
+  }
 })();

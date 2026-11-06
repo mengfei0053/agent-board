@@ -250,7 +250,7 @@ async function handleHttp(
     return;
   }
 
-  if (path === "/auth/pair/create" || path === "/auth/revoke/device" || path === "/auth/revoke/board" || path === "/auth/board/issue") {
+  if (path === "/auth/pair/create" || path === "/auth/revoke/device" || path === "/auth/revoke/board" || path === "/auth/board/issue" || path === "/auth/board/unregister" || path === "/auth/board/delete") {
     if (req.method !== "POST") return methodNotAllowed(res);
     if (!authorizeAdmin(req, res, ctx)) return;
     const body = await readJson(req);
@@ -258,6 +258,8 @@ async function handleHttp(
     if (path === "/auth/pair/create") return createPair(res, ctx, body);
     if (path === "/auth/revoke/device") return revokeDevice(res, ctx, body);
     if (path === "/auth/revoke/board") return revokeBoard(res, ctx, body);
+    if (path === "/auth/board/unregister") return unregisterBoard(res, ctx, body);
+    if (path === "/auth/board/delete") return deleteBoard(res, ctx, body);
     return issueBoard(res, ctx, body);
   }
 
@@ -377,6 +379,40 @@ function revokeBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub 
     return;
   }
   sendJson(res, 400, { error: { code: "bad_request", message: "boardToken or boardId is required" } });
+}
+
+function unregisterBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {
+  if (typeof body.boardId !== "string") {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardId is required" } });
+    return;
+  }
+  const result = ctx.auth.unregisterBoard(body.boardId);
+  if (!result.ok) {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardId is invalid" } });
+    return;
+  }
+  for (const credentialId of result.credentialIds) ctx.hub.kickCredential(credentialId);
+  ctx.hub.kickBoard(body.boardId);
+  sendJson(res, 200, { ok: true, boardId: body.boardId });
+}
+
+function deleteBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {
+  if (typeof body.boardId !== "string") {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardId is required" } });
+    return;
+  }
+  if (ctx.hub.isBoardOnline(body.boardId)) {
+    sendJson(res, 409, { error: { code: "board_online", message: "board is online; unregister it first" } });
+    return;
+  }
+  const result = ctx.auth.deleteBoard(body.boardId);
+  if (!result.ok) {
+    sendJson(res, 400, { error: { code: "bad_request", message: "boardId is invalid" } });
+    return;
+  }
+  ctx.hub.forgetBoard(body.boardId);
+  for (const deviceId of result.revokedDeviceIds) ctx.hub.kickDevice(deviceId);
+  sendJson(res, 200, { ok: true, boardId: body.boardId, revokedDevices: result.revokedDeviceIds.length });
 }
 
 function issueBoard(res: ServerResponse, ctx: { auth: AuthStore; hub: RelayHub }, body: Record<string, unknown>): void {

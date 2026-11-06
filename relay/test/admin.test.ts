@@ -162,3 +162,86 @@ test("adding a board with rotate=false keeps other boards' credentials and lists
   const rotated = await (await issue({ boardIds: ["new-board"] })).json() as { rotated: boolean };
   assert.equal(rotated.rotated, true);
 });
+
+test("unregister blocks one board and its scoped token only; the shared token and other boards keep working", () => {
+  const { auth, hub, peer } = setup();
+  const scoped = auth.issueBoardToken(["alpha"], { rotate: false });
+  assert.ok(scoped.ok);
+  const board = registerBoard(hub, peer(), "alpha", scoped.boardToken);
+  assert.equal(hub.isBoardOnline("alpha"), true);
+
+  const result = auth.unregisterBoard("alpha");
+  assert.ok(result.ok);
+  assert.deepEqual(result.credentialIds, [scoped.credentialId]);
+  hub.kickCredential(scoped.credentialId);
+  hub.kickBoard("alpha");
+  assert.equal(hub.isBoardOnline("alpha"), false);
+  void board;
+
+  assert.equal(auth.verifyBoard(scoped.boardToken, "alpha").ok, false);
+  // The bootstrap token still works for a different board, and cannot re-register the blocked one.
+  assert.equal(auth.verifyBoard("board-token-value", "beta").ok, true);
+  assert.equal(auth.verifyBoard("board-token-value", "alpha").ok, false);
+  const state = hub.adminState().boards.find((item) => item.boardId === "alpha");
+  assert.equal(state?.revoked, true);
+  assert.equal(auth.unregisterBoard("bad/id").ok, false);
+
+  // Adding it again lifts the block.
+  const again = auth.issueBoardToken(["alpha"], { rotate: false });
+  assert.ok(again.ok);
+  assert.equal(auth.verifyBoard(again.boardToken, "alpha").ok, true);
+  hub.dispose();
+});
+
+test("delete removes the board everywhere and revokes devices that only had that board", () => {
+  const { auth, hub, peer } = setup();
+  const multi = auth.issueBoardToken(["gone", "stays"], { rotate: false });
+  assert.ok(multi.ok);
+  const only = pairPhone(auth, ["gone"], "only-gone");
+  const both = pairPhone(auth, ["gone", "stays"], "both");
+  const pending = auth.createPairCode(["gone"]);
+  const pendingBoth = auth.createPairCode(["gone", "stays"]);
+  assert.ok(pending.ok && pendingBoth.ok);
+
+  const result = auth.deleteBoard("gone");
+  assert.ok(result.ok);
+  assert.deepEqual(result.revokedDeviceIds, [only.deviceId]);
+  hub.forgetBoard("gone");
+
+  const state = hub.adminState();
+  assert.equal(state.boards.some((item) => item.boardId === "gone"), false);
+  assert.equal(state.boards.some((item) => item.boardId === "stays"), true);
+  assert.equal(state.devices.some((item) => item.deviceId === only.deviceId), false);
+  assert.deepEqual(state.devices.find((item) => item.deviceId === both.deviceId)?.boardIds, ["stays"]);
+  assert.equal(state.activePairCodes, 1);
+  assert.equal(auth.verifyDevice(only.deviceToken), null);
+  // The multi-board token still works for the remaining board but no longer for the deleted one.
+  assert.equal(auth.verifyBoard(multi.boardToken, "stays").ok, true);
+  assert.equal(auth.verifyBoard(multi.boardToken, "gone").ok, false);
+  assert.equal(auth.deleteBoard("bad/id").ok, false);
+  hub.dispose();
+});
+
+test("board unregister/delete endpoints require ADMIN_TOKEN, refuse to delete an online board, and persist", async (t) => {
+  const server = await startServer({ adminToken, boardToken, log: () => {} });
+  t.after(() => server.close());
+  const headers = { authorization: `Bearer ${adminToken}`, "content-type": "application/json" };
+  const call = (path: string, body: unknown, token = adminToken) => fetch(server.httpUrl + path, {
+    method: "POST", headers: { ...headers, authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+  });
+  const boards = async () => (await (await fetch(server.httpUrl + "/api/admin/state", { headers })).json() as {
+    boards: { boardId: string; revoked: boolean }[];
+  }).boards;
+
+  assert.equal((await call("/auth/board/unregister", { boardId: "x" }, "wrong")).status, 401);
+  assert.equal((await call("/auth/board/delete", { boardId: "x" }, boardToken)).status, 401);
+  assert.equal((await call("/auth/board/unregister", {})).status, 400);
+  assert.equal((await call("/auth/board/delete", { boardId: "bad/id" })).status, 400);
+  assert.equal((await fetch(server.httpUrl + "/auth/board/delete", { method: "GET", headers })).status, 405);
+
+  assert.equal((await call("/auth/board/issue", { boardIds: ["solo"], rotate: false })).status, 200);
+  assert.equal((await call("/auth/board/unregister", { boardId: "solo" })).status, 200);
+  assert.deepEqual((await boards()).map((b) => [b.boardId, b.revoked]), [["solo", true]]);
+  assert.equal((await call("/auth/board/delete", { boardId: "solo" })).status, 200);
+  assert.deepEqual(await boards(), []);
+});

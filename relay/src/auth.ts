@@ -224,6 +224,61 @@ export class AuthStore {
    * `rotate: true` (default) revokes the bootstrap token and any credential covering these ids.
    * `rotate: false` only adds a new scoped credential and leaves existing credentials untouched.
    */
+  /**
+   * Block one board id and revoke only the credentials scoped to exactly that id.
+   * Unlike `revokeBoardId` it leaves the bootstrap credential and other boards untouched.
+   */
+  unregisterBoard(boardId: string): { ok: true; credentialIds: string[] } | { ok: false } {
+    if (!BOARD_ID.test(boardId)) return { ok: false };
+    this.revokedBoardIds.add(boardId);
+    this.boardIds.add(boardId);
+    const credentialIds: string[] = [];
+    for (const credential of this.credentials) {
+      if (credential.revoked || credential.boardIds === null) continue;
+      if (credential.boardIds.length === 1 && credential.boardIds[0] === boardId) {
+        credential.revoked = true;
+        credentialIds.push(credential.id);
+      }
+    }
+    this.persist();
+    return { ok: true, credentialIds };
+  }
+
+  /**
+   * Forget a board id everywhere: block list, known list, scoped credentials, pending pair codes and
+   * device allow-lists. Devices left with no board are revoked. The caller must make sure the board is offline.
+   */
+  deleteBoard(boardId: string): { ok: true; credentialIds: string[]; revokedDeviceIds: string[] } | { ok: false } {
+    if (!BOARD_ID.test(boardId)) return { ok: false };
+    this.revokedBoardIds.delete(boardId);
+    this.boardIds.delete(boardId);
+    const credentialIds: string[] = [];
+    for (const credential of this.credentials) {
+      if (credential.revoked || credential.boardIds === null || !credential.boardIds.includes(boardId)) continue;
+      if (credential.boardIds.length === 1) {
+        credential.revoked = true;
+        credentialIds.push(credential.id);
+      } else {
+        credential.boardIds = credential.boardIds.filter((id) => id !== boardId);
+      }
+    }
+    for (const [key, record] of this.pairs) {
+      record.boardIds = record.boardIds.filter((id) => id !== boardId);
+      if (record.boardIds.length === 0) this.pairs.delete(key);
+    }
+    const orphaned = new Set<string>();
+    for (const session of this.devices.values()) {
+      if (!session.boardIds.includes(boardId)) continue;
+      session.boardIds = session.boardIds.filter((id) => id !== boardId);
+      if (session.boardIds.length === 0) orphaned.add(session.deviceId);
+    }
+    for (const deviceId of orphaned) {
+      for (const token of [...(this.tokensByDevice.get(deviceId) ?? [])]) this.forgetToken(token, deviceId, false);
+    }
+    this.persist();
+    return { ok: true, credentialIds, revokedDeviceIds: [...orphaned] };
+  }
+
   issueBoardToken(
     boardIds: string[],
     options: { rotate?: boolean } = {},
@@ -278,7 +333,9 @@ export class AuthStore {
     const devices = [...new Map([...this.devices.values()].map((session) => [session.deviceId, session])).values()]
       .map(publicSession);
     const boardIds = new Set([...knownBoardIds, ...this.boardIds, ...this.revokedBoardIds]);
+    // A revoked credential no longer makes its board "known" (otherwise a deleted board would reappear).
     for (const credential of this.credentials) {
+      if (credential.revoked) continue;
       for (const boardId of credential.boardIds ?? []) boardIds.add(boardId);
     }
     for (const session of devices) for (const boardId of session.boardIds) boardIds.add(boardId);

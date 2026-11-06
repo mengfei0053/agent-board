@@ -57,7 +57,8 @@ try {
   assert.match(await page.$eval('#boards', (element) => element.textContent), /<img src=x onerror=alert\(1\)>/);
   assert.equal(await page.$('#boards img'), null);
   assert.equal(await page.$eval('#admin-token', (element) => element.value), '');
-  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length, document.cookie]), [0, 0, '']);
+  // The token lives in this tab's sessionStorage only: never localStorage or cookies.
+  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length, document.cookie]), [0, 1, '']);
 
   // The row shortcut fills the scoped pairing form, then we exercise the real API.
   await page.click('#boards button.link');
@@ -101,12 +102,26 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: '/tmp/agent-board-relay-admin-mobile.png', fullPage: true });
 
-  // Revoke a board using the existing API, with confirmation and immediate disconnect.
+  // An online board can be unregistered, but not deleted; cancelling the confirm changes nothing.
+  assert.equal(await page.$$eval('#boards button', (buttons) => buttons.some((b) => b.textContent === '删除')), false);
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.click('#boards button.danger');
+  await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
+  assert.equal(await page.$eval('#boards-count', (element) => element.textContent), '1');
+
+  // Unregister: disconnects that board only and marks it blocked.
   page.once('dialog', (dialog) => dialog.accept());
   await page.click('#boards button.danger');
-  await page.waitForFunction(() => document.querySelector('#boards').textContent.includes('已撤销'));
+  await page.waitForFunction(() => document.querySelector('#boards').textContent.includes('已解除注册'));
   assert.equal(await page.$eval('#boards-count', (element) => element.textContent), '0');
   assert.equal(await page.$eval('#result-secret', (element) => element.value), '');
+
+  // Delete: now offline, so the row can be removed completely.
+  const deleteButton = await page.evaluateHandle(() => [...document.querySelectorAll('#boards button')].find((b) => b.textContent === '删除'));
+  page.once('dialog', (dialog) => dialog.accept());
+  await deleteButton.asElement().click();
+  await page.waitForFunction(() => document.querySelector('#boards').textContent.includes('暂无看板'));
+  assert.equal(await page.$eval('#notice', (element) => element.textContent.includes('已删除')), true);
 
   // Failed refresh is visible rather than silently showing stale state as fresh.
   await page.setOfflineMode(true);
@@ -119,11 +134,28 @@ try {
   await page.type('#admin-token', adminToken);
   await page.click('#login-form button');
   await page.waitForSelector('#dashboard:not([hidden])');
+  // Refresh keeps the session; one-time secrets are not restored.
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.waitForSelector('#dashboard:not([hidden])');
+  assert.equal(await page.$eval('#login', (element) => element.hidden), true);
+  assert.equal(await page.$eval('#result-secret', (element) => element.value), '');
+  assert.equal(await page.$eval('#logout', (element) => element.hidden), false);
+  assert.deepEqual(await page.evaluate(() => [localStorage.length, document.cookie]), [0, '']);
+
+  // Logout drops the stored token, so a refresh lands on the login page.
+  await page.click('#logout');
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
   await page.reload({ waitUntil: 'networkidle0' });
   assert.equal(await page.$eval('#dashboard', (element) => element.hidden), true);
-  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+
+  // A stored token the relay rejects is discarded instead of looping.
+  await page.evaluate(() => sessionStorage.setItem('relay-admin-token', 'stale-token'));
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('令牌无效'));
+  assert.equal(await page.$eval('#dashboard', (element) => element.hidden), true);
+  assert.equal(await page.evaluate(() => sessionStorage.length), 0);
   assert.deepEqual(errors, []);
-  console.log('PASS relay admin browser: login/reject, live status, pairing, device revoke/cancel, board rotation/revoke, XSS escaping, offline errors, logout/reload, responsive layout, no storage, no runtime errors');
+  console.log('PASS relay admin browser: login/reject, live status, pairing, device revoke/cancel, board rotation/unregister/delete, XSS escaping, offline errors, logout, refresh keeps session, stale token discarded, responsive layout, no localStorage/cookies, no runtime errors');
 } finally {
   for (const socket of sockets) socket.terminate();
   await browser?.close();

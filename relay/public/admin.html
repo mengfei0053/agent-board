@@ -26,7 +26,7 @@
         <input id="admin-token" name="token" type="password" required autocomplete="off" placeholder="输入 ADMIN_TOKEN" spellcheck="false">
         <button type="submit">进入控制台 <span aria-hidden="true">→</span></button>
       </form>
-      <p class="hint">令牌仅用于当前页面，不写入 Cookie 或浏览器存储。刷新页面后需重新登录。</p>
+      <p class="hint">令牌只保存在当前标签页的会话中：刷新页面不会退出，关闭标签页或点“退出管理”后需重新登录。不写入 Cookie 或 localStorage。</p>
     </section>
 
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
@@ -45,12 +45,12 @@
       <div class="notice info">当前为内存模式：服务重启会清空设备、配对码、动态令牌与撤销记录。这里只管理连接权限，不会执行或停止本机任务。</div>
 
       <section class="panel table-panel">
-        <div class="section-heading"><div><h2>看板</h2><p class="hint">包含本次运行中连接过、已授权或已撤销的看板。</p></div><div class="heading-tools"><span id="boards-total" class="count"></span><button id="goto-add" class="secondary" type="button">+ 添加看板</button></div></div>
+        <div class="section-heading"><div><h2>看板</h2><p class="hint"><strong>配对码</strong>：给手机用的一次性授权码，手机输入后才能控制该看板。<strong>解除注册</strong>：断开并禁止该看板 ID 再连接。<strong>删除</strong>：把离线/已解除的看板从列表彻底移除。</p></div><div class="heading-tools"><span id="boards-total" class="count"></span><button id="goto-add" class="secondary" type="button">+ 添加看板</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>看板</th><th>连接状态</th><th>凭证状态</th><th>连接时间</th><th>操作</th></tr></thead><tbody id="boards"></tbody></table></div>
       </section>
 
       <section class="panel table-panel">
-        <div class="section-heading"><div><h2>配对设备</h2><p class="hint">撤销后立即断开手机连接，设备需要重新配对。</p></div><span id="devices-total" class="count"></span></div>
+        <div class="section-heading"><div><h2>配对设备</h2><p class="hint">“撤销设备”会立即断开该手机，之后需要重新配对才能使用。</p></div><span id="devices-total" class="count"></span></div>
         <div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>授权看板</th><th>令牌到期</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div>
       </section>
 

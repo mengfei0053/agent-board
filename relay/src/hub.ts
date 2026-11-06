@@ -281,6 +281,17 @@ export class RelayHub {
     }
   }
 
+  isBoardOnline(boardId: string): boolean {
+    return this.boards.has(boardId);
+  }
+
+  /** Drop cached snapshot/log state for an offline board. No-op while it is connected. */
+  forgetBoard(boardId: string): boolean {
+    if (this.boards.has(boardId)) return false;
+    this.runtime.delete(boardId);
+    return true;
+  }
+
   kickBoard(boardId: string): void {
     const board = this.boards.get(boardId);
     if (!board) return;
