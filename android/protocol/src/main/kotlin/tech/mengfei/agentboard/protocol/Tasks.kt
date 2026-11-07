@@ -29,6 +29,13 @@ data class RelaySideJob(
     val toolName: String? = null,
 )
 
+data class RelayAttachment(
+    val name: String,
+    val originalName: String,
+    val mime: String? = null,
+    val size: Long? = null,
+)
+
 data class RelayTask(
     val id: String,
     val title: String,
@@ -57,6 +64,7 @@ data class RelayTask(
     val detailFull: Boolean = false,
     val turns: List<RelayTurn>? = null,
     val sideJobs: List<RelaySideJob>? = null,
+    val attachments: List<RelayAttachment>? = null,
 )
 
 data class DetailRound(
@@ -372,6 +380,7 @@ fun readTask(obj: JsonObject): RelayTask? {
         detailFull = obj.text("detail") == "full",
         turns = readTurns(obj),
         sideJobs = readSideJobs(obj),
+        attachments = readAttachments(obj),
     )
 }
 
@@ -383,15 +392,19 @@ fun mergeRelayTask(previous: RelayTask?, incoming: RelayTask): RelayTask {
     if (previous == null || previous.id != incoming.id) return incoming
     if (incoming.detailFull) {
         return incoming.copy(
+            thinkingEffort = incoming.thinkingEffort ?: previous.thinkingEffort,
+            attachments = incoming.attachments ?: previous.attachments,
             promptPreview = incoming.promptPreview ?: previous.promptPreview,
             outputPreview = incoming.outputPreview ?: previous.outputPreview,
         )
     }
     return incoming.copy(
+        thinkingEffort = incoming.thinkingEffort ?: previous.thinkingEffort,
         prompt = previous.prompt,
         output = previous.output,
         turns = previous.turns,
         sideJobs = previous.sideJobs,
+        attachments = incoming.attachments ?: previous.attachments,
         detailFull = previous.detailFull,
         promptTruncated = previous.promptTruncated || incoming.promptTruncated,
         outputTruncated = previous.outputTruncated || incoming.outputTruncated,
@@ -476,7 +489,7 @@ fun detailRounds(task: RelayTask, english: Boolean = false): List<DetailRound> {
     val turns = task.turns
     if (!turns.isNullOrEmpty()) {
         val current = task.iteration
-        return turns.map { turn ->
+        return turns.sortedByDescending { it.iteration }.map { turn ->
             DetailRound(
                 iteration = turn.iteration,
                 kindLabel = if (turn.iteration <= 1) initial else follow,
@@ -549,6 +562,26 @@ private fun readSideJobs(obj: JsonObject): List<RelaySideJob>? {
         val status = row.text("status") ?: return@mapNotNull null
         RelaySideJob(id, row.text("kind") ?: "other", title, status, row.text("summary"), row.text("toolName"))
     }
+}
+
+private fun readAttachments(obj: JsonObject): List<RelayAttachment>? {
+    if ("attachments" !in obj) return null
+    val array = obj.array("attachments") ?: return null
+    return array.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val name = row.text("name") ?: return@mapNotNull null
+        val originalName = row.text("originalName") ?: name
+        RelayAttachment(name, originalName, row.text("mime"), row.longValue("size"))
+    }
+}
+
+fun formatAttachmentBytes(size: Long?): String {
+    if (size == null || size < 0L) return ""
+    if (size < 1024L) return "$size B"
+    val kb = size / 1024.0
+    if (kb < 1024.0) return String.format(java.util.Locale.US, "%.1f KB", kb)
+    val mb = kb / 1024.0
+    return String.format(java.util.Locale.US, "%.1f MB", mb)
 }
 
 /**

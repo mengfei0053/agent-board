@@ -9,6 +9,7 @@ import { RELAY_LIMITS } from "./limits.js";
 import { isArchiveCursor, pageArchivedTasks, wireArchivePage } from "./archive.js";
 import { isAgentKind, mapBoardTask, wireMappedTask, WORKSPACE_ID, type MappedTask } from "./map.js";
 import type { SettingsDocument } from "../settingsDocument.js";
+import type { InlineAttachmentInput } from "../uploads.js";
 import { enrichWorkspaces } from "./workspaces.js";
 import type { PhoneWorkspaceCard } from "./workspaceCard.js";
 
@@ -332,14 +333,14 @@ export class ConnectorSession {
     }
     const cont = message.type === "cmd.continue"
       ? readContinueOptions(message.payload)
-      : { ok: true as const, prompt: undefined, model: undefined, thinkingEffort: undefined };
+      : { ok: true as const, prompt: undefined, model: undefined, thinkingEffort: undefined, attachments: undefined };
     if (!cont.ok) {
       this.fail(message, new RelayCommandError(cont.code, cont.message));
       return;
     }
     const task = message.type === "cmd.stop"
       ? await this.opts.facade.stop(parsed.taskId)
-      : await this.opts.facade.continue(parsed.taskId, cont.prompt, cont.model, cont.thinkingEffort);
+      : await this.opts.facade.continue(parsed.taskId, cont.prompt, cont.model, cont.thinkingEffort, cont.attachments);
     const mapped = mapBoardTask(task);
     if (!mapped) throw new RelayCommandError("board_http", "board request failed");
     if (this.closed) return;
@@ -633,10 +634,52 @@ function readOptionalThinkingEffort(
   return { ok: true, thinkingEffort };
 }
 
+function readOptionalAttachments(
+  payload: Record<string, unknown>,
+): { ok: true; attachments?: InlineAttachmentInput[] } | { ok: false; code: string; message: string } {
+  if (!("attachments" in payload) || payload.attachments == null) return { ok: true };
+  if (!Array.isArray(payload.attachments)) {
+    return { ok: false, code: "bad_request", message: "attachments must be an array" };
+  }
+  if (payload.attachments.length === 0) return { ok: true };
+  if (payload.attachments.length > 10) {
+    return { ok: false, code: "bad_request", message: "attachments exceeds 10 items" };
+  }
+  const items: InlineAttachmentInput[] = [];
+  for (const raw of payload.attachments) {
+    if (!isPayloadRecord(raw)) {
+      return { ok: false, code: "bad_request", message: "attachment entry must be an object" };
+    }
+    const originalName = typeof raw.originalName === "string" ? raw.originalName.trim() : "";
+    if (!originalName || originalName.length > 200 || [...originalName].some((ch) => ch < " " || ch === "\u007f")) {
+      return { ok: false, code: "bad_request", message: "attachment originalName is invalid" };
+    }
+    const data = typeof raw.data === "string" ? raw.data.trim() : "";
+    if (!data || data.length > 12_000_000) {
+      return { ok: false, code: "bad_request", message: "attachment data is invalid" };
+    }
+    let mime: string | undefined;
+    if (raw.mime != null && raw.mime !== "") {
+      if (typeof raw.mime !== "string" || raw.mime.length > 120 || [...raw.mime].some((ch) => ch < " " || ch === "\u007f")) {
+        return { ok: false, code: "bad_request", message: "attachment mime is invalid" };
+      }
+      mime = raw.mime.trim();
+    }
+    items.push({ originalName, ...(mime ? { mime } : {}), data });
+  }
+  return { ok: true, attachments: items };
+}
+
 function readContinueOptions(
   payload: Record<string, unknown>,
 ):
-  | { ok: true; prompt?: string; model?: string; thinkingEffort?: string }
+  | {
+      ok: true;
+      prompt?: string;
+      model?: string;
+      thinkingEffort?: string;
+      attachments?: InlineAttachmentInput[];
+    }
   | { ok: false; code: string; message: string } {
   const prompt = readContinuePrompt(payload);
   if (!prompt.ok) return prompt;
@@ -644,11 +687,14 @@ function readContinueOptions(
   if (!model.ok) return model;
   const effort = readOptionalThinkingEffort(payload);
   if (!effort.ok) return effort;
+  const attachments = readOptionalAttachments(payload);
+  if (!attachments.ok) return attachments;
   return {
     ok: true,
     prompt: prompt.prompt,
     model: model.model,
     thinkingEffort: effort.thinkingEffort,
+    attachments: attachments.attachments,
   };
 }
 
@@ -693,6 +739,8 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
   if (!model.ok) return model;
   const effort = readOptionalThinkingEffort(payload);
   if (!effort.ok) return effort;
+  const attachments = readOptionalAttachments(payload);
+  if (!attachments.ok) return attachments;
   if ("useGitWorktree" in payload && payload.useGitWorktree != null && typeof payload.useGitWorktree !== "boolean") {
     return { ok: false, code: "bad_request", message: "useGitWorktree must be a boolean" };
   }
@@ -711,6 +759,7 @@ function parseCreate(payload: Record<string, unknown>, boardId: string): ParsedC
   };
   if (model.model) input.model = model.model;
   if (effort.thinkingEffort) input.thinkingEffort = effort.thinkingEffort;
+  if (attachments.attachments?.length) input.attachments = attachments.attachments;
   if (workspaceId) input.workspaceId = workspaceId;
   if (payload.useGitWorktree === true) input.useGitWorktree = true;
   return {

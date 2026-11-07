@@ -131,9 +131,43 @@ class BoardSettingsFormTest {
             prompt = "Next round",
             model = "claude-opus-4-6",
             thinkingEffort = "max",
+            attachments = listOf(OutgoingAttachment("note.txt", "text/plain", 5L, "aGVsbG8=")),
         ) as Validated.Ok
         assertEquals("claude-opus-4-6", continued.value.payload.text("model"))
         assertEquals("max", continued.value.payload.text("thinkingEffort"))
+        assertEquals("note.txt", (continued.value.payload.array("attachments")!!.single() as JsonObject).text("originalName"))
+    }
+
+    @Test
+    fun detailRoundsOrdersLatestRoundFirstAndMergeKeepsThinkingEffort() {
+        val task = RelayTask(
+            id = "t1",
+            title = "Multi-round",
+            status = "succeeded",
+            updatedAt = 100L,
+            iteration = 3,
+            thinkingEffort = "high",
+            turns = listOf(
+                RelayTurn(1, "p1", "o1"),
+                RelayTurn(2, "p2", "o2"),
+                RelayTurn(3, "p3", "o3"),
+            ),
+            attachments = listOf(RelayAttachment("a1.txt", "spec.txt", "text/plain", 42L)),
+        )
+        val rounds = detailRounds(task)
+        assertEquals(listOf(3, 2, 1), rounds.map { it.iteration })
+        assertEquals("初始", rounds.last().kindLabel)
+        assertEquals("继续", rounds.first().kindLabel)
+
+        val snapshotUpdate = RelayTask(
+            id = "t1",
+            title = "Multi-round",
+            status = "succeeded",
+            updatedAt = 101L,
+        )
+        val merged = mergeRelayTask(task, snapshotUpdate)
+        assertEquals("high", merged.thinkingEffort)
+        assertEquals("spec.txt", merged.attachments?.single()?.originalName)
     }
 
     private fun settingsPayload(): JsonObject = buildJsonObject {

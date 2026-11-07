@@ -959,11 +959,17 @@ fun settingsEntry(capabilities: List<String>, capability: String): String? {
 data class ContinuePlan(val send: Boolean, val prompt: String?)
 
 /** The phone never omits prompt. A blank composer does not build cmd.continue. */
-fun planPhoneContinue(status: String, prompt: String, activeSessionId: String?, composerSessionId: String?): ContinuePlan {
+fun planPhoneContinue(
+    status: String,
+    prompt: String,
+    activeSessionId: String?,
+    composerSessionId: String?,
+    hasAttachments: Boolean = false,
+): ContinuePlan {
     if (activeSessionId == null || activeSessionId != composerSessionId) return ContinuePlan(false, null)
     if (!canContinueStatus(status)) return ContinuePlan(false, null)
     val clean = prompt.trim()
-    if (clean.isEmpty()) return ContinuePlan(false, null)
+    if (clean.isEmpty() && !hasAttachments) return ContinuePlan(false, null)
     return ContinuePlan(true, clean)
 }
 

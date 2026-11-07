@@ -16,7 +16,8 @@ import { resolveAllowedDirectory } from "../paths.js";
 import { readSettingsDocument, writeSettingsDocument, type SettingsDocument } from "../settingsDocument.js";
 import { deleteWorkspace as removeWorkspace, getTask as readStoredTask, getWorkspace as readWorkspace, upsertWorkspace as saveWorkspace } from "../store.js";
 import { ArchivedReadonlyError } from "../taskErrors.js";
-import type { AgentKind, BoardEvent, CreateTaskInput, Task, Workspace } from "../types.js";
+import type { AgentKind, BoardEvent, CreateTaskInput, Task, TaskAttachment, Workspace } from "../types.js";
+import { saveInlineAttachments, type InlineAttachmentInput } from "../uploads.js";
 import { applyWorkspacePatch } from "../workspaceRecord.js";
 import { RelayCommandError, relayErrorFrom } from "./errors.js";
 import { isAgentKind, WORKSPACE_ID } from "./map.js";
@@ -29,6 +30,7 @@ export type FacadeCreateInput = {
   cwd: string;
   model?: string;
   thinkingEffort?: string;
+  attachments?: InlineAttachmentInput[];
   /** Only `true` is forwarded. `false` and omission leave the workspace path. */
   useGitWorktree?: boolean;
   /**
@@ -53,7 +55,13 @@ export type BoardFacade = {
   stop(id: string): Promise<Task>;
   /** Raw task for `cmd.detail`. Not the clipped list snapshot. */
   task(id: string): Task | undefined;
-  continue(id: string, prompt?: string, model?: string, thinkingEffort?: string): Promise<Task>;
+  continue(
+    id: string,
+    prompt?: string,
+    model?: string,
+    thinkingEffort?: string,
+    attachments?: InlineAttachmentInput[],
+  ): Promise<Task>;
   /** Same store path as `POST /api/workspaces` (`name` + `path` only). */
   createWorkspace(input: FacadeWorkspaceInput): Promise<Workspace>;
   /**
@@ -93,7 +101,14 @@ export type BoardFacadeDeps = {
   createAndStart?: (input: CreateTaskInput) => Promise<Task>;
   stopTask?: (id: string) => Promise<Task>;
   task?: (id: string) => Task | undefined;
-  continueTask?: (id: string, prompt?: string, model?: string, thinkingEffort?: string) => Promise<Task>;
+  continueTask?: (
+    id: string,
+    prompt?: string,
+    model?: string,
+    thinkingEffort?: string,
+    attachments?: TaskAttachment[],
+  ) => Promise<Task>;
+  saveAttachments?: (raw: unknown) => Promise<TaskAttachment[]>;
   subscribe?: (fn: (ev: BoardEvent) => void) => () => void;
   resolveAllowedDirectory?: (input: string, label?: string) => string;
   upsertWorkspace?: (ws: Workspace) => Promise<Workspace>;
@@ -123,6 +138,7 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
   const start = deps.createAndStart ?? createAndStart;
   const stop = deps.stopTask ?? stopTask;
   const cont = deps.continueTask ?? continueTask;
+  const saveFiles = deps.saveAttachments ?? saveInlineAttachments;
   const listen = deps.subscribe ?? subscribe;
   const resolveDir = deps.resolveAllowedDirectory ?? resolveAllowedDirectory;
   const upsert = deps.upsertWorkspace ?? saveWorkspace;
@@ -142,7 +158,7 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
     workspaceSnapshot: () => spaces(),
     gitEligibility: (path) => eligibility(path),
     subscribe: (fn) => listen(fn),
-    create: (input) => createWithHttpGates(input, start, resolveDir),
+    create: (input) => createWithHttpGates(input, start, resolveDir, saveFiles),
     createWorkspace: (input) => createWorkspaceWithGates(input, resolveDir, upsert, emit, allocateId, now),
     deleteWorkspace: (id) => deleteWorkspaceWithGates(id, remove, emit),
     getWorkspace: (id) => readWorkspaceCard(id, readSpace, eligibility, gitStatus),
@@ -170,9 +186,10 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
       }
     },
     task: (id) => (deps.task ? deps.task(id) : readStoredTask(id)),
-    continue: async (id, prompt, model, thinkingEffort) => {
+    continue: async (id, prompt, model, thinkingEffort, attachments) => {
       try {
-        return await cont(id, prompt, model, thinkingEffort);
+        const saved = attachments?.length ? await saveFiles(attachments) : undefined;
+        return await cont(id, prompt, model, thinkingEffort, saved);
       } catch (err) {
         if (err instanceof Error && err.message === "task is still running; stop it before continue") {
           throw new RelayCommandError("bad_request", err.message);
@@ -190,6 +207,7 @@ async function createWithHttpGates(
   input: FacadeCreateInput,
   start: (input: CreateTaskInput) => Promise<Task>,
   resolveDir: (input: string, label?: string) => string,
+  saveFiles: (raw: unknown) => Promise<TaskAttachment[]>,
 ): Promise<Task> {
   if (!isAgentKind(input.kind)) {
     throw new RelayCommandError("unknown_agent", "unknown agent");
@@ -225,6 +243,14 @@ async function createWithHttpGates(
   } catch (err) {
     throw relayErrorFrom(err);
   }
+  let attachments: TaskAttachment[] | undefined;
+  if (input.attachments?.length) {
+    try {
+      attachments = await saveFiles(input.attachments);
+    } catch (err) {
+      throw relayErrorFrom(err);
+    }
+  }
   const model = input.model?.trim() || undefined;
   const thinkingEffort = input.thinkingEffort?.trim() || undefined;
   const body: CreateTaskInput = {
@@ -234,6 +260,7 @@ async function createWithHttpGates(
     cwd,
     ...(model ? { model } : {}),
     ...(thinkingEffort ? { thinkingEffort } : {}),
+    ...(attachments?.length ? { attachments } : {}),
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.useGitWorktree === true ? { useGitWorktree: true } : {}),
   };

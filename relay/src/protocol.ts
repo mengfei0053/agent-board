@@ -115,6 +115,7 @@ export type Task = {
   detail?: "full";
   turns?: TaskTurn[];
   sideJobs?: TaskSideJob[];
+  attachments?: TaskAttachment[];
 };
 
 export type TaskTurn = {
@@ -132,6 +133,13 @@ export type TaskSideJob = {
   status: string;
   summary?: string;
   toolName?: string;
+};
+
+export type TaskAttachment = {
+  name: string;
+  originalName: string;
+  mime?: string;
+  size?: number;
 };
 
 export type ParseFailure = {
@@ -389,6 +397,9 @@ function parseCmdCreate(payload: unknown, id: string, ts: number): Incoming {
   const thinkingEffort = optionalText(record.value, "thinkingEffort", 1, 32);
   if (!thinkingEffort.ok) return failure("bad_request", thinkingEffort.message, id);
   if (thinkingEffort.value) body.thinkingEffort = thinkingEffort.value.trim();
+  const attachments = readCommandAttachments(record.value.attachments);
+  if (!attachments.ok) return failure("bad_request", attachments.message, id);
+  if (attachments.value) body.attachments = attachments.value;
   const worktree = readOptionalBoolean(record.value, "useGitWorktree");
   if (!worktree.ok) return failure("bad_request", worktree.message, id);
   if (worktree.value === true) body.useGitWorktree = true;
@@ -419,6 +430,9 @@ function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.conti
   const thinkingEffort = optionalText(record.value, "thinkingEffort", 1, 32);
   if (!thinkingEffort.ok) return failure("bad_request", thinkingEffort.message, id);
   if (thinkingEffort.value) body.thinkingEffort = thinkingEffort.value.trim();
+  const attachments = readCommandAttachments(record.value.attachments);
+  if (!attachments.ok) return failure("bad_request", attachments.message, id);
+  if (attachments.value) body.attachments = attachments.value;
   return {
     ok: true,
     kind,
@@ -1588,6 +1602,12 @@ function taskToJson(task: Task): JsonObject {
     if (job.toolName) row.toolName = job.toolName;
     return row;
   });
+  if (task.attachments) json.attachments = task.attachments.map((att) => {
+    const row: JsonObject = { name: att.name, originalName: att.originalName };
+    if (att.mime) row.mime = att.mime;
+    if (att.size != null) row.size = att.size;
+    return row;
+  });
   return json;
 }
 
@@ -1662,7 +1682,69 @@ function readTaskDetail(
   const sideJobs = readSideJobs(value.sideJobs);
   if (!sideJobs.ok) return sideJobs;
   if (sideJobs.value) fields.sideJobs = sideJobs.value;
+  const attachments = readTaskAttachments(value.attachments);
+  if (!attachments.ok) return attachments;
+  if (attachments.value) fields.attachments = attachments.value;
   return { ok: true, fields };
+}
+
+function readCommandAttachments(value: unknown): { ok: true; value?: Json[] } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value)) return { ok: false, message: "attachments must be an array" };
+  if (value.length === 0) return { ok: true };
+  if (value.length > 10) return { ok: false, message: "attachments exceeds 10 items" };
+  const items: Json[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "attachments entry must be an object" };
+    const originalName = readText(item.originalName, "attachments.originalName", 1, 200);
+    if (!originalName.ok) return originalName;
+    const data = readText(item.data, "attachments.data", 1, 12_000_000);
+    if (!data.ok) return data;
+    const row: JsonObject = {
+      originalName: originalName.value.trim(),
+      data: data.value.trim(),
+    };
+    if (item.mime !== undefined) {
+      const mime = readText(item.mime, "attachments.mime", 1, 120);
+      if (!mime.ok) return mime;
+      row.mime = mime.value.trim();
+    }
+    if (item.size !== undefined) {
+      const size = optionalBoundedInt(item.size, "attachments.size", 0, 32 * 1024 * 1024);
+      if (!size.ok) return size;
+      if (size.value != null) row.size = size.value;
+    }
+    items.push(row);
+  }
+  return { ok: true, value: items };
+}
+
+function readTaskAttachments(value: unknown): { ok: true; value?: TaskAttachment[] } | { ok: false; message: string } {
+  if (value === undefined) return { ok: true };
+  if (!Array.isArray(value)) return { ok: false, message: "task.attachments must be an array" };
+  if (value.length > 20) return { ok: false, message: "task.attachments exceeds 20 items" };
+  const items: TaskAttachment[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return { ok: false, message: "task.attachments entry must be an object" };
+    const name = readText(item.name, "task.attachments.name", 1, 120);
+    if (!name.ok) return name;
+    const originalName = readText(item.originalName, "task.attachments.originalName", 1, 200);
+    if (!originalName.ok) return originalName;
+    const att: TaskAttachment = {
+      name: name.value.trim(),
+      originalName: originalName.value.trim(),
+    };
+    if (item.mime !== undefined) {
+      const mime = readText(item.mime, "task.attachments.mime", 1, 120);
+      if (!mime.ok) return mime;
+      att.mime = mime.value.trim();
+    }
+    const size = optionalBoundedInt(item.size, "task.attachments.size", 0, Number.MAX_SAFE_INTEGER);
+    if (!size.ok) return size;
+    if (size.value != null) att.size = size.value;
+    items.push(att);
+  }
+  return { ok: true, value: items };
 }
 
 function readTurns(value: unknown): { ok: true; value?: TaskTurn[] } | { ok: false; message: string } {

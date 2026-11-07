@@ -38,7 +38,7 @@ export type StartedServer = {
 };
 
 const MAX_BODY = 64 * 1024;
-const MAX_FRAME = 256 * 1024;
+const MAX_FRAME = 16 * 1024 * 1024;
 
 export async function startServer(options: ServerOptions): Promise<StartedServer> {
   const host = options.host ?? "127.0.0.1";

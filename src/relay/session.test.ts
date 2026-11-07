@@ -839,12 +839,18 @@ describe("connector session", () => {
       idempotencyKey: "create-model-effort-1",
       model: "mgp/antigravity/gemini-4-argon",
       thinkingEffort: "high",
+      attachments: [{ originalName: "spec.txt", mime: "text/plain", data: "aGVsbG8=" }],
     }));
     await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "create-model-effort-1"));
     const createAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "create-model-effort-1");
-    const createdTask = createAck?.payload.task as { model?: string; thinkingEffort?: string };
+    const createdTask = createAck?.payload.task as {
+      model?: string;
+      thinkingEffort?: string;
+      attachments?: Array<{ originalName: string }>;
+    };
     assert.equal(createdTask.model, "mgp/antigravity/gemini-4-argon");
     assert.equal(createdTask.thinkingEffort, "high");
+    assert.equal(createdTask.attachments?.[0]?.originalName, "spec.txt");
 
     session.handleCommand(frame("cmd.continue", {
       boardId: "thinkbook",
@@ -853,12 +859,18 @@ describe("connector session", () => {
       prompt: "keep going",
       model: "claude-opus-4-6",
       thinkingEffort: "max",
+      attachments: [{ originalName: "log.txt", mime: "text/plain", data: "d29ybGQ=" }],
     }, "cmd-cont-model"));
     await waitFor(() => frames.some((item) => item.type === "ack" && item.payload.idempotencyKey === "cont-model-effort-1"));
     const contAck = frames.find((item) => item.type === "ack" && item.payload.idempotencyKey === "cont-model-effort-1");
-    const contTask = contAck?.payload.task as { model?: string; thinkingEffort?: string };
+    const contTask = contAck?.payload.task as {
+      model?: string;
+      thinkingEffort?: string;
+      attachments?: Array<{ originalName: string }>;
+    };
     assert.equal(contTask.model, "claude-opus-4-6");
     assert.equal(contTask.thinkingEffort, "max");
+    assert.equal(contTask.attachments?.[0]?.originalName, "log.txt");
     session.close();
   });
 });

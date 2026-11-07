@@ -1,9 +1,18 @@
 package tech.mengfei.agentboard.protocol
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.util.UUID
+
+data class OutgoingAttachment(
+    val originalName: String,
+    val mime: String = "application/octet-stream",
+    val size: Long = 0L,
+    val dataBase64: String,
+)
 
 private val visibleKey = Regex("^[\\x21-\\x7E]{8,80}$")
 private val boardIdPattern = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -60,6 +69,7 @@ fun validateCreate(
     workspaceId: String? = null,
     model: String? = null,
     thinkingEffort: String? = null,
+    attachments: List<OutgoingAttachment> = emptyList(),
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) {
         return Validated.Invalid("boardId must be 1-64 letters, digits, '.', '_' or '-'")
@@ -92,6 +102,8 @@ fun validateCreate(
     if (cleanEffort.isNotEmpty() && (cleanEffort.length > 32 || !isReadableText(cleanEffort))) {
         return Validated.Invalid("thinkingEffort must be 1-32 characters")
     }
+    val attachmentError = validateOutgoingAttachments(attachments)
+    if (attachmentError != null) return Validated.Invalid(attachmentError)
     return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
@@ -101,6 +113,7 @@ fun validateCreate(
         put("cwd", cwd)
         if (cleanModel.isNotEmpty()) put("model", cleanModel)
         if (cleanEffort.isNotEmpty()) put("thinkingEffort", cleanEffort)
+        if (attachments.isNotEmpty()) put("attachments", attachmentsJsonArray(attachments))
         if (useGitWorktree) put("useGitWorktree", true)
         if (!workspaceId.isNullOrBlank()) put("workspaceId", workspaceId)
     }))
@@ -160,7 +173,7 @@ private fun isPromptText(value: String): Boolean = value.none {
     code == 0 || code == 127 || (code < 32 && code != 9 && code != 10 && code != 13)
 }
 
-/** Phone continue always carries a non-blank prompt. Blank is not sent. */
+/** Phone continue carries a non-blank prompt or at least one attachment. */
 fun validatePhoneContinue(
     id: String,
     ts: Long,
@@ -170,9 +183,12 @@ fun validatePhoneContinue(
     prompt: String,
     model: String? = null,
     thinkingEffort: String? = null,
+    attachments: List<OutgoingAttachment> = emptyList(),
 ): Validated<Envelope> {
-    if (prompt.trim().isEmpty()) return Validated.Invalid("prompt is required, up to 20000 characters")
-    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt, model, thinkingEffort)
+    if (prompt.trim().isEmpty() && attachments.isEmpty()) {
+        return Validated.Invalid("prompt is required, up to 20000 characters")
+    }
+    return validateContinue(id, ts, boardId, taskId, idempotencyKey, prompt, model, thinkingEffort, attachments)
 }
 
 fun validateContinue(
@@ -184,6 +200,7 @@ fun validateContinue(
     prompt: String = "",
     model: String? = null,
     thinkingEffort: String? = null,
+    attachments: List<OutgoingAttachment> = emptyList(),
 ): Validated<Envelope> {
     val clean = prompt.trim()
     if (clean.length > 20_000 || (clean.isNotEmpty() && !isPromptText(clean))) {
@@ -197,6 +214,8 @@ fun validateContinue(
     if (cleanEffort.isNotEmpty() && (cleanEffort.length > 32 || !isReadableText(cleanEffort))) {
         return Validated.Invalid("thinkingEffort must be 1-32 characters")
     }
+    val attachmentError = validateOutgoingAttachments(attachments)
+    if (attachmentError != null) return Validated.Invalid(attachmentError)
     return validateTaskCommand(
         "cmd.continue",
         id,
@@ -208,6 +227,7 @@ fun validateContinue(
         clean,
         cleanModel.takeIf { it.isNotEmpty() },
         cleanEffort.takeIf { it.isNotEmpty() },
+        attachments,
     )
 }
 
@@ -266,6 +286,7 @@ private fun validateTaskCommand(
     prompt: String = "",
     model: String? = null,
     thinkingEffort: String? = null,
+    attachments: List<OutgoingAttachment> = emptyList(),
 ): Validated<Envelope> {
     if (!boardIdPattern.matches(boardId)) return Validated.Invalid("boardId is invalid")
     if (!boardIdPattern.matches(taskId)) return Validated.Invalid("taskId is invalid")
@@ -280,7 +301,35 @@ private fun validateTaskCommand(
         if (prompt.isNotBlank()) put("prompt", prompt)
         if (!model.isNullOrBlank()) put("model", model)
         if (!thinkingEffort.isNullOrBlank()) put("thinkingEffort", thinkingEffort)
+        if (attachments.isNotEmpty()) put("attachments", attachmentsJsonArray(attachments))
     }))
+}
+
+private fun validateOutgoingAttachments(attachments: List<OutgoingAttachment>): String? {
+    if (attachments.isEmpty()) return null
+    if (attachments.size > 10) return "attachments exceeds 10 items"
+    for (att in attachments) {
+        val name = att.originalName.trim()
+        if (name.isEmpty() || name.length > 200 || !isReadableText(name)) {
+            return "attachment originalName is invalid"
+        }
+        val data = att.dataBase64.trim()
+        if (data.isEmpty() || data.length > 12_000_000) {
+            return "attachment data is invalid"
+        }
+    }
+    return null
+}
+
+private fun attachmentsJsonArray(attachments: List<OutgoingAttachment>) = buildJsonArray {
+    attachments.forEach { att ->
+        add(buildJsonObject {
+            put("originalName", att.originalName.trim())
+            if (att.mime.isNotBlank()) put("mime", att.mime.trim())
+            if (att.size > 0L) put("size", att.size)
+            put("data", att.dataBase64.trim())
+        })
+    }
 }
 
 fun isLocalPath(value: String): Boolean {

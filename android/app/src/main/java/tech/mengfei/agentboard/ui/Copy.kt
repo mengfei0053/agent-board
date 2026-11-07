@@ -82,6 +82,9 @@ private val EXACT = mapOf(
     "cursor is invalid" to "分页游标无效。",
     "model must be 1-200 characters" to "模型名称需为 1–200 个字符。",
     "thinkingEffort must be 1-32 characters" to "思考强度需为 1–32 个字符。",
+    "attachments exceeds 10 items" to "单次最多上传 10 个附件。",
+    "attachment originalName is invalid" to "附件文件名无效。",
+    "attachment data is invalid" to "附件内容无效或超过大小上限。",
     "idempotencyKey must be 8-80 visible ASCII characters" to "幂等键无效。",
     "boardId must be 1-64 letters, digits, '.', '_' or '-'" to "看板 ID 无效。",
 )

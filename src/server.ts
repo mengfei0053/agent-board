@@ -45,6 +45,7 @@ import type {
   BoardLane,
   CreateTaskInput,
   BoardEvent,
+  TaskAttachment,
   Workspace,
 } from "./types.js";
 import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
@@ -596,6 +597,7 @@ app.post("/api/tasks/:id/continue", async (c) => {
   let prompt: string | undefined;
   let model: string | undefined;
   let thinkingEffort: string | undefined;
+  let attachments: TaskAttachment[] | undefined;
   try {
     const raw = await c.req.text();
     if (raw.trim()) {
@@ -621,12 +623,16 @@ app.post("/api/tasks/:id/continue", async (c) => {
       if ("thinkingEffort" in body && body.thinkingEffort != null) {
         thinkingEffort = requireString(body, "thinkingEffort", { max: 32 }).trim();
       }
+      if ("attachments" in body && body.attachments != null) {
+        const parsedAttachments = normalizeAttachmentsInput(body.attachments);
+        if (parsedAttachments.length) attachments = parsedAttachments;
+      }
     }
   } catch (err) {
     return errorJson(c, err);
   }
   try {
-    const task = await continueTask(c.req.param("id"), prompt, model, thinkingEffort);
+    const task = await continueTask(c.req.param("id"), prompt, model, thinkingEffort, attachments);
     return c.json({ task });
   } catch (err) {
     return taskMutationError(c, err);

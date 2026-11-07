@@ -86,6 +86,17 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
         prompt: input.prompt,
         ...(input.model ? { model: input.model } : {}),
         ...(input.thinkingEffort ? { thinkingEffort: input.thinkingEffort } : {}),
+        ...(input.attachments?.length
+          ? {
+              attachments: input.attachments.map((a, idx) => ({
+                name: `att_${idx + 1}.bin`,
+                originalName: a.originalName,
+                url: `/uploads/att_${idx + 1}.bin`,
+                mime: a.mime || "application/octet-stream",
+                size: a.data.length,
+              })),
+            }
+          : {}),
         status: "queued",
         summary: undefined,
       });
@@ -119,13 +130,25 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       return { ...task };
     },
     task: (id: string) => tasks.find((item) => item.id === id),
-    continue: async (id: string, prompt?: string, model?: string, thinkingEffort?: string) => {
+    continue: async (id: string, prompt?: string, model?: string, thinkingEffort?: string, attachments?: FacadeCreateInput["attachments"]) => {
       const task = tasks.find((item) => item.id === id);
       if (!task) throw new Error("not found");
       task.status = "running";
       if (prompt) task.prompt = prompt;
       if (model) task.model = model;
       if (thinkingEffort) task.thinkingEffort = thinkingEffort;
+      if (attachments?.length) {
+        task.attachments = [
+          ...(task.attachments || []),
+          ...attachments.map((a, idx) => ({
+            name: `cont_att_${idx + 1}.bin`,
+            originalName: a.originalName,
+            url: `/uploads/cont_att_${idx + 1}.bin`,
+            mime: a.mime || "application/octet-stream",
+            size: a.data.length,
+          })),
+        ];
+      }
       return { ...task };
     },
     createWorkspace: async (input: FacadeWorkspaceInput) => {

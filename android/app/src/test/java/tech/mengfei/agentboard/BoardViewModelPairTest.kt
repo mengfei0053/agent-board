@@ -368,11 +368,19 @@ class BoardConnectionTest {
             val settingsGetAfterOpen: tech.mengfei.agentboard.protocol.Envelope
             model.openTask("task_1")
             model.openContinue()
+            // Even when snapshot had no thinkingEffort, detail response updates continueThinkingEffort to task's previous choice ("high")
+            val detailCmd = relay.sent.last { it.type == "cmd.detail" }
+            relay.replyDetailWithEffort(detailCmd.id, "task_1", "high")
+            assertEquals("high", model.state.value.continueThinkingEffort)
             settingsGetAfterOpen = relay.sent.last { it.type == "cmd.settings.get" }
             relay.executeSettings(settingsGetAfterOpen.id)
+            assertEquals("high", model.state.value.continueThinkingEffort)
             model.updateContinuePrompt("Continue with new model")
             model.updateContinueModel("mgp/antigravity/gemini-4-argon")
             model.updateContinueThinkingEffort("xhigh")
+            model.addContinueAttachments(
+                listOf(tech.mengfei.agentboard.protocol.OutgoingAttachment("log.txt", "text/plain", 5L, "aGVsbG8=")),
+            )
             model.submitContinue()
             val contCmd = relay.sent.last { it.type == "cmd.continue" }
             assertEquals("task_1", contCmd.text("taskId"))
@@ -449,7 +457,10 @@ private class ConnectionRelay : RelayApi {
         listener.onOpen()
         val hello = sent.last { it.type == "client.hello" }
         listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
-        listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[{"id":"task_1","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","thinkingEffort":"medium","sessionId":"sess_1"}],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
+        listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[{"id":"task_1","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","sessionId":"sess_1"}],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
+    }
+    fun replyDetailWithEffort(ref: String, taskId: String, effort: String) {
+        listener.onMessage("""{"v":1,"id":"detail-ack","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"executed","boardId":"board-a","task":{"id":"$taskId","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","thinkingEffort":"$effort","sessionId":"sess_1","detail":"full"}}}""")
     }
     fun acceptSettings(ref: String) {
         listener.onMessage("""{"v":1,"id":"settings-accepted","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"accepted","commandId":"cmd-1"}}""")

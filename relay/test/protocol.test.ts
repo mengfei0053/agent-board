@@ -178,14 +178,21 @@ test("task detail fields and cmd.detail round-trip", () => {
       prompt: "line one\nline two",
       turns: [{ iteration: 1, prompt: "line one\nline two", output: "reply", at: 1_000, outputAt: 61_000 }],
       sideJobs: [{ id: "j1", kind: "monitor", title: "watch", status: "running" }],
+      attachments: [{ name: "abc.png", originalName: "shot.png", mime: "image/png", size: 128 }],
     },
   }));
   assert.equal(parsed.ok, true);
   if (!parsed.ok || parsed.kind !== "evt.task") return;
-  const task = parsed.envelope.payload?.task as { detail?: string; resumeCommand?: string; turns?: unknown[] };
+  const task = parsed.envelope.payload?.task as {
+    detail?: string;
+    resumeCommand?: string;
+    turns?: unknown[];
+    attachments?: Array<{ name: string; originalName: string; size?: number }>;
+  };
   assert.equal(task.detail, "full");
   assert.equal(task.resumeCommand?.includes("agent --resume"), true);
   assert.equal(task.turns?.length, 1);
+  assert.equal(task.attachments?.[0]?.originalName, "shot.png");
   assert.deepEqual((task.turns as Array<{ at?: number; outputAt?: number }>)[0] && { at: (task.turns as Array<{ at?: number }>)[0].at, outputAt: (task.turns as Array<{ outputAt?: number }>)[0].outputAt }, { at: 1_000, outputAt: 61_000 });
 
   const detail = parseMessage(frame("cmd.detail", "detail-1", {
@@ -206,12 +213,14 @@ test("task detail fields and cmd.detail round-trip", () => {
     prompt: "keep going\nplease",
     model: "claude-sonnet-4-6",
     thinkingEffort: "medium",
+    attachments: [{ originalName: "patch.diff", mime: "text/plain", size: 12, data: "Y2hhbmdl" }],
   }));
   assert.equal(continued.ok, true);
   if (!continued.ok || continued.kind !== "cmd.continue") return;
   assert.equal(continued.envelope.payload?.prompt, "keep going\nplease");
   assert.equal(continued.envelope.payload?.model, "claude-sonnet-4-6");
   assert.equal(continued.envelope.payload?.thinkingEffort, "medium");
+  assert.equal((continued.envelope.payload?.attachments as Array<{ originalName: string }>)[0]?.originalName, "patch.diff");
 });
 
 function frame(type: string, id: string, payload: Record<string, unknown>) {

@@ -62,6 +62,10 @@
     <string name="all_models">可选模型</string>
     <string name="no_matching_models">无匹配模型</string>
     <string name="thinking_not_supported">当前 Agent 无思考强度选项</string>
+    <string name="attachments_label">附件</string>
+    <string name="add_attachment">添加附件</string>
+    <string name="attachment_limit_hint">单次最多 10 个文件（单个上限 8 MB）</string>
+    <string name="attachment_too_large">文件超过 8 MB 上限</string>
     <string name="exit_code">退出码</string>
     <string name="session">会话</string>
     <string name="resume_label">继续会话</string>

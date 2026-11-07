@@ -18,8 +18,7 @@ import {
 import { extname, join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type { TaskAttachment } from "./types.js";
-import { assertDataRootAllowed, dataDir, databaseUrl } from "./db.js";
-import { getPool } from "./db.js";
+import { assertDataRootAllowed, dataDir, databaseUrl, getPool, hasPool } from "./db.js";
 
 const OWNER_FILE = ".agent-board-upload-owner";
 const TRASH_DIR = ".trash";
@@ -377,6 +376,7 @@ async function rememberUpload(row: {
   mime: string;
   size: number;
 }): Promise<void> {
+  if (!hasPool()) return;
   await getPool().query(
     `INSERT INTO uploads (name, original_name, mime, size)
      VALUES ($1, $2, $3, $4)
@@ -386,6 +386,87 @@ async function rememberUpload(row: {
        size = EXCLUDED.size`,
     [row.name, row.originalName.slice(0, 180), row.mime.slice(0, 200), row.size],
   );
+}
+
+export type InlineAttachmentInput = {
+  originalName: string;
+  mime?: string;
+  data: string;
+};
+
+export const MAX_INLINE_ATTACHMENTS = 10;
+export const MAX_INLINE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+export async function saveInlineAttachment(input: InlineAttachmentInput): Promise<TaskAttachment> {
+  const originalName = sanitizeOriginalName(input.originalName || "file");
+  const ext = safeExtFromFilename(originalName);
+  const rawData = String(input.data || "").trim();
+  const base64 = rawData.includes(",") && rawData.startsWith("data:")
+    ? rawData.slice(rawData.indexOf(",") + 1).trim()
+    : rawData;
+  if (!base64 || !/^[A-Za-z0-9+/=\s]+$/.test(base64)) {
+    throw Object.assign(new Error("附件内容无效"), { status: 400 });
+  }
+  const buf = Buffer.from(base64, "base64");
+  if (buf.length === 0) {
+    throw Object.assign(new Error("附件为空文件"), { status: 400 });
+  }
+  if (buf.length > MAX_INLINE_ATTACHMENT_BYTES) {
+    throw Object.assign(
+      new Error(`附件过大（上限 ${MAX_INLINE_ATTACHMENT_BYTES / 1024 / 1024}MB）`),
+      { status: 400 },
+    );
+  }
+  ensureUploadsDir();
+  const dir = uploadsDir();
+  const name = `${nanoid(12)}.${ext}`;
+  const dest = join(dir, name);
+  writeExclusiveFile(dest, buf);
+  const mime = (input.mime || "").trim() || mimeForStoredName(name, "application/octet-stream");
+  try {
+    await rememberUpload({ name, originalName, mime, size: buf.length });
+  } catch (err) {
+    try { unlinkSync(dest); } catch { /* ignore */ }
+    throw err;
+  }
+  return {
+    name,
+    originalName,
+    url: publicUploadUrl(name),
+    mime,
+    size: buf.length,
+  };
+}
+
+export async function saveInlineAttachments(raw: unknown): Promise<TaskAttachment[]> {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) {
+    throw Object.assign(new Error("attachments must be an array"), { status: 400 });
+  }
+  if (raw.length > MAX_INLINE_ATTACHMENTS) {
+    throw Object.assign(new Error(`附件过多（单次上限 ${MAX_INLINE_ATTACHMENTS} 个）`), { status: 400 });
+  }
+  const saved: TaskAttachment[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") {
+      throw Object.assign(new Error("invalid attachment entry"), { status: 400 });
+    }
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.originalName !== "string" || !rec.originalName.trim()) {
+      throw Object.assign(new Error("attachment originalName is required"), { status: 400 });
+    }
+    if (typeof rec.data !== "string" || !rec.data.trim()) {
+      throw Object.assign(new Error("attachment data is required"), { status: 400 });
+    }
+    saved.push(
+      await saveInlineAttachment({
+        originalName: rec.originalName,
+        mime: typeof rec.mime === "string" ? rec.mime : undefined,
+        data: rec.data,
+      }),
+    );
+  }
+  return saved;
 }
 
 export function deleteAttachmentFiles(attachments: TaskAttachment[] | undefined): void {

@@ -62,6 +62,10 @@
     <string name="all_models">Available models</string>
     <string name="no_matching_models">No matching models</string>
     <string name="thinking_not_supported">Not supported for this agent</string>
+    <string name="attachments_label">Attachments</string>
+    <string name="add_attachment">Add attachment</string>
+    <string name="attachment_limit_hint">Up to 10 files (max 8 MB each)</string>
+    <string name="attachment_too_large">File exceeds 8 MB limit</string>
     <string name="exit_code">Exit code</string>
     <string name="session">Session</string>
     <string name="resume_label">Resume command</string>

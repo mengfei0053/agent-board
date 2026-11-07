@@ -1,4 +1,4 @@
-import type { AgentKind, OutputTurn, PromptTurn, SideJob, Task } from "../types.js";
+import type { AgentKind, OutputTurn, PromptTurn, SideJob, Task, TaskAttachment } from "../types.js";
 import { resumeCommand } from "./resumeCommand.js";
 
 const AGENTS: readonly AgentKind[] = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
@@ -35,6 +35,13 @@ export type RelaySideJob = {
   toolName?: string;
 };
 
+export type RelayTaskAttachment = {
+  name: string;
+  originalName: string;
+  mime?: string;
+  size?: number;
+};
+
 /**
  * Phone-facing task. `updatedAt` is epoch milliseconds.
  * Archived tasks are omitted unless `allowArchived` is set for a read-only page or detail.
@@ -66,6 +73,7 @@ export type MappedTask = {
   outputTruncated?: boolean;
   turns?: RelayTurn[];
   sideJobs?: RelaySideJob[];
+  attachments?: RelayTaskAttachment[];
 };
 
 type DetailTask = Pick<
@@ -91,6 +99,7 @@ type DetailTask = Pick<
   | "error"
   | "exitCode"
   | "sideJobs"
+  | "attachments"
   | "worktree"
 > & {
   workspaceId?: string;
@@ -149,6 +158,8 @@ export function mapBoardTask(task: DetailTask, allowArchived = false): MappedTas
   if (task.worktree?.branch) mapped.worktreeBranch = fit(task.worktree.branch, 200);
   const jobs = mapSideJobs(task.sideJobs);
   if (jobs.length) mapped.sideJobs = jobs;
+  const attachments = mapAttachments(task.attachments);
+  if (attachments.length) mapped.attachments = attachments;
   return mapped;
 }
 
@@ -193,6 +204,7 @@ export function wireMappedTask(task: MappedTask, mode: "snapshot" | "full"): Rec
   if (task.output) wire.output = task.output;
   if (task.turns?.length) wire.turns = task.turns;
   if (task.sideJobs?.length) wire.sideJobs = task.sideJobs;
+  if (task.attachments?.length) wire.attachments = task.attachments;
   return wire;
 }
 
@@ -272,6 +284,25 @@ function addOutput(byIter: Map<number, RelayTurn>, output: OutputTurn): void {
   if (at != null && turn.at == null) turn.at = at;
   if (at != null) turn.outputAt = at;
   byIter.set(output.iteration, turn);
+}
+
+function mapAttachments(items: TaskAttachment[] | undefined): RelayTaskAttachment[] {
+  if (!items?.length) return [];
+  const out: RelayTaskAttachment[] = [];
+  for (const item of items) {
+    if (out.length >= 20) break;
+    if (!item?.name) continue;
+    const mapped: RelayTaskAttachment = {
+      name: fit(item.name, 120),
+      originalName: fit(item.originalName || item.name, 200),
+    };
+    if (item.mime) mapped.mime = fit(item.mime, 120);
+    if (typeof item.size === "number" && Number.isSafeInteger(item.size) && item.size >= 0) {
+      mapped.size = item.size;
+    }
+    out.push(mapped);
+  }
+  return out;
 }
 
 function mapSideJobs(jobs: SideJob[] | undefined): RelaySideJob[] {

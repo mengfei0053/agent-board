@@ -18,7 +18,7 @@ import {
 } from "./store.js";
 import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
-import type { BoardLane, CreateTaskInput, SideJob, Task, TaskStatus, Workspace } from "./types.js";
+import type { BoardLane, CreateTaskInput, SideJob, Task, TaskAttachment, TaskStatus, Workspace } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import { applyWorkspaceToPrompt } from "./workspaceApply.js";
 import type { RunnerHandle } from "./runners/types.js";
@@ -513,8 +513,9 @@ export function continueTask(
   prompt?: string,
   model?: string,
   thinkingEffort?: string,
+  attachments?: TaskAttachment[],
 ): Promise<Task> {
-  return withTaskLock(id, () => continueTaskBody(id, prompt, model, thinkingEffort));
+  return withTaskLock(id, () => continueTaskBody(id, prompt, model, thinkingEffort, attachments));
 }
 
 async function continueTaskBody(
@@ -522,6 +523,7 @@ async function continueTaskBody(
   prompt?: string,
   model?: string,
   thinkingEffort?: string,
+  attachments?: TaskAttachment[],
 ): Promise<Task> {
   const t = getTask(id);
   if (!t) throw new Error("not found");
@@ -568,6 +570,12 @@ async function continueTaskBody(
     prompt: continuePrompt,
     at: continuedAt,
   });
+  const mergedAttachments = attachments?.length
+    ? [
+        ...(t.attachments || []),
+        ...attachments.filter((a) => !(t.attachments || []).some((prev) => prev.name === a.name)),
+      ]
+    : t.attachments;
 
   const runAtQueue = currentRunId(id);
   await patchDurable(id, {
@@ -575,6 +583,7 @@ async function continueTaskBody(
     iteration: nextIter,
     model: nextModel,
     thinkingEffort: nextThinkingEffort,
+    ...(mergedAttachments?.length ? { attachments: mergedAttachments } : {}),
     error: undefined,
     exitCode: undefined,
     endedAt: undefined,
@@ -616,7 +625,10 @@ async function continueTaskBody(
   const runnerPrompt = applyWorkspaceToPrompt(wsSettings, basePrompt, {
     continueWithSession: hasSession,
   });
-  const contPrompt = expandUploadUrlsInPrompt(continuePrompt);
+  const contPrompt = appendAttachmentsToPrompt(
+    expandUploadUrlsInPrompt(continuePrompt),
+    attachments,
+  );
   const runnerTask: Task = {
     ...fresh,
     prompt: runnerPrompt,

@@ -1,5 +1,11 @@
 package tech.mengfei.agentboard.ui
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,6 +82,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -85,9 +92,11 @@ import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
 import tech.mengfei.agentboard.protocol.AgentModelCatalog
+import tech.mengfei.agentboard.protocol.OutgoingAttachment
 import tech.mengfei.agentboard.protocol.PAIR_CODE_LENGTH
 import tech.mengfei.agentboard.protocol.RelayFormatException
 import tech.mengfei.agentboard.protocol.RelayTask
+import tech.mengfei.agentboard.protocol.formatAttachmentBytes
 import tech.mengfei.agentboard.protocol.inspectPairCode
 import tech.mengfei.agentboard.protocol.modelOptionsForAgent
 import tech.mengfei.agentboard.protocol.pairIssueMessage
@@ -681,9 +690,14 @@ private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask
         QuickFill(state) { model.updateContinuePrompt(it) }
         MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
             stringResource(R.string.describe_task), minLines = 3)
+        AttachmentPickerSection(
+            attachments = state.continueAttachments,
+            onAdd = model::addContinueAttachments,
+            onRemove = model::removeContinueAttachment,
+        )
         MakeAction(actionLabel(state.continueMode, stringResource(R.string.continue_task)), model::submitContinue,
             Modifier.fillMaxWidth(), primary = true,
-            enabled = state.continuePrompt.trim().isNotEmpty() && state.continueMode != "busy" && state.writesAllowed)
+            enabled = (state.continuePrompt.trim().isNotEmpty() || state.continueAttachments.isNotEmpty()) && state.continueMode != "busy" && state.writesAllowed)
         if (state.continueResend) TextButton(model::resendContinue) { Text(stringResource(R.string.resend_continue)) }
     }
     SectionCard(stringResource(R.string.task_actions)) {
@@ -793,6 +807,13 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         MetaLine(stringResource(R.string.workspace), workspaceDisplayName(task.workspaceId, state.workspaces, english))
         MetaLine(stringResource(R.string.cwd), task.cwd ?: "—")
         task.worktreeBranch?.takeIf { it.isNotBlank() }?.let { MetaLine(stringResource(R.string.git_branch), it) }
+        if (!task.attachments.isNullOrEmpty()) {
+            val attLines = task.attachments.orEmpty().joinToString("\n") { att ->
+                val sz = formatAttachmentBytes(att.size)
+                if (sz.isNotEmpty()) "${att.originalName} ($sz)" else att.originalName
+            }
+            MetaLine("${stringResource(R.string.attachments_label)} (${task.attachments.orEmpty().size})", attLines)
+        }
     }
 }
 
@@ -884,6 +905,11 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                 onSelectEffort = model::updateDraftThinkingEffort,
             )
             MakeField(state.draftPrompt, model::updateDraftPrompt, "Prompt", stringResource(R.string.describe_task), minLines = 6)
+            AttachmentPickerSection(
+                attachments = state.draftAttachments,
+                onAdd = model::addDraftAttachments,
+                onRemove = model::removeDraftAttachment,
+            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(stringResource(R.string.worktree), style = MaterialTheme.typography.labelLarge)
@@ -1134,6 +1160,139 @@ private fun ModelOptionRow(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun AttachmentPickerSection(
+    attachments: List<OutgoingAttachment>,
+    onAdd: (List<OutgoingAttachment>) -> Unit,
+    onRemove: (Int) -> Unit,
+) {
+    val context = LocalContext.current
+    val tooLargeMsg = stringResource(R.string.attachment_too_large)
+    var pickError by remember { mutableStateOf<String?>(null) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        pickError = null
+        val picked = mutableListOf<OutgoingAttachment>()
+        for (uri in uris) {
+            val loaded = readUriAttachment(context, uri)
+            if (loaded == null) {
+                pickError = tooLargeMsg
+            } else {
+                picked.add(loaded)
+            }
+        }
+        if (picked.isNotEmpty()) onAdd(picked)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (attachments.isEmpty()) stringResource(R.string.attachments_label)
+                    else "${stringResource(R.string.attachments_label)} (${attachments.size}/10)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    stringResource(R.string.attachment_limit_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            MakeAction(
+                label = "＋ " + stringResource(R.string.add_attachment),
+                onClick = { launcher.launch(arrayOf("*/*")) },
+                enabled = attachments.size < 10,
+            )
+        }
+        pickError?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        attachments.forEachIndexed { index, att ->
+            Row(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceDim)
+                    .border(1.dp, OutlineVariant, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    att.originalName,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val sz = formatAttachmentBytes(att.size)
+                if (sz.isNotEmpty()) {
+                    Text(
+                        sz,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                BoardIconButton(
+                    BoardIcon.Close,
+                    stringResource(R.string.delete),
+                    modifier = Modifier.size(22.dp),
+                ) { onRemove(index) }
+            }
+        }
+    }
+}
+
+private const val MAX_MOBILE_ATTACHMENT_BYTES = 8L * 1024L * 1024L
+
+private fun readUriAttachment(context: Context, uri: Uri): OutgoingAttachment? {
+    return try {
+        val resolver = context.contentResolver
+        var displayName = "attachment"
+        var knownSize = -1L
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+                    displayName = cursor.getString(nameIdx)?.trim()?.takeIf { it.isNotEmpty() } ?: displayName
+                }
+                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                    knownSize = cursor.getLong(sizeIdx)
+                }
+            }
+        }
+        if (knownSize > MAX_MOBILE_ATTACHMENT_BYTES) return null
+        val bytes = resolver.openInputStream(uri)?.use { input ->
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            var total = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > MAX_MOBILE_ATTACHMENT_BYTES) return null
+                out.write(buf, 0, n)
+            }
+            out.toByteArray()
+        } ?: return null
+        if (bytes.isEmpty()) return null
+        val mime = resolver.getType(uri)?.trim()?.takeIf { it.isNotEmpty() } ?: "application/octet-stream"
+        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        OutgoingAttachment(
+            originalName = displayName.take(180),
+            mime = mime.take(120),
+            size = bytes.size.toLong(),
+            dataBase64 = encoded,
+        )
+    } catch (_: Exception) {
+        null
     }
 }
 
