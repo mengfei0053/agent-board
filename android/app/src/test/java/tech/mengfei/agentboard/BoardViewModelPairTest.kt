@@ -245,6 +245,83 @@ class BoardConnectionTest {
     }
 
     @Test
+    fun cachedSnapshotDoesNotMarkAnOfflineBoardConnected() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.listedBoards = listOf(ListedBoard("board-a", online = false, generation = 1))
+            model.onForeground()
+            relay.authenticate()
+            assertEquals("离线", model.state.value.connection)
+            assertFalse(model.state.value.writesAllowed)
+            relay.snapshot("board-a", 1)
+            assertEquals("离线", model.state.value.connection)
+            assertFalse(model.state.value.writesAllowed)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun presenceEventAndBoardSwitchFollowTheSelectedBoard() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val store = SessionStore(MemoryPrefs(), MemoryPrefs())
+        store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", Long.MAX_VALUE,
+            "https://relay.example", "wss://relay.example/v1/ws", listOf("board-a", "board-b"))))
+        store.apply(DiskOp.PutCatalog(CatalogDocument(catalogVersion = 1,
+            migrationState = MigrationState.COMMITTED, order = listOf("s1", "s2"),
+            sessions = listOf(
+                PhoneSession("s1", "c1", "board-a", "Office", 1),
+                PhoneSession("s2", "c1", "board-b", "Cabin", 2),
+            ),
+            activeSessionId = "s1", migrationCredentialId = null)))
+        val relay = ConnectionRelay()
+        relay.listedBoards = listOf(
+            ListedBoard("board-a", online = true, generation = 1),
+            ListedBoard("board-b", online = false, generation = 2),
+        )
+        val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)),
+            clock = { 1_000L + main.scheduler.currentTime })
+        val owner = androidx.lifecycle.ViewModelStore()
+        owner.put("model", model)
+        try {
+            model.onForeground()
+            relay.authenticate()
+            relay.snapshot("board-b", 2)
+            assertEquals("已连接", model.state.value.connection)
+            assertTrue(model.state.value.writesAllowed)
+            assertEquals("已连接", model.state.value.sessions.first { it.sessionId == "s1" }.pill)
+            assertEquals("离线", model.state.value.sessions.first { it.sessionId == "s2" }.pill)
+            model.activateSession("s2")
+            assertEquals("离线", model.state.value.connection)
+            assertFalse(model.state.value.writesAllowed)
+            model.activateSession("s1")
+            assertEquals("已连接", model.state.value.connection)
+            relay.listener.onMessage("""{"v":1,"id":"down","type":"evt.board","ts":4,"payload":{"boardId":"board-a","online":false,"generation":1}}""")
+            assertEquals("离线", model.state.value.connection)
+            relay.listener.onMessage("""{"v":1,"id":"up-b","type":"evt.board","ts":5,"payload":{"boardId":"board-b","online":true,"generation":2}}""")
+            assertEquals("离线", model.state.value.connection)
+            model.activateSession("s2")
+            assertEquals("已连接", model.state.value.connection)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun workspaceSwitchKeepsTheBoardPillAndADeadPhoneSocketIsNotConnected() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticate()
+            relay.listener.onMessage(
+                """{"v":1,"id":"snapshot-ws","type":"evt.snapshot","ts":2,"payload":{"boardId":"board-a","generation":1,"seq":2,"tasks":[],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true},{"id":"ws_2","name":"Other","path":"/tmp/other","isGit":false}]}}""",
+            )
+            assertEquals("已连接", model.state.value.connection)
+            model.selectWorkspace("ws_2")
+            assertEquals("ws_2", model.state.value.selectedWorkspaceId)
+            assertEquals("已连接", model.state.value.connection)
+            relay.listener.onClosed("relay unreachable")
+            assertEquals("弱连接", model.state.value.connection)
+            assertFalse(model.state.value.writesAllowed)
+        } finally { owner.clear() }
+    }
+
+    @Test
     fun openCreateLoadsSettingsWithoutBlockingCreateOrShowingAcceptedBanner() = kotlinx.coroutines.test.runTest(main.scheduler) {
         val (model, relay, owner) = harness()
         try {
@@ -322,11 +399,14 @@ class BoardConnectionTest {
     }
 }
 
+private data class ListedBoard(val boardId: String, val online: Boolean, val generation: Long)
+
 private class ConnectionRelay : RelayApi {
     lateinit var listener: SocketListener
     val sent = mutableListOf<tech.mengfei.agentboard.protocol.Envelope>()
     var opens = 0
     var replyToLists = true
+    var listedBoards = listOf(ListedBoard("board-a", online = true, generation = 1))
     override suspend fun request(method: String, url: String, body: String?) = HttpResult(200, "{}")
     override fun openSocket(credentialId: String, url: String, listener: SocketListener) {
         opens += 1
@@ -336,7 +416,10 @@ private class ConnectionRelay : RelayApi {
         val message = tech.mengfei.agentboard.protocol.parseEnvelope(text)
         sent += message
         if (message.type == "board.list" && replyToLists) {
-            listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[{"boardId":"board-a","online":true,"generation":1,"capabilities":["board.settings","workspace.settings"]}]}}""")
+            val boards = listedBoards.joinToString(",") { board ->
+                """{"boardId":"${board.boardId}","online":${board.online},"generation":${board.generation},"capabilities":["board.settings","workspace.settings"]}"""
+            }
+            listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[$boards]}}""")
         }
         return true
     }
@@ -350,7 +433,11 @@ private class ConnectionRelay : RelayApi {
         listener.onMessage("""{"v":1,"id":"gap","type":"evt.gap","ts":2,"payload":{"boardId":"board-a","generation":1,"expectedSeq":3,"reason":"seq_gap"}}""")
     }
     fun newGenerationSnapshot(generation: Long) {
+        listener.onMessage("""{"v":1,"id":"up-$generation","type":"evt.board","ts":3,"payload":{"boardId":"board-a","online":true,"generation":$generation}}""")
         listener.onMessage("""{"v":1,"id":"snap-$generation","type":"evt.snapshot","ts":3,"payload":{"boardId":"board-a","generation":$generation,"seq":1,"tasks":[],"workspaces":[]}}""")
+    }
+    fun snapshot(boardId: String, generation: Long) {
+        listener.onMessage("""{"v":1,"id":"snap-$boardId","type":"evt.snapshot","ts":2,"payload":{"boardId":"$boardId","generation":$generation,"seq":1,"tasks":[],"workspaces":[]}}""")
     }
     fun authenticateWithWorkspaceAndSettings() {
         listener.onOpen()

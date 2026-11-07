@@ -22,6 +22,21 @@ data class BoardProof(
     val epoch: Long,
 )
 
+/** Relay → phone. `online` is the live `board.register` socket, not a cached snapshot. */
+data class BoardPresence(
+    val boardId: String,
+    val online: Boolean,
+    val generation: Long?,
+)
+
+fun parseBoardPresence(message: Envelope): BoardPresence? {
+    if (message.type != "evt.board") return null
+    val boardId = message.text("boardId") ?: return null
+    if (boardId.isEmpty()) return null
+    val online = message.payload.bool("online") ?: return null
+    return BoardPresence(boardId, online, message.payload.longValue("generation"))
+}
+
 data class LinkInput(
     val phase: SocketPhase,
     val currentEpoch: Long,

@@ -846,6 +846,22 @@ class SessionCatalogTest {
 
 class PresenceTest {
     @Test
+    fun boardPresenceIsTheLiveSocketNotASnapshot() {
+        val present = parseBoardPresence(parseEnvelope(
+            """{"v":1,"id":"p","type":"evt.board","ts":1,"payload":{"boardId":"thinkbook-main","online":false,"generation":4}}""",
+        ))
+        assertEquals("thinkbook-main", present!!.boardId)
+        assertFalse(present.online)
+        assertEquals(4L, present.generation)
+        assertNull(parseBoardPresence(parseEnvelope(
+            """{"v":1,"id":"s","type":"evt.snapshot","ts":1,"payload":{"boardId":"thinkbook-main","generation":4,"seq":1}}""",
+        )))
+        assertNull(parseBoardPresence(parseEnvelope(
+            """{"v":1,"id":"p2","type":"evt.board","ts":1,"payload":{"boardId":"thinkbook-main"}}""",
+        )))
+    }
+
+    @Test
     fun exactlySixtySecondsIsStaleAndRedrawsImmediatelyIfStillMarkedConnected() {
         val atBoundary = linkPill(link(now = 1_000 + PROOF_TTL_MS))
         assertEquals(PillKind.WEAK, atBoundary.kind)
