@@ -114,6 +114,7 @@ import tech.mengfei.agentboard.protocol.pairIssueMessage
 import tech.mengfei.agentboard.protocol.pairPrecheck
 import tech.mengfei.agentboard.protocol.pairSubmitAllowed
 import tech.mengfei.agentboard.protocol.parseBoardList
+import tech.mengfei.agentboard.protocol.parseBoardPresence
 import tech.mengfei.agentboard.protocol.parseEnvelope
 import tech.mengfei.agentboard.protocol.parseHealth
 import tech.mengfei.agentboard.protocol.parsePairResponse
@@ -1255,6 +1256,10 @@ class BoardViewModel(
             onList(credentialId, live, epoch, parseBoardList(message.payload).orEmpty())
             return
         }
+        if (message.type == "evt.board") {
+            onPresence(credentialId, live, epoch, message)
+            return
+        }
         val code = message.text("code")
         if (code == "rate_limited") rateLimited = recordRateLimit(rateLimited).count
         if (code == "board_offline" || code == "board_disconnected") {
@@ -1336,6 +1341,39 @@ class BoardViewModel(
         render()
     }
 
+    /**
+     * `evt.board` is the relay's view of the live board socket. A replayed snapshot must not
+     * override it: the relay keeps that snapshot after the board disconnects.
+     */
+    private fun onPresence(
+        credentialId: String,
+        live: LiveSocket,
+        epoch: Long,
+        message: tech.mengfei.agentboard.protocol.Envelope,
+    ) {
+        val presence = parseBoardPresence(message) ?: return
+        val now = clock()
+        sessionsOn(credentialId).filter { it.boardId == presence.boardId }.forEach { session ->
+            val holder = slot(session.sessionId)
+            val generation = presence.generation ?: holder.proof?.listedGeneration
+            holder.proof = BoardProof(presence.online, generation, now, epoch)
+            if (generation != null) {
+                holder.view = holder.view.copy(
+                    needsResync = resyncAfterList(
+                        holder.appliedGeneration,
+                        generation,
+                        holder.view.needsResync,
+                        holder.view.sawSnapshot,
+                    ),
+                )
+            }
+            if (presence.online && (session.boardId !in live.subscribed || holder.view.needsResync)) {
+                subscribeTasks(session)
+            }
+        }
+        render()
+    }
+
     private fun onEvent(sessionId: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         val holder = slot(sessionId)
         when (val outcome = holder.reducer.apply(holder.view, message)) {
@@ -1360,9 +1398,6 @@ class BoardViewModel(
                     if (!outcome.view.needsResync) {
                         holder.appliedGeneration = outcome.view.generation
                         holder.resync.onSnapshot()
-                        if (live?.phase == SocketPhase.AUTHENTICATED && outcome.view.generation != null) {
-                            holder.proof = BoardProof(online = true, listedGeneration = outcome.view.generation, at = now, epoch = live.epoch)
-                        }
                     }
                     holder.eligibilityFresh = live?.phase == SocketPhase.AUTHENTICATED && !outcome.view.needsResync
                     if (!outcome.view.needsResync && (banner?.startsWith("漏收了事件") == true || banner?.startsWith("Missed events") == true)) {

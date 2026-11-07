@@ -392,7 +392,8 @@ export class RelayHub {
     }
     const existing = this.boards.get(parsed.boardId);
     if (existing && existing !== conn) {
-      this.releaseBoard(existing, "board_disconnected", "board connection replaced");
+      // The replacement below announces online. An offline frame here would flicker the phone pill.
+      this.releaseBoard(existing, "board_disconnected", "board connection replaced", false);
       existing.closed = true;
       this.deliver(existing.send, makeErr(this.now(), "superseded by a new board connection", { code: "replaced", stage: "failed" }));
       existing.closeSocket();
@@ -418,6 +419,7 @@ export class RelayHub {
     conn.connectedAt = this.now();
     this.boards.set(parsed.boardId, conn);
     if (previous) this.fanoutTasks(parsed.boardId, this.gap(parsed.boardId, generation, 1, 0, "generation_changed"));
+    this.announceBoard(parsed.boardId, true);
     this.log("info", "board registered", { boardId: parsed.boardId, generation });
     this.deliver(conn.send, makeAck(this.now(), parsed.envelope.id, {
       stage: "executed",
@@ -761,15 +763,29 @@ export class RelayHub {
     }
   }
 
-  private releaseBoard(conn: BoardConn, code: string, message: string): void {
+  private releaseBoard(conn: BoardConn, code: string, message: string, announce = true): void {
     if (!conn.boardId) return;
     const boardId = conn.boardId;
-    if (this.boards.get(boardId) === conn) {
+    const wasLive = this.boards.get(boardId) === conn;
+    if (wasLive) {
       this.boards.delete(boardId);
       this.failBoardCommands(boardId, code, message);
     }
     conn.boardId = null;
     conn.generation = 0;
+    if (wasLive && announce) this.announceBoard(boardId, false);
+  }
+
+  /** Live board socket appeared or disappeared. Not a task event and not replayed. */
+  private announceBoard(boardId: string, online: boolean): void {
+    const state = this.runtime.get(boardId);
+    const payload: JsonObject = { boardId, online };
+    if (state) payload.generation = state.generation;
+    const event: Envelope = { v: 1, id: randomUUID(), type: "evt.board", ts: this.now(), payload };
+    for (const phone of [...this.phones]) {
+      if (!this.sessionStillValid(phone) || !phone.boardIds.includes(boardId)) continue;
+      this.deliver(phone.send, event);
+    }
   }
 
   private dropPhone(phone: PhoneConn, message: string): void {

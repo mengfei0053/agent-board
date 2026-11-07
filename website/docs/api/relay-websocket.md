@@ -230,6 +230,7 @@ generation 来自注册 ack，每个代次内 seq 递增，eventId 用于去重�
 | `evt.log` | 看板 → 日志订阅者 | `taskId`、`stream`（stdout/stderr/system）、`line`（1–8,000） |
 | `evt.task.done` | 看板 → 该看板授权的在线手机 | `taskId`、`status`（succeeded/failed/stopped）、可选 title/summary |
 | `evt.gap` | Relay → 任务订阅者 | `boardId,generation,expectedSeq,gotSeq,reason`；不是普通增量，不携带上述完整公共游标 |
+| `evt.board` | Relay → 该看板授权的在线手机 | `boardId`、`online`、可选 `generation`。看板 socket 上线或下线时由 Relay 发出，不重放，看板不能伪造。缓存快照不是在线证明。 |
 
 快照 workspaces 每项包含 id/name/path，可附 isGit（能否启用 worktree）。工作区变更也通过快照同步，没有独立的 workspace 事件类型。
 
@@ -248,7 +249,7 @@ generation 来自注册 ack，每个代次内 seq 递增，eventId 用于去重�
 ## 缺口与断线恢复
 
 1. 手机连接并 client.hello 后，发送 board.list，再为需要的看板发送 sub.tasks；原始日志按需另行 sub.logs。
-2. sub.tasks 重放缓存快照及其后的任务增量；sub.logs 重放有界日志。evt.task.done **不重放**，不能用它实现离线推送。
+2. sub.tasks 重放缓存快照及其后的任务增量；sub.logs 重放有界日志。evt.task.done 和 evt.board **不重放**。看板断开后仍可能重放旧快照，手机不能据此把看板显示为已连接。evt.board 在注册成功和连接断开时推送；替换同一看板的新连接只推一次 online:true。旧版手机会忽略该类型，并继续用 board.list 的 online 字段。
 3. evt.gap 的 reason 为 `seq_gap` / `buffer_gap` / `generation_changed` / `ahead` / `no_snapshot` 时，标记列表过期并重新订阅。收到旧快照、日志或单个任务更新不足以清除缺口；要等待可覆盖缺口的恢复快照或新代快照。
 4. 本机重连获得新 generation，seq 从头开始；不要将新旧代次增量混合。手机断线重连也须重新认证与订阅，并对未确认命令执行 lookup。
 5. 凭证轮换、撤销或过期后旧连接不能继续接收事件；设备断线不会停止本机任务。

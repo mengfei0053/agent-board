@@ -13,6 +13,10 @@ Do not expose the relay until TLS, authentication, and rate limits are all in pl
 
 The board path is relay-only. Do not publish a Tailscale or LAN route to the ThinkBook as a substitute. Agent-board stays on `127.0.0.1:8791` on the ThinkBook. The connector dials the relay. The relay never dials that port and never runs a CLI. P1 maps `cmd.*` onto agent-board inside the connector.
 
+## Rollout for board presence (`evt.board`)
+
+Redeploy this image on UCloud 101 so phones learn the moment a board socket connects or drops. The frame is relay-generated (`{ boardId, online, generation? }`). Older phones ignore it. A phone built for this frame still shows the selected board from `board.list` against an older relay; that poll is the fallback, so a drop can stay stale until the next list. This change does not alter `board.register` and does not require a ThinkBook sync.
+
 ## Rollout for phone settings and archive write
 
 Redeploy this image on UCloud 101 before any ThinkBook idle sync that advertises `archive.write`, `workspace.settings`, or `board.settings`. An older 101 allowlist rejects `board.register` when those names are present, so the board cannot come online. Do not restart or sync the ThinkBook as part of the relay deploy. Confirm 101 is serving this build, then idle-sync the ThinkBook in a separate change.

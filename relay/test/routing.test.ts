@@ -556,6 +556,41 @@ test("workspace commands and task workspaceId survive a relay hop", () => {
   assert.equal(byRef(phonePeer, "ws-del")?.payload?.deleted, "ws_other");
 });
 
+test("evt.board tells only authorized phones when the live board socket changes", () => {
+  const fx = setup();
+  open.push(fx.hub);
+  const allowedPeer = fx.peer();
+  helloPhone(fx.hub, fx.auth, allowedPeer, "allowed", ["thinkbook-main"]);
+  const strangerPeer = fx.peer();
+  helloPhone(fx.hub, fx.auth, strangerPeer, "stranger", ["other-board"]);
+
+  const boardPeer = fx.peer();
+  const board = registerBoard(fx.hub, boardPeer, "thinkbook-main");
+  const up = allowedPeer.ofType("evt.board");
+  assert.equal(up.length, 1);
+  assert.equal(up[0]?.payload?.boardId, "thinkbook-main");
+  assert.equal(up[0]?.payload?.online, true);
+  assert.equal(up[0]?.payload?.generation, 1);
+  assert.equal(strangerPeer.ofType("evt.board").length, 0);
+
+  fx.hub.handleBoard(board, frame("evt.board", "spoof", { boardId: "thinkbook-main", online: false }));
+  assert.equal(codeOf(boardPeer.ofType("err").at(-1)), "bad_type");
+  assert.equal(allowedPeer.ofType("evt.board").length, 1);
+
+  const replacement = registerBoard(fx.hub, fx.peer(), "thinkbook-main");
+  const replaced = allowedPeer.ofType("evt.board");
+  assert.equal(replaced.length, 2);
+  assert.equal(replaced.every((event) => event.payload?.online === true), true);
+  assert.equal(replaced[1]?.payload?.generation, 2);
+
+  fx.hub.disconnectBoard(replacement);
+  const down = allowedPeer.ofType("evt.board").at(-1);
+  assert.equal(down?.payload?.online, false);
+  assert.equal(down?.payload?.boardId, "thinkbook-main");
+  assert.equal(down?.payload?.generation, 2);
+  assert.equal(strangerPeer.ofType("evt.board").length, 0);
+});
+
 const NOW = 1_700_000_000_000;
 
 function byRef(peer: Peer, ref: string): Envelope | undefined {

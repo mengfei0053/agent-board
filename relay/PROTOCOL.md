@@ -87,6 +87,7 @@ Connect to `/v1/ws`. The first frame is `board.register` or `client.hello`. Toke
 | `evt.snapshot` | board | task subscribers | Full task list at `version` (equal to `seq`). |
 | `evt.task.done` | board | online phones allowed for that board | First transition to a terminal status. |
 | `evt.gap` | relay | task subscribers | The phone should resync from a snapshot. |
+| `evt.board` | relay | online phones allowed for that board | The live board socket appeared or disappeared. `{ boardId, online, generation? }`. Not a task event, not replayed, and not sent by the board. |
 | `ack` / `err` | either | requester | Result. |
 
 Each successful `board.register` bumps `generation` and resets `seq` to 0. Events carry a monotonic `seq` for that generation and an `eventId`. The relay drops an event it has already applied with the same `eventId`. A hole in `seq` is `seq_gap`: the event is not applied, current subscribers get `evt.gap`, and that gap stays until the next contiguous event. A later `sub.tasks` receives `evt.gap` before the cached snapshot.
@@ -96,6 +97,8 @@ Each successful `board.register` bumps `generation` and resets `seq` to 0. Event
 On `sub.tasks` the relay sends the cached snapshot, then `evt.task` events newer than that snapshot. Pass `afterSeq` to skip task events the phone already applied. `evt.log` is not included; it is replayed only by `sub.logs`. `evt.task.done` is not replayed. Terminal status is in the snapshot. A live `evt.task.done` is best-effort for phones whose device token still verifies at send time. A refreshed, revoked, or expired token closes the old socket and does not receive later events. Clients dedupe a live `evt.task.done` by `eventId`.
 
 If the board is offline, `cmd.*` returns `err` `board_offline` and is not queued.
+
+`evt.board` is how a phone learns that change without waiting for the next `board.list`. The relay sends it when a `board.register` socket becomes the live one for that id, and when that live socket goes away. A replacement socket announces online once; it does not emit a false offline in between. Phones whose device token omits the id get nothing. A cached `evt.snapshot` is still replayed on `sub.tasks` after the board has disconnected, so a snapshot is not proof the board is online. `board.list` stays the foreground poll. Older phones ignore `evt.board`. Deploy this relay before expecting the header to flip the moment the board socket drops; until then the phone corrects itself on the next list.
 
 WebSocket frames are limited to `WS_MESSAGES_PER_SEC` (default 40) per socket. Excess frames get `rate_limited`.
 
