@@ -225,23 +225,36 @@ describe("merge / upsert / summarize / formatError", () => {
     assert.equal(merged[0]?.text, long);
   });
 
-  it("extracts and merges prompt turns", () => {
+  it("extracts and merges prompt turns including steered prompts", () => {
     const lines = [
       JSON.stringify({ type: "start" }),
+      JSON.stringify({ type: "steer", iteration: 1, prompt: " 补充说明 " }),
       JSON.stringify({ type: "continue", iteration: 2, prompt: " go on " }),
     ];
     const extracted = extractPromptsByIteration(lines, "first");
     assert.deepEqual(extracted, [
-      { iteration: 1, prompt: "first" },
+      { iteration: 1, prompt: "first\n\n---\n\n【追加提示词】\n补充说明" },
       { iteration: 2, prompt: "go on" },
     ]);
     const merged = mergePromptTurns(
-      [{ iteration: 2, prompt: "stored-wins" }],
+      [{ iteration: 1, prompt: "first" }, { iteration: 2, prompt: "stored-wins" }],
       extracted,
     );
+    assert.equal(merged.find((p) => p.iteration === 1)?.prompt, "first\n\n---\n\n【追加提示词】\n补充说明");
     assert.equal(merged.find((p) => p.iteration === 2)?.prompt, "stored-wins");
     const up = upsertPromptTurn([], { iteration: 1, prompt: "p" });
     assert.equal(up[0].prompt, "p");
+  });
+
+  it("extracts both pre-steer and post-steer outputs in the same iteration", () => {
+    const lines = [
+      JSON.stringify({ type: "start" }),
+      JSON.stringify({ type: "result", result: "part 1" }),
+      JSON.stringify({ type: "steer", iteration: 1, prompt: "extra" }),
+      JSON.stringify({ type: "result", result: "part 2" }),
+    ];
+    const turns = extractOutputsByIteration(lines);
+    assert.deepEqual(turns, [{ iteration: 1, text: "part 1\n\n---\n\npart 2" }]);
   });
 
   it("summarizes and formats errors", () => {

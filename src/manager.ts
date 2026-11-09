@@ -23,6 +23,7 @@ import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
 import { applyWorkspaceToPrompt } from "./workspaceApply.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
+  appendSteerToPrompt,
   encodeStreamLogLine,
   extractFinalOutput,
   extractOutputsByIteration,
@@ -89,6 +90,10 @@ const pendingPatch = new Map<string, PendingPatch>();
 const patchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Bumped on start/continue/stop/move/natural end so a delayed patch cannot cross runs. */
 const taskRunIds = new Map<string, number>();
+const steeredOutputPrefix = new Map<
+  string,
+  { runId: number; iteration: number; prefix: string }
+>();
 
 function currentRunId(id: string): number {
   return taskRunIds.get(id) ?? 0;
@@ -97,6 +102,7 @@ function currentRunId(id: string): number {
 function bumpRun(id: string): number {
   const next = currentRunId(id) + 1;
   taskRunIds.set(id, next);
+  steeredOutputPrefix.delete(id);
   return next;
 }
 
@@ -172,13 +178,19 @@ function writeLog(id: string, line: string, source?: "stdout" | "stderr") {
   const piece = extractTextFromEventLine(line);
   if (piece) {
     const iter = cur.iteration ?? 1;
+    const steerState = steeredOutputPrefix.get(id);
+    const activePrefix =
+      steerState && steerState.runId === currentRunId(id) && steerState.iteration === iter
+        ? steerState.prefix
+        : "";
+    const fullText = activePrefix ? `${activePrefix}\n\n---\n\n${piece}` : piece;
     const prevTurn = cur.outputs?.find((o) => o.iteration === iter);
-    if (!prevTurn || prevTurn.text !== piece) {
+    if (!prevTurn || prevTurn.text !== fullText) {
       const pending = pendingPatch.get(id);
       const baseOutputs =
         (pending && pending.runId === currentRunId(id) ? pending.partial.outputs : undefined) ||
         cur.outputs;
-      const outputs = upsertOutputTurn(baseOutputs, { iteration: iter, text: piece, at });
+      const outputs = upsertOutputTurn(baseOutputs, { iteration: iter, text: fullText, at });
       const latest = latestOutputText(outputs);
       patchPartial.output = latest;
       patchPartial.outputs = outputs;
@@ -656,6 +668,94 @@ async function continueTaskBody(
   return getTask(id)!;
 }
 
+/**
+ * Send a prompt directly to the active session without stopping the running task.
+ * If the task has already finished by the time this is called, falls back to continueTask.
+ */
+export function steerTask(
+  id: string,
+  prompt: string,
+  attachments?: TaskAttachment[],
+): Promise<Task> {
+  return withTaskLock(id, () => steerTaskBody(id, prompt, attachments));
+}
+
+async function steerTaskBody(
+  id: string,
+  prompt: string,
+  attachments?: TaskAttachment[],
+): Promise<Task> {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  if (t.status === "archived") throw new ArchivedReadonlyError();
+  const trimmed = prompt?.trim() || "";
+  if (!trimmed) throw new HttpError(400, "prompt required");
+  if (t.status === "draft") {
+    throw new HttpError(409, "草稿尚未启动，请先开始任务");
+  }
+  if (!ACTIVE.includes(t.status)) {
+    return continueTaskBody(id, trimmed, undefined, undefined, attachments);
+  }
+  const h = handles.get(id);
+  const expandedPrompt = appendAttachmentsToPrompt(
+    expandUploadUrlsInPrompt(trimmed),
+    attachments,
+  );
+  if (!h?.steer || !h.steer(expandedPrompt)) {
+    throw new HttpError(
+      409,
+      "当前任务不支持运行中直接发送至会话，将保留在待办列表中等待本轮结束后继续",
+    );
+  }
+  flushPendingPatch(id);
+  const fresh = getTask(id) ?? t;
+  const curIter = fresh.iteration ?? 1;
+  const existingOutput = fresh.outputs?.find((o) => o.iteration === curIter)?.text?.trim();
+  if (existingOutput) {
+    steeredOutputPrefix.set(id, {
+      runId: currentRunId(id),
+      iteration: curIter,
+      prefix: existingOutput,
+    });
+  }
+  const prevPrompt =
+    fresh.prompts?.find((p) => p.iteration === curIter)?.prompt ||
+    (curIter <= 1 ? fresh.prompt : "");
+  const nextPrompt = appendSteerToPrompt(prevPrompt, trimmed);
+  const prevAt =
+    fresh.prompts?.find((p) => p.iteration === curIter)?.at ||
+    fresh.startedAt ||
+    fresh.createdAt;
+  const prompts = upsertPromptTurn(fresh.prompts, {
+    iteration: curIter,
+    prompt: nextPrompt,
+    at: prevAt,
+  });
+  const mergedAttachments = attachments?.length
+    ? [
+        ...(fresh.attachments || []),
+        ...attachments.filter(
+          (a) => !(fresh.attachments || []).some((prev) => prev.name === a.name),
+        ),
+      ]
+    : fresh.attachments;
+  const updated = await patchDurable(id, {
+    prompts,
+    ...(mergedAttachments?.length ? { attachments: mergedAttachments } : {}),
+    lastEvent: "steer",
+  });
+  writeLog(
+    id,
+    JSON.stringify({
+      type: "steer",
+      iteration: curIter,
+      prompt: trimmed,
+      sessionId: fresh.sessionId,
+    }),
+  );
+  return getTask(id) ?? updated;
+}
+
 export function stopTask(id: string): Promise<Task> {
   return withTaskLock(id, () => stopTaskBody(id));
 }
@@ -1110,6 +1210,7 @@ export function clearHandlesForTests(): void {
   }
   pendingPatch.clear();
   taskRunIds.clear();
+  steeredOutputPrefix.clear();
   taskOpTail.clear();
   draining = false;
 }
@@ -1118,5 +1219,6 @@ setTasksDeletedListener((ids) => {
   for (const id of ids) {
     cancelPendingPatch(id);
     taskRunIds.delete(id);
+    steeredOutputPrefix.delete(id);
   }
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildPiArgs, isValidPiSessionId, makePiSessionId } from "./pi.js";
+import { buildPiArgs, buildPiRpcArgs, isValidPiSessionId, makePiSessionId } from "./pi.js";
 import { buildClaudeArgs } from "./claude.js";
 import { approvalFlags, baseExecFlags, buildCodexArgs, resumeFlags } from "./codex.js";
 import { buildCursorArgs } from "./cursor.js";
@@ -82,6 +82,30 @@ describe("U16 runner buildArgs (no spawn)", () => {
       assert.ok(!r.args.includes("--session-id"));
       assert.equal(r.args.at(-1), "more");
       assert.equal(r.assignSession, false);
+    });
+
+    it("buildPiRpcArgs uses --mode rpc without positional prompt", () => {
+      const fresh = buildPiRpcArgs(
+        { id: "t1", prompt: "@file hello", model: "gpt-x", thinkingEffort: "high" },
+        { freshSessionId: "t1-rpc" },
+      );
+      assert.deepEqual(fresh.args, [
+        "--mode",
+        "rpc",
+        "--session-id",
+        "t1-rpc",
+        "--model",
+        "gpt-x",
+        "--thinking",
+        "high",
+      ]);
+      assert.equal(fresh.prompt, "@file hello");
+      const cont = buildPiRpcArgs(
+        { id: "t1", prompt: "orig", sessionId: "sess-pi" },
+        { continuePrompt: "next" },
+      );
+      assert.deepEqual(cont.args, ["--mode", "rpc", "--session", "sess-pi"]);
+      assert.equal(cont.prompt, "next");
     });
   });
 

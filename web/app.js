@@ -1481,6 +1481,8 @@ function clearContinuePrompt() {
 
 const MAX_FOLLOWUP_QUEUE = 5;
 let lastFollowupSig = "";
+/** @type {{ taskId: string, index: number } | null} */
+let sendingFollowup = null;
 
 function taskIsActive(task) {
   return Boolean(task && ["queued", "running", "blocked"].includes(task.status));
@@ -1493,7 +1495,9 @@ function followupsOf(taskId) {
 function renderFollowupQueue(taskId) {
   if (!followupQueueEl) return;
   const items = taskId ? followupsOf(taskId) : [];
-  const sig = `${taskId || ""}\0${items.join("\x1f")}`;
+  const sendingKey =
+    sendingFollowup && sendingFollowup.taskId === taskId ? String(sendingFollowup.index) : "";
+  const sig = `${taskId || ""}\0${sendingKey}\0${items.join("\x1f")}`;
   if (!items.length) {
     lastFollowupSig = "";
     followupQueueEl.replaceChildren();
@@ -1506,6 +1510,7 @@ function renderFollowupQueue(taskId) {
   }
   lastFollowupSig = sig;
   followupQueueEl.replaceChildren();
+  const busy = Boolean(sendingFollowup && sendingFollowup.taskId === taskId);
   for (const [index, text] of items.entries()) {
     const item = document.createElement("li");
     item.className = "followup-item";
@@ -1515,14 +1520,26 @@ function renderFollowupQueue(taskId) {
     const body = document.createElement("span");
     body.className = "followup-text";
     body.textContent = text;
+    const actions = document.createElement("div");
+    actions.className = "followup-actions";
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "secondary followup-send";
+    send.dataset.followupIndex = String(index);
+    send.setAttribute("aria-label", "发送至当前会话，不打断任务");
+    send.title = "发送至当前会话，不打断任务";
+    send.disabled = busy;
+    send.textContent = busy && sendingFollowup?.index === index ? "发送中…" : "发送至当前会话";
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "followup-remove";
+    remove.className = "secondary secondary-danger followup-remove";
     remove.dataset.followupIndex = String(index);
-    remove.setAttribute("aria-label", "移除待办提示词");
-    remove.title = "移除";
-    remove.textContent = "×";
-    item.append(order, body, remove);
+    remove.setAttribute("aria-label", "删除待办");
+    remove.title = "删除待办";
+    remove.disabled = busy;
+    remove.textContent = "删除待办";
+    actions.append(send, remove);
+    item.append(order, body, actions);
     followupQueueEl.append(item);
   }
 }
@@ -2720,13 +2737,55 @@ function showContinueError(id, err) {
   continueError.textContent = err?.message || "继续任务失败，请重试";
 }
 
+/** @param {{ prompt: string }} body */
+async function postSteer(id, body) {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/steer`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function sendFollowupToSession(taskId, index) {
+  if (!taskId || sendingFollowup?.taskId === taskId) return;
+  const items = followupsOf(taskId);
+  const prompt = items[index];
+  if (!prompt) return;
+  sendingFollowup = { taskId, index };
+  if (selectedId === taskId && continueError) {
+    continueError.hidden = true;
+    continueError.textContent = "";
+  }
+  if (selectedId === taskId) renderFollowupQueue(taskId);
+  try {
+    const data = await postSteer(taskId, { prompt });
+    removeFollowup(taskId, index);
+    if (data.task) {
+      tasks.set(data.task.id, data.task);
+      renderList();
+    }
+  } catch (err) {
+    showContinueError(taskId, err);
+  } finally {
+    sendingFollowup = null;
+    if (selectedId === taskId) {
+      renderFollowupQueue(taskId);
+      const latest = tasks.get(taskId);
+      if (latest) paintDetail(latest);
+    }
+  }
+}
+
 /**
  * Send the oldest queued follow-up once the task is idle.
  * One message per finished run, so later replies stay in order.
  * @param {string} id
  */
 async function drainFollowup(id) {
-  if (followupDraining.has(id) || continuingTaskId === id) return;
+  if (followupDraining.has(id) || continuingTaskId === id || sendingFollowup?.taskId === id) return;
   const task = tasks.get(id);
   const queued = followupsOf(id);
   if (!task || !queued.length || !canContinue(task)) return;
@@ -2971,6 +3030,14 @@ continuePrompt?.addEventListener("keydown", (e) => {
 });
 
 followupQueueEl?.addEventListener("click", (e) => {
+  const sendBtn = e.target?.closest?.(".followup-send");
+  if (sendBtn && selectedId) {
+    const index = Number(sendBtn.dataset.followupIndex);
+    if (Number.isInteger(index)) {
+      void sendFollowupToSession(selectedId, index);
+    }
+    return;
+  }
   const btn = e.target?.closest?.(".followup-remove");
   if (!btn || !selectedId) return;
   const index = Number(btn.dataset.followupIndex);

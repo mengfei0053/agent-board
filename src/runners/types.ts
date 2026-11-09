@@ -9,6 +9,12 @@ export type RunnerHooks = {
 export type RunnerHandle = {
   pid?: number;
   stop: () => void;
+  /** Send a message to the running session without interrupting the run. */
+  steer?: (prompt: string) => boolean;
+  /** Write raw data to child stdin when spawned with stdinPipe: true. */
+  writeStdin?: (data: string) => boolean;
+  /** Close child stdin when spawned with stdinPipe: true. */
+  endStdin?: () => void;
   /** Resolves when the child has exited, or immediately if nothing was spawned. */
   settled?: Promise<void>;
   /** SIGTERM, then SIGKILL, then wait until exit or `timeoutMs`. */

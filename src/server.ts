@@ -22,6 +22,7 @@ import {
   isDraining,
   shutdownManager,
   startTask,
+  steerTask,
   stopTask,
   taskWithOutput,
   taskLogTail,
@@ -650,6 +651,27 @@ app.post("/api/tasks/:id/continue", async (c) => {
   }
   try {
     const task = await continueTask(c.req.param("id"), prompt, model, thinkingEffort, attachments);
+    return c.json({ task });
+  } catch (err) {
+    return taskMutationError(c, err);
+  }
+});
+
+app.post("/api/tasks/:id/steer", async (c) => {
+  let prompt = "";
+  let attachments: TaskAttachment[] | undefined;
+  try {
+    const body = await readJsonObject(c);
+    prompt = requireString(body, "prompt", { required: true, max: MAX_PROMPT_CHARS });
+    if ("attachments" in body && body.attachments != null) {
+      const parsedAttachments = normalizeAttachmentsInput(body.attachments);
+      if (parsedAttachments.length) attachments = parsedAttachments;
+    }
+  } catch (err) {
+    return errorJson(c, err);
+  }
+  try {
+    const task = await steerTask(c.req.param("id"), prompt, attachments);
     return c.json({ task });
   } catch (err) {
     return taskMutationError(c, err);

@@ -182,6 +182,7 @@ export const BOARD_META_TYPE_LIST = [
   "workspace_mcp_applied",
   "exit",
   "continue",
+  "steer",
   "start",
   "continue_fallback",
   "cursor_create_chat",
@@ -242,6 +243,41 @@ function upsertTurn(list: OutputTurn[], turn: OutputTurn): OutputTurn[] {
   return next.sort((a, b) => a.iteration - b.iteration);
 }
 
+function isSteerLine(line: string): boolean {
+  const t = line.trim();
+  if (!t.startsWith("{")) return false;
+  try {
+    return (JSON.parse(t) as { type?: string }).type === "steer";
+  } catch {
+    return false;
+  }
+}
+
+function extractSubRangeText(lines: string[], from: number, to: number): string {
+  let last = "";
+  for (let i = from; i < to; i++) {
+    const text = extractTextFromEventLine(lines[i] ?? "");
+    if (text) last = text;
+  }
+  if (!last) last = plainTextFromRange(lines, from, to);
+  return last;
+}
+
+function extractSegmentText(lines: string[], from: number, to: number): string {
+  const pieces: string[] = [];
+  let subStart = from;
+  for (let i = from; i < to; i++) {
+    if (isSteerLine(lines[i] ?? "")) {
+      const piece = extractSubRangeText(lines, subStart, i);
+      if (piece) pieces.push(piece);
+      subStart = i + 1;
+    }
+  }
+  const tail = extractSubRangeText(lines, subStart, to);
+  if (tail) pieces.push(tail);
+  return pieces.join("\n\n---\n\n");
+}
+
 /**
  * Split logs by start/continue markers and take the last assistant text per segment.
  */
@@ -273,12 +309,7 @@ export function extractOutputsByIteration(
   }
 
   if (!segs.length) {
-    let last = "";
-    for (const line of lines) {
-      const text = extractTextFromEventLine(line ?? "");
-      if (text) last = text;
-    }
-    if (!last) last = plainTextFromRange(lines, 0, lines.length);
+    const last = extractSegmentText(lines, 0, lines.length);
     const iter =
       typeof fallbackIteration === "number" && fallbackIteration >= 1 ? fallbackIteration : 1;
     return last ? [{ iteration: iter, text: last }] : [];
@@ -288,12 +319,7 @@ export function extractOutputsByIteration(
   for (let s = 0; s < segs.length; s++) {
     const from = segs[s].start;
     const to = s + 1 < segs.length ? segs[s + 1].start : lines.length;
-    let last = "";
-    for (let i = from; i < to; i++) {
-      const text = extractTextFromEventLine(lines[i] ?? "");
-      if (text) last = text;
-    }
-    if (!last) last = plainTextFromRange(lines, from, to);
+    const last = extractSegmentText(lines, from, to);
     if (last) {
       turns = upsertTurn(turns, { iteration: segs[s].iteration, text: last });
     }
@@ -409,6 +435,14 @@ export function upsertPromptTurn(
   return upsertPrompt(existing ?? [], turn);
 }
 
+export function appendSteerToPrompt(existing: string, steerPrompt: string): string {
+  const base = (existing || "").trim();
+  const extra = (steerPrompt || "").trim();
+  if (!extra) return base;
+  if (!base) return extra;
+  return `${base}\n\n---\n\n【追加提示词】\n${extra}`;
+}
+
 /**
  * Collect per-iteration user prompts from board meta log lines.
  * Iteration 1 comes from `initialPrompt` (task.prompt); continue events carry later prompts.
@@ -444,6 +478,19 @@ export function extractPromptsByIteration(
         if (prompt) {
           turns = upsertPrompt(turns, { iteration: currentIter, prompt });
         }
+      } else if (ev.type === "steer") {
+        const iter =
+          typeof ev.iteration === "number" && ev.iteration >= 1
+            ? ev.iteration
+            : currentIter;
+        const prompt = typeof ev.prompt === "string" ? ev.prompt.trim() : "";
+        if (prompt) {
+          const prev = turns.find((x) => x.iteration === iter)?.prompt || "";
+          turns = upsertPrompt(turns, {
+            iteration: iter,
+            prompt: appendSteerToPrompt(prev, prompt),
+          });
+        }
       }
     } catch {
       /* ignore */
@@ -460,9 +507,15 @@ export function mergePromptTurns(
   for (const p of extracted) {
     if (p?.prompt?.trim()) map.set(p.iteration, p);
   }
-  // Stored / explicit turns win over log extraction.
+  // Stored / explicit turns win over log extraction unless extracted has appended steer text.
   for (const p of stored || []) {
-    if (p?.prompt?.trim()) map.set(p.iteration, p);
+    if (!p?.prompt?.trim()) continue;
+    const ext = map.get(p.iteration);
+    if (ext && ext.prompt.length > p.prompt.length && ext.prompt.startsWith(p.prompt)) {
+      map.set(p.iteration, { ...p, prompt: ext.prompt });
+    } else {
+      map.set(p.iteration, p);
+    }
   }
   return [...map.values()].sort((a, b) => a.iteration - b.iteration);
 }

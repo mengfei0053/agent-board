@@ -111,6 +111,8 @@ export function spawnLogged(
   opts: {
     /** Agent kind — selects per-kind proxy overrides. */
     cliKind: CliCommandKey;
+    /** Open child stdin as a pipe so the runner can send RPC commands. */
+    stdinPipe?: boolean;
     workspaceMcp?: string;
     classifyLine?: (line: string, hooks: RunnerHooks) => void;
     getStatus: () => TaskStatus;
@@ -175,12 +177,38 @@ export function spawnLogged(
     child = spawn(cmd, args, {
       cwd,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [opts.stdinPipe ? "pipe" : "ignore", "pipe", "pipe"],
       detached: true,
     });
   } catch (err) {
     return failSync(err);
   }
+  child.stdin?.on("error", () => {
+    /* ignore broken pipe if child exits early */
+  });
+
+  let stdinClosed = !opts.stdinPipe;
+  const writeStdin = (data: string): boolean => {
+    if (closed || stoppedByUser || endedByWatchdog || settledByWatchdog || stdinClosed) {
+      return false;
+    }
+    if (!child.stdin || child.stdin.destroyed || !child.stdin.writable) return false;
+    try {
+      child.stdin.write(data);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const endStdin = (): void => {
+    if (stdinClosed) return;
+    stdinClosed = true;
+    try {
+      child.stdin?.end();
+    } catch {
+      /* ignore */
+    }
+  };
 
   hooks.onStatus({ status: "running", pid: child.pid, startedAt: new Date().toISOString() });
   const previewArg = (arg: string) => {
@@ -231,6 +259,7 @@ export function spawnLogged(
   const cutPipesAndKill = () => {
     if (closed) return;
     try {
+      child.stdin?.destroy();
       child.stdout?.removeAllListeners("data");
       child.stderr?.removeAllListeners("data");
       child.stdout?.destroy();
@@ -511,6 +540,8 @@ export function spawnLogged(
   return {
     pid: child.pid,
     stop,
+    writeStdin,
+    endStdin,
     settled,
     stopAndWait,
   };

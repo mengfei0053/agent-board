@@ -10,6 +10,7 @@ import {
   createDraft,
   moveTask,
   startTask,
+  steerTask,
 } from "./manager.js";
 import {
   appendLog,
@@ -130,5 +131,36 @@ describe("task operation lock and fresh runs", () => {
     upsertTask({ ...getTask(draft.id)!, cwd: file, status: "stopped" });
     await assert.rejects(startTask(draft.id), /not a directory|not found|outside/);
     assert.notEqual(getTask(draft.id)?.status, "queued");
+  });
+
+  it("steers a running task without interrupting it and appends to the current round prompt", async () => {
+    const steeredPrompts: string[] = [];
+    runners.pi = {
+      start(_task, hooks) {
+        hooks.onStatus({ status: "running", pid: 77, sessionId: "sess-live" });
+        return {
+          stop() {},
+          steer(prompt: string) {
+            steeredPrompts.push(prompt);
+            return true;
+          },
+        };
+      },
+    };
+    const draft = await createDraft({
+      kind: "pi",
+      workspaceId,
+      prompt: "先分析主文档",
+      title: "steer-test",
+    });
+    const started = await startTask(draft.id);
+    assert.equal(started.status, "running");
+
+    const steered = await steerTask(draft.id, "  两个进样器说明书也需要分析  ");
+    assert.equal(steered.status, "running");
+    assert.equal(steered.iteration, 1);
+    assert.deepEqual(steeredPrompts, ["两个进样器说明书也需要分析"]);
+    assert.match(steered.prompts?.[0]?.prompt || "", /先分析主文档/);
+    assert.match(steered.prompts?.[0]?.prompt || "", /【追加提示词】\n两个进样器说明书也需要分析/);
   });
 });

@@ -590,6 +590,37 @@ export function createMockServer(state, extra) {
       return json(res, 200, { task: t });
     }
 
+    const taskSteer = pathname.match(/^\/api\/tasks\/([^/]+)\/steer$/);
+    if (taskSteer && req.method === "POST") {
+      const id = decodeURIComponent(taskSteer[1]);
+      const t = state.tasks.get(id);
+      if (!t) return json(res, 404, { error: "not found" });
+      const body = await readBody(req);
+      const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+      if (!prompt) return json(res, 400, { error: "prompt required" });
+      if (t.status === "draft") return json(res, 409, { error: "草稿尚未启动" });
+      const now = new Date().toISOString();
+      const curIter = t.iteration || 1;
+      const prompts = Array.isArray(t.prompts)
+        ? [...t.prompts]
+        : [{ iteration: 1, prompt: t.prompt, at: t.createdAt }];
+      const idx = prompts.findIndex((p) => p.iteration === curIter);
+      if (idx >= 0) {
+        prompts[idx] = {
+          ...prompts[idx],
+          prompt: `${prompts[idx].prompt}\n\n---\n\n【追加提示词】\n${prompt}`,
+        };
+      } else {
+        prompts.push({ iteration: curIter, prompt, at: now });
+      }
+      Object.assign(t, {
+        prompts,
+        lastEvent: "steer",
+        updatedAt: now,
+      });
+      return json(res, 200, { task: t });
+    }
+
     const worktreeElig = pathname.match(/^\/api\/workspaces\/([^/]+)\/git-worktree-eligibility$/);
     if (worktreeElig && req.method === "GET") {
       const id = decodeURIComponent(worktreeElig[1]);

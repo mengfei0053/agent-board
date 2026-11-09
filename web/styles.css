@@ -2219,15 +2219,32 @@ textarea { resize: vertical; min-height: 96px; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+.followup-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.followup-send,
 .followup-remove {
   flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--faint);
-  cursor: pointer;
-  padding: 0 2px;
-  font-size: 14px;
-  line-height: 1;
+  width: auto;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  line-height: 1.25;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.followup-send {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.followup-send:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  color: var(--accent);
 }
 .continue-row.footer-continue textarea {
   margin-top: 0;

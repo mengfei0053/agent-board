@@ -549,6 +549,33 @@ async function main() {
       assert.equal(await page.$$eval("#followup-queue .followup-item", (els) => els.length), 5);
       assert.match(await page.$eval("#continue-error", (el) => el.textContent || ""), /最多 5 条/);
 
+      // Right-side buttons on each todo item: "发送至当前会话" (without interrupting task) and "删除待办"
+      const actionLabels = await page.$eval("#followup-queue .followup-item", (el) => ({
+        send: el.querySelector(".followup-send")?.textContent?.trim(),
+        remove: el.querySelector(".followup-remove")?.textContent?.trim(),
+      }));
+      assert.equal(actionLabels.send, "发送至当前会话");
+      assert.equal(actionLabels.remove, "删除待办");
+
+      // Click "删除待办" on item 2 ("待办提示词 2")
+      await page.click('#followup-queue .followup-remove[data-followup-index="1"]');
+      assert.deepEqual(
+        await page.$$eval("#followup-queue .followup-text", (els) => els.map((el) => el.textContent)),
+        ["待办提示词 1", "待办提示词 3", "待办提示词 4", "待办提示词 5"],
+      );
+
+      // Click "发送至当前会话" on item 1 ("待办提示词 1") — sends to current session without interrupting task
+      await page.click('#followup-queue .followup-send[data-followup-index="0"]');
+      await page.waitForFunction(
+        () => document.querySelectorAll("#followup-queue .followup-item").length === 3,
+      );
+      assert.equal(state.tasks.get(createdTodo.id)?.status, "queued");
+      assert.match(state.tasks.get(createdTodo.id)?.prompts?.[0]?.prompt || "", /待办提示词 1/);
+      assert.deepEqual(
+        await page.$$eval("#followup-queue .followup-text", (els) => els.map((el) => el.textContent)),
+        ["待办提示词 3", "待办提示词 4", "待办提示词 5"],
+      );
+
       await closeDetailIfOpen(page);
       console.log("[e2e-board] E6 database model picker, thinking effort default, fuzzy search and Agent filtering ok");
     }
