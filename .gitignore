@@ -10,4 +10,9 @@ coverage/
 coverage-full/
 website/.docusaurus/
 website/build/
+# Production Android signing keys must never be committed.
+*.jks
+*.p12
+*.keystore
+!/android/keystore/debug.keystore
 .pi/tasks/*.json

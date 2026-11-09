@@ -23,6 +23,19 @@ check(debugKeystoreFile.isFile) {
         "Commit android/keystore/debug.keystore and do not use ~/.android/debug.keystore."
 }
 
+// Release credentials come from the local environment or GitHub Secrets, never Git.
+val releaseStorePath = providers.environmentVariable("ANDROID_RELEASE_STORE_FILE").orNull
+val releaseSigningValues = listOf(
+    releaseStorePath,
+    providers.environmentVariable("ANDROID_RELEASE_STORE_PASSWORD").orNull,
+    providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull,
+    providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull,
+)
+val hasReleaseSigning = releaseSigningValues.all { !it.isNullOrBlank() }
+check(releaseSigningValues.all { it.isNullOrBlank() } || hasReleaseSigning) {
+    "Incomplete ANDROID_RELEASE_* signing configuration"
+}
+
 android {
     namespace = "tech.mengfei.agentboard"
     compileSdk = 35
@@ -31,8 +44,8 @@ android {
         applicationId = "tech.mengfei.agentboard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -42,6 +55,14 @@ android {
             keyAlias = debugKeyAlias
             keyPassword = debugKeyPassword
         }
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseSigningValues[1]
+                keyAlias = releaseSigningValues[2]
+                keyPassword = releaseSigningValues[3]
+            }
+        }
     }
 
     buildTypes {
@@ -49,7 +70,9 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
+            isDebuggable = false
             isMinifyEnabled = false
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -65,6 +88,16 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+// Never accidentally ship an unsigned release or fall back to the public debug key.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        check(hasReleaseSigning) {
+            "Release signing required: set ANDROID_RELEASE_STORE_FILE, " +
+                "ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS and ANDROID_RELEASE_KEY_PASSWORD"
         }
     }
 }

@@ -17,7 +17,7 @@ curl -s -X POST http://127.0.0.1:8787/auth/pair/create \
   -d '{"boardIds":["thinkbook-main"]}'
 ```
 
-2. Install the debug APK. On the pair screen, set the relay HTTP URL. The WebSocket URL is derived (`http` becomes `ws`, `https` becomes `wss`, path `/v1/ws`).
+2. Install the release APK (or a local debug APK for development). On the pair screen, set the relay HTTP URL. The WebSocket URL is derived (`http` becomes `ws`, `https` becomes `wss`, path `/v1/ws`).
 3. Enter the `pc_…` pair code (46 characters) and a device name. The screen shows how many characters are present and does not send a short or overlong code. Pair stores the device token and only then sends `client.hello`. Unknown, expired, and used codes all surface as one invalid-or-expired message.
 4. Pick a board. The phone sends `sub.tasks` and `sub.logs`.
 5. The task list follows the web board: pick one workspace and only that workspace's tasks are shown. The header is the workspace name and path. The search field under the status chips filters those tasks by title, id, prompt, or promptPreview. It does not filter workspace names or paths, and switching workspace clears it. Tasks with no `workspaceId`, or an id the snapshot does not list, stay under 「未分配」. Detail shows 工作区. New task copies the selected workspace path, and sends `workspaceId` while the path still matches. 我的看板 can add a board or forget one on this phone only. The last paired board cannot be forgotten. Cards say 「本机会话已保存」 and do not show a token prefix.
@@ -64,7 +64,7 @@ android/app/build/outputs/apk/debug/app-debug.apk
 
 `assembleDebug` signs with the checked-in debug keystore `keystore/debug.keystore`. The path, alias (`androiddebugkey`), and passwords live in `gradle.properties` (`DEBUG_STORE_FILE`, `DEBUG_STORE_PASSWORD`, `DEBUG_KEY_ALIAS`, `DEBUG_KEY_PASSWORD`). Those passwords are the well-known Android debug password `android`. They are not a Play Store or release secret, and they are safe to commit for this sideload build.
 
-A laptop and `.github/workflows/release-apk.yml` both use that file. The package stays `tech.mengfei.agentboard`, and successive debug APKs share one certificate, so a later build installs as an update.
+Local debug builds and pull-request CI both use that file. Published releases use a separate private production key. The package stays `tech.mengfei.agentboard`, and successive debug APKs share one certificate, so a later build installs as an update.
 
 Do not delete the keystore or point debug signing at `~/.android/debug.keystore`. Android Gradle Plugin creates that file per machine. On GitHub-hosted runners it is a new certificate every job. A different certificate cannot update the installed package.
 
@@ -85,23 +85,44 @@ The certificate subject is `CN=Agent Board Debug, OU=Debug, O=Android, C=US`.
 
 **One-time uninstall.** A phone that already has this package from an older CI runner, or from a laptop `~/.android/debug.keystore`, was signed with a different certificate. Android refuses the update (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, or a message that the package conflicts with an existing package). Uninstall Agent Board once, then install this APK. That uninstall clears app data. After it, later debug builds from this keystore update in place.
 
-Release builds stay unsigned. There is no Play signing key in the repo.
+### Production release signing
+
+Release builds require a separate private keystore. There is no production private key in Git, and release builds fail without complete signing configuration rather than shipping an unsigned APK or falling back to the public debug key.
+
+Set these environment variables from your secure local credential store (never commit their values):
+
+- `ANDROID_RELEASE_STORE_FILE`: absolute path to the production keystore.
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
 
 ```bash
-./gradlew :app:assembleRelease
+./gradlew :app:testReleaseUnitTest :protocol:test :app:assembleRelease
 ```
 
-The APK is `android/app/build/outputs/apk/release/app-release-unsigned.apk`.
+The signed APK is `android/app/build/outputs/apk/release/app-release.apk`. Release is non-debuggable; shrinking is currently disabled. This is a signed production build for sideloading, not a Play Store publishing integration.
+
+**Migration from 1.0.0/debug:** the production certificate differs from the public debug certificate. Android normally refuses an in-place update from the old debug build. Back up anything needed, uninstall the debug app, install the production APK, and pair again. Uninstalling clears local app data. Subsequent production builds signed with the same production key can update in place; `versionCode` must increase for each new version.
+
+Back up both the private keystore and its passwords in a secure off-machine location. GitHub Secrets cannot be used to retrieve them later, and losing the signing key prevents normal updates to installed production apps.
 
 ## GitHub Release
 
-Publishing a GitHub Release builds a debug-signed APK and attaches it to the release. The workflow runs `./gradlew :app:assembleDebug`, which uses `keystore/debug.keystore` rather than a keystore generated on the runner. The APK has an APK Signature Block and can be sideloaded, and a later release can update the previous one. `assembleRelease` stays unsigned and is not what this workflow ships.
+Production release signing requires these repository Secrets:
 
-1. Push the commit you want to ship.
-2. On GitHub, open **Releases → Draft a new release**, choose or create a tag such as `v0.2.0`, and publish it.
-3. `.github/workflows/release-apk.yml` runs on `release: types: [published]` and on pull requests. It sets up JDK 17 and Android SDK 35, then runs `./gradlew :app:assembleDebug` in `android/`.
-4. The workflow checks the APK with `apksigner` (API 30+), checks the signer SHA-256 matches `keystore/debug.keystore`, and uploads `agent-board-<tag>-<sha>-debug.apk` to that release with `GITHUB_TOKEN`. On `main`, the artifact name is `agent-board-<sha>-debug.apk`.
+- `ANDROID_RELEASE_KEYSTORE_BASE64`: base64-encoded production keystore.
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
 
-`workflow_dispatch` builds the same APK and stores it as an Actions artifact. It does not attach a release asset.
+Also configure the repository variable `ANDROID_RELEASE_CERT_SHA256` with the expected public certificate SHA-256 fingerprint (colon-separated or plain hex). The workflow checks the APK against this independently configured fingerprint. Never store private keys or passwords in repository variables.
 
-No release signing secrets are required. `ANDROID_KEYSTORE_*` is unused. Store signing is out of scope until a release keystore is added on purpose. The debug passwords in `gradle.properties` are debug-only. If the phone still has a build signed with a different debug certificate, uninstall once before installing this APK.
+1. Update `versionName` in `app/build.gradle.kts` to the intended tag (an optional `v` prefix on the tag is accepted), and increase `versionCode`.
+2. Push the verified commit and tag, then publish a GitHub Release for that tag. Pushing a tag alone does not trigger this workflow.
+3. `.github/workflows/release-apk.yml` runs `:app:testReleaseUnitTest :protocol:test :app:assembleRelease` with the production key decoded only under the temporary runner directory, then removes the keystore when the build step exits.
+4. Before uploading, the workflow verifies the APK signature (API 30+), production certificate fingerprint, non-debuggable flag, application ID, internal versionName/versionCode, and that versionName matches the published tag.
+5. It attaches `agent-board-<tag>-<sha>-release.apk` to the GitHub Release and keeps an Actions artifact. Missing credentials or failed verification block publication; there is no debug fallback.
+
+`workflow_dispatch` also builds and verifies a production release APK, but only stores an Actions artifact; it does not attach a release asset. Select a trusted branch or tag. Pull requests run unit tests and `assembleDebug` without receiving production signing credentials.
+
+The historical `1.0.0` release used the old debug workflow and remains unchanged. Production signing starts with `1.0.1` (`versionCode = 2`).
