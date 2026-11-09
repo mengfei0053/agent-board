@@ -219,9 +219,21 @@ async function main() {
       await selectWorkspace(page, "ws_default");
       await createViaUi(page, {
         mode: "draft",
-        title: "E3草稿",
+        title: "E3草稿初始",
         prompt: "写一份单元测试计划",
       });
+      await page.waitForSelector("#detail-title-edit-btn");
+      await page.click("#detail-title-edit-btn");
+      await page.waitForSelector("#detail-title-editor:not([hidden])");
+      await page.click("#detail-title-input", { clickCount: 3 });
+      await page.keyboard.press("Backspace");
+      await page.type("#detail-title-input", "E3草稿");
+      await page.click("#detail-title-save");
+      await page.waitForFunction(
+        () =>
+          document.getElementById("detail-title-editor")?.hidden === true &&
+          document.getElementById("detail-title")?.textContent === "E3草稿",
+      );
       await closeDetailIfOpen(page);
       await page.waitForFunction(() =>
         [...document.querySelectorAll("#list-draft .card .card-title")].some((el) =>

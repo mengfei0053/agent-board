@@ -136,6 +136,12 @@ npm start</code></pre>
       <section id="task-ops">
         <h2>启停 / 移动 / 继续</h2>
 
+        <h3>修改任务标题</h3>
+        <p><code>PATCH /api/tasks/:id</code> body <code>{ "title": "新标题" }</code>（非空字符串，最多 200 字符）。</p>
+        <pre><code>curl -sS -X PATCH http://127.0.0.1:8791/api/tasks/TASK_ID \
+  -H 'content-type: application/json' \
+  -d '{ "title": "更新后的标题" }'</code></pre>
+
         <h3>开始任务</h3>
         <p><code>POST /api/tasks/:id/start</code> — 将草稿（或终态任务）拉起 runner。</p>
         <pre><code>curl -sS -X POST http://127.0.0.1:8791/api/tasks/TASK_ID/start</code></pre>

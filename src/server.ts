@@ -25,6 +25,7 @@ import {
   stopTask,
   taskWithOutput,
   taskLogTail,
+  updateTaskTitle,
   workspaceSnapshot,
 } from "./manager.js";
 import {
@@ -453,6 +454,22 @@ app.get("/api/tasks/:id", (c) => {
   const data = taskWithOutput(c.req.param("id"));
   if (!data) return c.json({ error: "not found" }, 404);
   return c.json(data);
+});
+
+app.patch("/api/tasks/:id", async (c) => {
+  let title = "";
+  try {
+    const body = await readJsonObject(c);
+    title = requireString(body, "title", { required: true, max: MAX_TITLE_CHARS });
+  } catch (err) {
+    return errorJson(c, err);
+  }
+  try {
+    const task = await updateTaskTitle(c.req.param("id"), title);
+    return c.json({ task });
+  } catch (err) {
+    return taskMutationError(c, err, 500);
+  }
 });
 
 app.get("/api/tasks/:id/log", (c) => {

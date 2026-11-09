@@ -387,6 +387,19 @@ export function createMockServer(state, extra) {
       return json(res, 200, { task, logLineCount: 0, log: [] });
     }
 
+    if (taskOne && req.method === "PATCH") {
+      const id = decodeURIComponent(taskOne[1]);
+      const task = state.tasks.get(id);
+      if (!task) return json(res, 404, { error: "not found" });
+      const body = await readBody(req);
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      if (!title) return json(res, 400, { error: "title required" });
+      if (title.length > 200) return json(res, 413, { error: "title exceeds 200 characters" });
+      task.title = title;
+      task.updatedAt = new Date().toISOString();
+      return json(res, 200, { task });
+    }
+
     const taskMove = pathname.match(/^\/api\/tasks\/([^/]+)\/move$/);
     if (taskMove && req.method === "POST") {
       const id = decodeURIComponent(taskMove[1]);

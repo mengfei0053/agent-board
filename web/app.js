@@ -10,7 +10,16 @@ const formError = document.getElementById("form-error");
 const searchEl = document.getElementById("search");
 const createModal = document.getElementById("create-modal");
 const detailModal = document.getElementById("detail-modal");
+const detailTitleRow = document.querySelector("#detail-title-row");
 const detailTitle = document.getElementById("detail-title");
+const detailTitleEditBtn = document.querySelector("#detail-title-edit-btn");
+const detailTitleEditor = document.querySelector("#detail-title-editor");
+const detailTitleInput = document.querySelector("#detail-title-input");
+const detailTitleSaveBtn = document.querySelector("#detail-title-save");
+const detailTitleCancelBtn = document.querySelector("#detail-title-cancel");
+const detailTitleError = document.querySelector("#detail-title-error");
+let editingTitleTaskId = null;
+let savingTitle = false;
 const detailSub = document.getElementById("detail-sub");
 const detailMetaGrid = document.getElementById("detail-meta-grid");
 const detailOutput = document.getElementById("detail-output");
@@ -1804,6 +1813,96 @@ function scrollOutputToLastTurn() {
   detailOutput.scrollTop = Math.max(0, Math.round(targetTop));
 }
 
+function isEditingDetailTitle() {
+  return Boolean(editingTitleTaskId && detailTitleEditor && !detailTitleEditor.hidden);
+}
+
+function hideDetailTitleError() {
+  if (!detailTitleError) return;
+  detailTitleError.hidden = true;
+  detailTitleError.textContent = "";
+}
+
+function showDetailTitleError(msg) {
+  if (!detailTitleError) return;
+  detailTitleError.hidden = false;
+  detailTitleError.textContent = msg || "保存失败";
+}
+
+function setDetailTitleSaving(busy) {
+  savingTitle = Boolean(busy);
+  if (detailTitleInput) detailTitleInput.disabled = savingTitle;
+  if (detailTitleSaveBtn) detailTitleSaveBtn.disabled = savingTitle;
+  if (detailTitleCancelBtn) detailTitleCancelBtn.disabled = savingTitle;
+}
+
+function cancelDetailTitleEdit() {
+  editingTitleTaskId = null;
+  setDetailTitleSaving(false);
+  hideDetailTitleError();
+  if (detailTitleEditor) detailTitleEditor.hidden = true;
+  if (detailTitleRow) detailTitleRow.hidden = false;
+}
+
+function startDetailTitleEdit() {
+  if (!selectedId) return;
+  const task = tasks.get(selectedId);
+  if (!task || !detailTitleEditor || !detailTitleInput) return;
+  editingTitleTaskId = task.id;
+  setDetailTitleSaving(false);
+  hideDetailTitleError();
+  detailTitleInput.value = task.title || "";
+  if (detailTitleRow) detailTitleRow.hidden = true;
+  detailTitleEditor.hidden = false;
+  detailTitleInput.focus();
+  detailTitleInput.select();
+}
+
+async function saveDetailTitleEdit() {
+  if (!selectedId || savingTitle) return;
+  const id = selectedId;
+  const task = tasks.get(id);
+  if (!task || !detailTitleInput) return;
+  const nextTitle = detailTitleInput.value.trim();
+  if (!nextTitle) {
+    showDetailTitleError("标题不能为空");
+    detailTitleInput.focus();
+    return;
+  }
+  if (nextTitle.length > 200) {
+    showDetailTitleError("标题最多 200 个字符");
+    detailTitleInput.focus();
+    return;
+  }
+  if (nextTitle === (task.title || "").trim()) {
+    cancelDetailTitleEdit();
+    return;
+  }
+  hideDetailTitleError();
+  setDetailTitleSaving(true);
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: nextTitle }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText || "保存失败");
+    const current = tasks.get(id) || task;
+    const updated = data.task
+      ? { ...current, ...data.task, title: data.task.title }
+      : { ...current, title: nextTitle };
+    tasks.set(id, updated);
+    cancelDetailTitleEdit();
+    if (selectedId === id) paintDetail(updated);
+    renderList();
+  } catch (err) {
+    setDetailTitleSaving(false);
+    showDetailTitleError(err?.message || String(err));
+    detailTitleInput?.focus();
+  }
+}
+
 async function openDetail(id) {
   selectedId = id;
   selectedLogLines = [];
@@ -1812,6 +1911,7 @@ async function openDetail(id) {
   lastPaintedTaskId = null;
   lastPaintedRoundCount = 0;
   shouldScrollOutputToLastTurn = true;
+  cancelDetailTitleEdit();
   clearContinuePrompt();
   applyQuickPromptsToUi();
   detailModal.classList.remove("hidden");
@@ -2181,6 +2281,9 @@ function paintDetail(task) {
   const statusText = STATUS_LABEL[task.status] || task.status;
   detailTitle.textContent = displayTitleText(task);
   detailTitle.title = task.prompt || "";
+  if (editingTitleTaskId && editingTitleTaskId !== task.id) {
+    cancelDetailTitleEdit();
+  }
   detailSub.textContent = `${task.id} · ${task.kind} · ${statusText} · 迭代 ${iter}`;
   const taskIdEl = document.getElementById("detail-task-id");
   if (taskIdEl) taskIdEl.textContent = task.id || "";
@@ -2307,6 +2410,7 @@ function openMetaViewer() {
 function closeDetail() {
   clearTimeout(detailDurationTimer);
   detailDurationTimer = null;
+  cancelDetailTitleEdit();
   infoViewerModal?.classList.add("hidden");
   sidejobsViewerModal?.classList.add("hidden");
   closeLogViewer();
@@ -2335,6 +2439,20 @@ syncCreateThinkingEffort("");
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
+detailTitleEditBtn?.addEventListener("click", () => startDetailTitleEdit());
+detailTitleSaveBtn?.addEventListener("click", () => void saveDetailTitleEdit());
+detailTitleCancelBtn?.addEventListener("click", () => cancelDetailTitleEdit());
+detailTitleInput?.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    void saveDetailTitleEdit();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    cancelDetailTitleEdit();
+  }
+});
 document.getElementById("btn-open-log").onclick = () => void openLogViewer();
 document.getElementById("btn-open-meta").onclick = openMetaViewer;
 document.getElementById("btn-open-info").onclick = () => infoViewerModal.classList.remove("hidden");
@@ -2820,6 +2938,7 @@ document.addEventListener("keydown", (e) => {
   if (metaViewerModal && !metaViewerModal.classList.contains("hidden")) return closeMetaViewer();
   if (!wsModal.classList.contains("hidden")) return closeWsModal();
   if (!createModal.classList.contains("hidden")) return closeCreate();
+  if (isEditingDetailTitle()) return cancelDetailTitleEdit();
   if (!detailModal.classList.contains("hidden")) return closeDetail();
 });
 

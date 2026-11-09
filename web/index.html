@@ -225,7 +225,21 @@
     <div class="modal-card detail-card">
       <div class="detail-top">
         <div class="detail-top-main">
-          <h2 id="detail-title">详情</h2>
+          <div class="detail-title-row" id="detail-title-row">
+            <h2 id="detail-title">详情</h2>
+            <button type="button" class="detail-title-edit-btn" id="detail-title-edit-btn" title="编辑标题" aria-label="编辑标题">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                <path d="m15 5 4 4"/>
+              </svg>
+            </button>
+          </div>
+          <div class="detail-title-editor" id="detail-title-editor" hidden>
+            <input type="text" id="detail-title-input" class="detail-title-input" maxlength="200" placeholder="输入任务标题" aria-label="任务标题" />
+            <button type="button" class="primary detail-title-save-btn" id="detail-title-save">保存</button>
+            <button type="button" class="secondary detail-title-cancel-btn" id="detail-title-cancel">取消</button>
+          </div>
+          <p id="detail-title-error" class="error detail-title-error" hidden></p>
           <p class="muted" id="detail-sub"></p>
         </div>
         <button type="button" class="icon-btn" id="detail-close" aria-label="关闭">×</button>

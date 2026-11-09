@@ -56,7 +56,7 @@ import {
   type OwnedWorktreeCleanup,
   type WorktreeCleanupWarning,
 } from "./gitWorktree.js";
-import { assertTextLimit, BOARD_FIELD_CHARS, MAX_MODEL_CHARS } from "./limits.js";
+import { assertTextLimit, BOARD_FIELD_CHARS, MAX_MODEL_CHARS, MAX_TITLE_CHARS } from "./limits.js";
 
 const handles = new Map<string, RunnerHandle>();
 /** Serializes start/move/stop/continue for one task across awaits. */
@@ -790,6 +790,22 @@ async function moveTaskBody(id: string, lane: BoardLane): Promise<Task> {
     });
   }
   return stopTaskBody(id);
+}
+
+export function updateTaskTitle(id: string, title: string): Promise<Task> {
+  return withTaskLock(id, () => updateTaskTitleBody(id, title));
+}
+
+async function updateTaskTitleBody(id: string, title: string): Promise<Task> {
+  const t = getTask(id);
+  if (!t) throw new Error("not found");
+  const nextTitle = title.trim();
+  if (!nextTitle) throw new HttpError(400, "title required");
+  assertTextLimit(nextTitle, MAX_TITLE_CHARS, "title");
+  flushPendingPatch(id);
+  const fresh = getTask(id) ?? t;
+  if (fresh.title === nextTitle) return fresh;
+  return patchDurable(id, { title: nextTitle });
 }
 
 const TERMINAL_ARCHIVE: TaskStatus[] = ["succeeded", "failed", "stopped"];

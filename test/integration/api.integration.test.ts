@@ -318,6 +318,21 @@ describe("integration I1–I12", () => {
     const { task: draft } = await jsonOf(draftRes);
     assert.equal(draft.status, "draft");
 
+    const patchTitleRes = await app.request(`/api/tasks/${draft.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "已编辑的标题" }),
+    });
+    assert.equal(patchTitleRes.status, 200);
+    assert.equal((await jsonOf(patchTitleRes)).task.title, "已编辑的标题");
+
+    const emptyTitleRes = await app.request(`/api/tasks/${draft.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "   " }),
+    });
+    assert.equal(emptyTitleRes.status, 400);
+
     const startRes = await app.request(`/api/tasks/${draft.id}/start`, {
       method: "POST",
     });
