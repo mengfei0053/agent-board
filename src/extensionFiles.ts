@@ -125,6 +125,8 @@ function sameNativeServer(left: unknown, right: unknown): boolean {
     const copy = { ...value };
     if ((copy.type === "stdio" && copy.command) || (copy.type === "http" && copy.url)) delete copy.type;
     if (copy.transport === "http" && copy.url) delete copy.transport;
+    if (objectMap(copy.env) && !Object.keys(copy.env).length) delete copy.env;
+    if (objectMap(copy.headers) && !Object.keys(copy.headers).length) delete copy.headers;
     return copy;
   };
   return equalNativeValues(normalize(left), normalize(right));

@@ -61,6 +61,23 @@ function parseConfig(name: string, raw: unknown, previous?: McpServer): McpServe
   return parseWorkspaceMcp(JSON.stringify({ mcpServers: { [name]: config } }))![name];
 }
 
+function parseSkillDescription(frontmatter: string): string {
+  const match = /^description:[ \t]*(.*)$/m.exec(frontmatter);
+  if (!match) return "";
+  const first = match[1].trim();
+  if (/^[>|][-+]?$/.test(first) || !first) {
+    const rest = frontmatter.slice(match.index + match[0].length);
+    const lines: string[] = [];
+    for (const line of rest.split(/\r?\n/).slice(1)) {
+      if (!line.trim()) { if (lines.length) continue; else break; }
+      if (!/^[ \t]+/.test(line)) break;
+      lines.push(line.trim());
+    }
+    return lines.join(" ").slice(0, 300);
+  }
+  return first.replace(/^(['"])([\s\S]*)\1$/, "$2").trim().slice(0, 300);
+}
+
 /** Copy complete skill packages while bounding size and rejecting links outside the package. */
 function copySkill(source: string, destination: string): void {
   const root = realpathSync(source);
@@ -202,7 +219,9 @@ export class ExtensionManager {
       if ((type && !["stdio", "http", "streamable-http"].includes(String(type))) || (transport && !["http", "stdio"].includes(String(transport)))) {
         throw new HttpError(400, `MCP ${name} 使用暂不支持的传输类型`);
       }
-      const server = { ...rest, ...(http_headers ? { headers: http_headers } : {}) };
+      const server = { ...rest, ...(http_headers ? { headers: http_headers } : {}) } as Record<string, unknown>;
+      if (objectMap(server.env) && !Object.keys(server.env).length) delete server.env;
+      if (objectMap(server.headers) && !Object.keys(server.headers).length) delete server.headers;
       const previous = catalog.mcp.find(entry => entry.name === name);
       if (previous && !isDeepStrictEqual(previous.config, parseConfig(name, server))) {
         throw new HttpError(409, `MCP ${name} 与管理中心同名但配置不同，请先处理冲突`);
@@ -248,7 +267,7 @@ export class ExtensionManager {
       if (!realpathSync(skillFile).startsWith(source + sep)) throw new HttpError(400, "SKILL.md 必须在技能目录内");
       const content = readFileSync(skillFile, "utf8");
       const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
-      if (!frontmatter || !/^name:[ \t]*\S+/m.test(frontmatter) || !/^description:[ \t]*\S+/m.test(frontmatter)) throw new HttpError(400, "SKILL.md 须包含 name 和 description frontmatter");
+      if (!frontmatter || !/^name:[ \t]*\S+/m.test(frontmatter) || !/^description:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(frontmatter)) throw new HttpError(400, "SKILL.md 须包含 name 和 description frontmatter");
       const name = nameOf(body.name || basename(source));
       const target = join(this.deps.store, name);
       const restoring = source === target;
@@ -262,7 +281,7 @@ export class ExtensionManager {
           renameSync(join(staging, "skill"), target);
         } finally { rmSync(staging, { recursive: true, force: true }); }
       }
-      catalog.skills.push({ name, description: (/^description:[ \t]*(.+)$/m.exec(frontmatter)?.[1] ?? "").slice(0, 300), source: label, apps });
+      catalog.skills.push({ name, description: parseSkillDescription(frontmatter), source: label, apps });
       return restoring ? undefined : () => rmSync(target, { recursive: true, force: true });
     } finally { if (temporary) rmSync(temporary, { recursive: true, force: true }); }
   }

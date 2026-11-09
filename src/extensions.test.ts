@@ -291,3 +291,19 @@ test("deleting a skill removes same-name agent folders even when they were never
   for (const agent of ["cursor", "devin"] as const) assert.equal(existsSync(join(f.paths[agent].skills, "review")), false);
   assert.ok(existsSync(join(f.store, "review", "SKILL.md")));
 });
+
+test("multiline frontmatter descriptions and empty MCP env maps normalize cleanly across agents", async () => {
+  const f = fixture();
+  write(f.paths.claude.mcp, { mcpServers: { devtools: { type: "stdio", command: "npx", args: ["-y", "devtools"], env: {} } } });
+  write(f.paths.cursor.mcp, { mcpServers: { devtools: { command: "npx", args: ["-y", "devtools"] } } });
+  await f.manager.mutate("import-mcp", { revision: 0, agent: "claude" });
+  const afterMcp = await f.manager.mutate("import-mcp", { revision: 1, agent: "cursor" });
+  assert.deepEqual(afterMcp.mcp[0].apps, ["claude", "cursor"]);
+  assert.ok(afterMcp.syncResults.every(r => r.ok));
+  const folded = join(f.root, "folded");
+  mkdirSync(folded, { recursive: true });
+  writeFileSync(join(folded, "SKILL.md"), "---\nname: folded\ndescription: >-\n  First line\n  second line.\nversion: 1.0.0\n---\nBody\n");
+  const afterSkill = await f.manager.mutate("install-skill", { revision: 2, name: "folded", path: folded, apps: ["cursor"] });
+  assert.equal(afterSkill.skills[0].description, "First line second line.");
+});
+
