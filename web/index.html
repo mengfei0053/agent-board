@@ -291,8 +291,8 @@
           </div>
           <p id="continue-model-hint" class="muted continue-hint"></p>
           <div id="continue-quick-prompts" class="quick-prompts" hidden></div>
-          <ul id="followup-queue" class="followup-queue" hidden></ul>
-          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）。运行中按回车会加入排队"></textarea>
+          <ul id="followup-queue" class="followup-queue" hidden aria-label="待办下一轮提示词"></ul>
+          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）。运行中按回车作为待办下一轮提示词（最多 5 条）"></textarea>
           <div class="prompt-toolbar prompt-toolbar-inline" data-for="continue-prompt">
             <button type="button" class="secondary prompt-img-btn" data-for="continue-prompt">插入图片</button>
             <input type="file" class="prompt-img-file" data-for="continue-prompt" accept="image/png,image/jpeg,image/gif,image/webp" hidden />

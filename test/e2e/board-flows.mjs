@@ -524,6 +524,31 @@ async function main() {
       assert.equal(createdTodo?.kind, "codex");
       assert.equal(createdTodo?.model, "gpt-6.1-terra");
       assert.equal(createdTodo?.thinkingEffort, "medium");
+      assert.equal(createdTodo?.status, "queued");
+
+      // While task is active, pressing Enter in #continue-prompt queues up to 5 pending prompts without stopping the task
+      for (let i = 1; i <= 5; i++) {
+        await page.click("#continue-prompt");
+        await page.type("#continue-prompt", `待办提示词 ${i}`);
+        await page.keyboard.press("Enter");
+      }
+      assert.equal(state.tasks.get(createdTodo.id)?.status, "queued");
+      const queuedTexts = await page.$$eval("#followup-queue .followup-text", (els) =>
+        els.map((el) => el.textContent),
+      );
+      assert.deepEqual(queuedTexts, [
+        "待办提示词 1",
+        "待办提示词 2",
+        "待办提示词 3",
+        "待办提示词 4",
+        "待办提示词 5",
+      ]);
+      // 6th item is rejected with limit error
+      await page.type("#continue-prompt", "待办提示词 6");
+      await page.keyboard.press("Enter");
+      assert.equal(await page.$$eval("#followup-queue .followup-item", (els) => els.length), 5);
+      assert.match(await page.$eval("#continue-error", (el) => el.textContent || ""), /最多 5 条/);
+
       await closeDetailIfOpen(page);
       console.log("[e2e-board] E6 database model picker, thinking effort default, fuzzy search and Agent filtering ok");
     }

@@ -1479,6 +1479,9 @@ function clearContinuePrompt() {
   }
 }
 
+const MAX_FOLLOWUP_QUEUE = 5;
+let lastFollowupSig = "";
+
 function taskIsActive(task) {
   return Boolean(task && ["queued", "running", "blocked"].includes(task.status));
 }
@@ -1490,18 +1493,25 @@ function followupsOf(taskId) {
 function renderFollowupQueue(taskId) {
   if (!followupQueueEl) return;
   const items = taskId ? followupsOf(taskId) : [];
-  followupQueueEl.replaceChildren();
+  const sig = `${taskId || ""}\0${items.join("\x1f")}`;
   if (!items.length) {
+    lastFollowupSig = "";
+    followupQueueEl.replaceChildren();
     followupQueueEl.hidden = true;
     return;
   }
   followupQueueEl.hidden = false;
+  if (sig === lastFollowupSig && followupQueueEl.childNodes.length === items.length) {
+    return;
+  }
+  lastFollowupSig = sig;
+  followupQueueEl.replaceChildren();
   for (const [index, text] of items.entries()) {
     const item = document.createElement("li");
     item.className = "followup-item";
     const order = document.createElement("span");
     order.className = "followup-index";
-    order.textContent = String(index + 1);
+    order.textContent = `待办 ${index + 1}`;
     const body = document.createElement("span");
     body.className = "followup-text";
     body.textContent = text;
@@ -1509,28 +1519,44 @@ function renderFollowupQueue(taskId) {
     remove.type = "button";
     remove.className = "followup-remove";
     remove.dataset.followupIndex = String(index);
-    remove.setAttribute("aria-label", "移除排队消息");
+    remove.setAttribute("aria-label", "移除待办提示词");
     remove.title = "移除";
     remove.textContent = "×";
     item.append(order, body, remove);
-    followupQueueEl.appendChild(item);
+    followupQueueEl.append(item);
   }
 }
 
 function queueFollowup(taskId, text) {
   const prompt = String(text || "").trim();
-  if (!taskId || !prompt) return false;
-  const next = followupsOf(taskId).concat(prompt);
+  if (!taskId || !prompt) return { ok: false, reason: "empty" };
+  const current = followupsOf(taskId);
+  if (current.length >= MAX_FOLLOWUP_QUEUE) {
+    return {
+      ok: false,
+      reason: "limit",
+      error: `待办下一轮提示词最多 ${MAX_FOLLOWUP_QUEUE} 条`,
+    };
+  }
+  const next = current.concat(prompt);
   followupQueues.set(taskId, next);
   if (selectedId === taskId) renderFollowupQueue(taskId);
-  return true;
+  return { ok: true };
 }
 
 function removeFollowup(taskId, index) {
   const next = followupsOf(taskId).filter((_, i) => i !== index);
   if (next.length) followupQueues.set(taskId, next);
   else followupQueues.delete(taskId);
-  if (selectedId === taskId) renderFollowupQueue(taskId);
+  if (selectedId === taskId) {
+    if (continueError && !continueError.hidden && continueError.textContent?.includes("最多")) {
+      continueError.hidden = true;
+      continueError.textContent = "";
+    }
+    renderFollowupQueue(taskId);
+    const task = tasks.get(taskId);
+    if (task) paintDetail(task);
+  }
 }
 
 function renderQuickPromptButtons(container, targetId) {
@@ -2334,7 +2360,7 @@ function paintDetail(task) {
   const queued = followupsOf(task.id);
   continueBtn.hidden = task.status === "draft";
   continueBtn.disabled = !showContinue || submitting;
-  continueBtn.textContent = queued.length ? `继续任务（排队 ${queued.length}）` : "继续任务";
+  continueBtn.textContent = queued.length ? `继续任务（待办 ${queued.length}/${MAX_FOLLOWUP_QUEUE}）` : "继续任务";
   continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
   if (continueThinkingEffort) {
     continueThinkingEffort.disabled = !canContinue(task) || submitting;
@@ -2356,8 +2382,8 @@ function paintDetail(task) {
         ? `将续会话 ${task.sessionId}`
         : "无原会话：仅携带初始提示词和本轮指令重新执行，不恢复历史上下文"
       : queued.length
-        ? `任务运行中。已排队 ${queued.length} 条，结束后会按顺序继续`
-        : "任务运行中。输入内容后按回车，会加入排队";
+        ? `任务运行中。已添加 ${queued.length}/${MAX_FOLLOWUP_QUEUE} 条待办下一轮提示词，结束后将按顺序继续`
+        : `任务运行中。输入内容后按回车，作为待办下一轮提示词（最多 ${MAX_FOLLOWUP_QUEUE} 条）`;
 }
 
 function renderLogViewerFromCache() {
@@ -2707,6 +2733,7 @@ async function drainFollowup(id) {
   const prompt = queued[0];
   followupDraining.add(id);
   continuingTaskId = id;
+  let failed = false;
   if (selectedId === id) {
     continueError.hidden = true;
     continueBtn.disabled = true;
@@ -2719,32 +2746,50 @@ async function drainFollowup(id) {
       renderList();
     }
   } catch (err) {
+    failed = true;
     showContinueError(id, err);
   } finally {
     followupDraining.delete(id);
     continuingTaskId = null;
     const latest = tasks.get(selectedId);
     if (latest) paintDetail(latest);
+    const cur = tasks.get(id);
+    if (!failed && cur && cur.status === "succeeded" && followupsOf(id).length) {
+      void drainFollowup(id);
+    }
   }
 }
 
-continueBtn.addEventListener("click", async () => {
-  if (!selectedId || continuingTaskId) return;
+async function handleContinueAction() {
+  if (!selectedId) return;
   const id = selectedId;
   const task = tasks.get(id);
+  if (!task || task.status === "draft") return;
   const typed = continuePrompt.value.trim();
-  if (task && taskIsActive(task)) {
-    if (!queueFollowup(id, typed)) return;
+  if (taskIsActive(task) || continuingTaskId === id) {
+    const res = queueFollowup(id, typed);
+    if (!res.ok) {
+      if (res.error) showContinueError(id, new Error(res.error));
+      return;
+    }
+    if (continueError) {
+      continueError.hidden = true;
+      continueError.textContent = "";
+    }
     continuePrompt.value = "";
     paintDetail(tasks.get(id) || task);
     return;
   }
+  if (continuingTaskId) return;
+  const queued = followupsOf(id);
+  const useQueuedFirst = !typed && queued.length > 0;
+  const promptToUse = typed || (useQueuedFirst ? queued[0] : undefined);
   const model = continueModel.disabled ? "" : continueModelPicker.commitOrRevert();
   const effort = continueThinkingEffort && !continueThinkingEffort.disabled
     ? continueThinkingEffort.value.trim()
     : "";
   const body = {
-    prompt: typed || undefined,
+    prompt: promptToUse,
     model: model || undefined,
     thinkingEffort: effort || undefined,
   };
@@ -2755,6 +2800,7 @@ continueBtn.addEventListener("click", async () => {
   if (continueThinkingEffort) continueThinkingEffort.disabled = true;
   try {
     const data = await postContinue(id, body);
+    if (useQueuedFirst) removeFollowup(id, 0);
     if (data.task) {
       tasks.set(data.task.id, data.task);
       if (selectedId === id) clearContinuePrompt();
@@ -2764,9 +2810,13 @@ continueBtn.addEventListener("click", async () => {
     showContinueError(id, err);
   } finally {
     continuingTaskId = null;
-    const task = tasks.get(selectedId);
-    if (task) paintDetail(task);
+    const latest = tasks.get(selectedId);
+    if (latest) paintDetail(latest);
   }
+}
+
+continueBtn.addEventListener("click", () => {
+  void handleContinueAction();
 });
 
 document.getElementById("bulk-clear").onclick = () => {
@@ -2917,7 +2967,7 @@ continuePrompt?.addEventListener("keydown", (e) => {
   if (!promptEnterSubmits(e)) return;
   if (!selectedId || detailModal.classList.contains("hidden")) return;
   e.preventDefault();
-  continueBtn.click();
+  void handleContinueAction();
 });
 
 followupQueueEl?.addEventListener("click", (e) => {
