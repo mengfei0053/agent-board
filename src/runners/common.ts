@@ -376,9 +376,9 @@ export function spawnLogged(
     if (stream === "stdout") {
       opts.classifyLine?.(line, hooks);
       // Any new stdout line means the run is still working: only a silent
-      // settled process is a stuck one.
+      // settled process is a stuck one. Ignore passive extension UI widget ticks.
       if (opts.settleLine?.(line)) armSettleTimer();
-      else clearSettleTimer();
+      else if (!line.includes('"extension_ui_request"')) clearSettleTimer();
     }
     noteLineForRateLimit(line);
   };

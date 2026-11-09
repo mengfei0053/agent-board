@@ -152,17 +152,18 @@ export const piRunner: Runner = {
             toolName?: string;
           };
           if (!ev.type) return;
-          if (
-            ev.type === "extension_ui_request" &&
-            typeof ev.id === "string" &&
-            (ev.method === "select" ||
-              ev.method === "confirm" ||
-              ev.method === "input" ||
-              ev.method === "editor")
-          ) {
-            handleRef?.writeStdin?.(
-              `${JSON.stringify({ type: "extension_ui_response", id: ev.id, cancelled: true })}\n`,
-            );
+          if (ev.type === "extension_ui_request") {
+            if (
+              typeof ev.id === "string" &&
+              (ev.method === "select" ||
+                ev.method === "confirm" ||
+                ev.method === "input" ||
+                ev.method === "editor")
+            ) {
+              handleRef?.writeStdin?.(
+                `${JSON.stringify({ type: "extension_ui_response", id: ev.id, cancelled: true })}\n`,
+              );
+            }
             return;
           }
           if (ev.type === "response") {

@@ -2745,7 +2745,12 @@ async function postSteer(id, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    if (res.status === 404 && !data.error) {
+      throw new Error("后端服务尚未重启加载新接口，请在当前运行任务结束后重启 agent-board 服务");
+    }
+    throw new Error(data.error || res.statusText);
+  }
   return data;
 }
 
