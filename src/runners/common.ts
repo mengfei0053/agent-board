@@ -46,37 +46,40 @@ export function lineLooksLike429(line: string): boolean {
   return false;
 }
 
-/** Codex (and similar) already exhausted their own reconnect budget for 429. */
-export function isExceededRetryLimit429(line: string): boolean {
-  return /exceeded\s+retry\s+limit/i.test(line) && lineLooksLike429(line);
-}
-
-export function is429StrikeLine(line: string): boolean {
-  if (!lineLooksLike429(line)) return false;
+/** Inspect diagnostics, never quoted errors in assistant/tool payloads. */
+function rateLimitDiagnostic(line: string): string {
   const trimmed = line.trim();
   try {
     const ev = JSON.parse(trimmed) as {
       type?: string;
-      message?: string;
-      error?: { message?: string } | string;
+      message?: unknown;
+      error?: { message?: unknown } | string;
       status?: number | string;
     };
-    const t = String(ev.type || "").toLowerCase();
-    if (ERROR_TYPES.has(t) || t.includes("error") || t.includes("rate")) return true;
-    const msg =
-      (typeof ev.message === "string" && ev.message) ||
-      (typeof ev.error === "string" && ev.error) ||
-      (ev.error && typeof ev.error === "object" && ev.error.message) ||
-      "";
-    if (lineLooksLike429(String(msg))) return true;
-    if (String(ev.status) === "429") return true;
+    if (!ev || !ERROR_TYPES.has(String(ev.type || "").toLowerCase())) return "";
+    const message = typeof ev.message === "string" ? ev.message : "";
+    const error = typeof ev.error === "string" ? ev.error : ev.error?.message;
+    return [message, typeof error === "string" ? error : "", String(ev.status) === "429" ? "HTTP 429" : ""].join(" ");
   } catch {
-    /* plain text */
+    // A truncated JSON payload is not a trusted plain-text diagnostic either.
+    return /^[{[]/.test(trimmed) ? "" : trimmed;
   }
+}
+
+/** Codex (and similar) already exhausted their own reconnect budget for 429. */
+export function isExceededRetryLimit429(line: string): boolean {
+  const diagnostic = rateLimitDiagnostic(line);
+  return /exceeded\s+retry\s+limit/i.test(diagnostic) && lineLooksLike429(diagnostic);
+}
+
+export function is429StrikeLine(line: string): boolean {
+  const diagnostic = rateLimitDiagnostic(line);
+  if (!lineLooksLike429(diagnostic)) return false;
+  // Structured events passed the error-type allowlist above.
+  if (line.trim().startsWith("{")) return true;
   // stderr / reconnect banners
-  if (/reconnecting/i.test(line)) return true;
-  if (/status[:\s]+429|HTTP\/?\S*\s*429|error[^\\n]{0,40}429/i.test(line)) return true;
-  return false;
+  return /reconnecting/i.test(diagnostic) ||
+    /status[:\s]+429|HTTP\/?\S*\s*429|error[^\\n]{0,40}429/i.test(diagnostic);
 }
 
 export function isProgressLine(line: string): boolean {

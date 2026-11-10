@@ -97,12 +97,25 @@ export function buildPiRpcArgs(
   };
 }
 
+type PiMessageOutcome = {
+  role?: string;
+  stopReason?: string;
+  errorMessage?: string;
+};
+
+function assistantError(message: PiMessageOutcome): string | undefined {
+  return message.stopReason === "error"
+    ? message.errorMessage?.trim() || "pi assistant error (see logs)"
+    : undefined;
+}
+
 export const piRunner: Runner = {
   start(task, hooks, opts) {
     const built = buildPiRpcArgs(task, opts);
     if (built.assignSession) hooks.onStatus({ sessionId: built.sessionId });
 
     let status = task.status;
+    let modelError: string | undefined;
     let steerSeq = 0;
     const pendingSteerIds = new Set<string>();
     let runsStarted = 0;
@@ -116,7 +129,17 @@ export const piRunner: Runner = {
       handleRef?.endStdin?.();
     };
 
-    const handle = spawnLogged(resolveCliCommand("pi"), built.args, task.cwd, hooks, {
+    const handle = spawnLogged(resolveCliCommand("pi"), built.args, task.cwd, {
+      onLog: hooks.onLog,
+      onStatus: (patch) => {
+        // Wait for exit/watchdog so retries can recover and all output is retained.
+        if (patch.status === "succeeded" && modelError) {
+          patch = { ...patch, status: "failed", error: modelError };
+        }
+        if (patch.status) status = patch.status;
+        hooks.onStatus(patch);
+      },
+    }, {
       cliKind: "pi",
       stdinPipe: true,
       workspaceMcp: opts?.workspaceMcp,
@@ -143,6 +166,9 @@ export const piRunner: Runner = {
             command?: string;
             success?: boolean;
             error?: string;
+            message?: PiMessageOutcome;
+            messages?: PiMessageOutcome[];
+            finalError?: string;
             data?: {
               disposition?: string;
               sessionId?: string;
@@ -218,6 +244,21 @@ export const piRunner: Runner = {
               }
             }
             return;
+          }
+          if (ev.type === "auto_retry_end") {
+            modelError = ev.success === true
+              ? undefined
+              : ev.success === false
+                ? ev.finalError?.trim() || modelError || "pi auto retry failed"
+                : modelError;
+          } else if (ev.type === "agent_end" && Array.isArray(ev.messages)) {
+            const lastAssistant = [...ev.messages].reverse().find(m => m?.role === "assistant");
+            if (lastAssistant) modelError = assistantError(lastAssistant);
+          } else if (
+            (ev.type === "message_end" || ev.type === "turn_end") &&
+            ev.message?.role === "assistant"
+          ) {
+            modelError = assistantError(ev.message);
           }
           h.onStatus({ lastEvent: ev.type });
           if (ev.type === "agent_start" || ev.type === "tool_execution_start") {
