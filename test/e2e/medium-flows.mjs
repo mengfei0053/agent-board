@@ -25,6 +25,7 @@ async function main() {
         status: "succeeded",
         iteration: 2,
         sessionId: "sess_e2e_1",
+        createdAt: "2026-01-01T00:50:00.000Z",
         endedAt: "2026-01-01T01:10:00.000Z",
         summary: "done",
         prompts: [
@@ -35,6 +36,18 @@ async function main() {
           { iteration: 1, text: "第一轮结果", at: "2026-01-01T01:00:00.000Z" },
           { iteration: 2, text: "验证完成", at: "2026-01-01T01:10:00.000Z" },
         ],
+      }),
+      makeTask({
+        id: "task_done_2",
+        workspaceId: "ws_default",
+        title: "更晚创建但较早完成",
+        prompt: "另一个任务",
+        status: "succeeded",
+        iteration: 1,
+        sessionId: "sess_e2e_2",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        endedAt: "2026-01-02T01:00:00.000Z",
+        summary: "done 2",
       }),
       makeTask({
         id: "task_live_duration",
@@ -117,6 +130,11 @@ async function main() {
     // —— E6 detail continue + quick prompts ——
     await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector('.card[data-id="task_done_1"]');
+    const doneOrderBefore = await page.$$eval(
+      "#list-done .card[data-id]",
+      (els) => els.map((el) => el.getAttribute("data-id")),
+    );
+    assert.deepEqual(doneOrderBefore, ["task_done_2", "task_done_1"]);
     await page.click('.card[data-id="task_done_1"]');
     await page.waitForSelector("#detail-modal:not(.hidden)");
     await page.waitForSelector("#continue-row:not([hidden])");
@@ -191,6 +209,11 @@ async function main() {
       `prompts=${JSON.stringify(contTask.prompts)}`,
     );
     assert.ok((contTask.iteration || 1) >= 2);
+    const doneOrderAfter = await page.$$eval(
+      "#list-done .card[data-id]",
+      (els) => els.map((el) => el.getAttribute("data-id")),
+    );
+    assert.deepEqual(doneOrderAfter, ["task_done_1", "task_done_2"]);
     console.log("[e2e-medium] E6 continue + quick prompts OK");
 
     // close detail

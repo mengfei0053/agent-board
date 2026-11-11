@@ -1,5 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
-import { mergeBoardTask } from "./boardTaskMerge.js";
+import { mergeBoardTask, sortLaneTasks } from "./boardTaskMerge.js";
 import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
 import { renderGitStatus } from "./git-status-view.js";
 import { formatRoundDuration, formatTaskDuration } from "./roundTime.js";
@@ -1438,7 +1438,7 @@ function renderList() {
   }
   let total = 0;
   for (const key of LANES) {
-    const items = buckets[key].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const items = sortLaneTasks(key, buckets[key]);
     total += items.length;
     let state = laneVirtualState.get(key);
     if (!state) {
@@ -2659,7 +2659,7 @@ stopBtn.addEventListener("click", async () => {
   stopBtn.disabled = true;
   const prev = tasks.get(id);
   if (prev && ["queued", "running", "blocked"].includes(prev.status)) {
-    const optimistic = { ...prev, status: "stopped", pid: undefined };
+    const optimistic = { ...prev, status: "stopped", pid: undefined, endedAt: new Date().toISOString() };
     tasks.set(id, optimistic);
     scheduleRenderList();
     schedulePaintDetail(optimistic);
