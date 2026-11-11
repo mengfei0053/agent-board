@@ -40,7 +40,7 @@ const {
 } = await import("../../src/store.js");
 const { clearHandlesForTests, setNextTaskIdForTests } = await import("../../src/manager.js");
 const { runners } = await import("../../src/runners/index.js");
-const { syncAgentModelsOnStartup } = await import("../../src/agentModels.js");
+const { syncAgentModelsOnStartup, upsertAgentModelsForKind } = await import("../../src/agentModels.js");
 
 await initStore();
 installFakeRunners(runners as Record<string, (typeof runners)[keyof typeof runners]>);
@@ -148,7 +148,7 @@ describe("integration I1–I12", () => {
     assert.ok(merged.history.pi.includes("parallel-b"));
   });
 
-  it("syncAgentModelsOnStartup upserts models and thinking efforts and skips failed agents", async () => {
+  it("syncAgentModelsOnStartup replaces available models and thinking efforts and skips failed agents", async () => {
     const firstSync = await syncAgentModelsOnStartup(async (kind) => {
       if (kind === "pi") {
         return [
@@ -179,7 +179,7 @@ describe("integration I1–I12", () => {
       { model: "sonnet", thinkingEfforts: ["low", "medium", "high", "max"] },
     ]);
 
-    // Second sync: pi updates existing effort + adds new model; claude & cursor fail -> DB preserves old rows
+    // Second sync: pi updates efforts, adds a model, and removes a stale one; failed agents keep old rows.
     const secondSync = await syncAgentModelsOnStartup(async (kind) => {
       if (kind === "pi") {
         return [
@@ -204,7 +204,6 @@ describe("integration I1–I12", () => {
 
     const afterResp = await jsonOf(await app.request("/api/agent-models"));
     assert.deepEqual(afterResp.models.pi, [
-      { model: "api/claude-haiku-4-5", thinkingEfforts: [] },
       { model: "wb/cn:deepseek-v4.1-flash", thinkingEfforts: ["low", "medium", "high", "max"] },
       { model: "wb/cn:glm-5.3", thinkingEfforts: ["medium", "high"] },
     ]);
@@ -223,6 +222,47 @@ describe("integration I1–I12", () => {
 
     const badKind = await app.request("/api/agent-models?kind=unknown");
     assert.equal(badKind.status, 400);
+
+    // A smaller successful list must also remove models without affecting other agents.
+    await upsertAgentModelsForKind("pi", [
+      { model: "wb/cn:glm-5.3", thinkingEfforts: ["medium", "high"] },
+    ]);
+    const smallerResp = await jsonOf(await app.request("/api/agent-models"));
+    assert.deepEqual(smallerResp.models, {
+      ...afterResp.models,
+      pi: [{ model: "wb/cn:glm-5.3", thinkingEfforts: ["medium", "high"] }],
+    });
+  });
+
+  it("model sync preserves stored rows when the incoming list is empty or normalizes to empty", async () => {
+    await upsertAgentModelsForKind("pi", [{ model: "existing", thinkingEfforts: ["high"] }]);
+    const before = await getPool().query("SELECT * FROM agent_models ORDER BY kind, model");
+    assert.equal(await upsertAgentModelsForKind("pi", []), 0);
+    assert.equal(await upsertAgentModelsForKind("pi", [{ model: "  ", thinkingEfforts: [] }]), 0);
+    const sync = await syncAgentModelsOnStartup(async () => [{ model: "  ", thinkingEfforts: [] }]);
+    assert.deepEqual(sync.updated, []);
+    assert.equal(sync.failed.length, 6);
+    assert.deepEqual((await getPool().query("SELECT * FROM agent_models ORDER BY kind, model")).rows, before.rows);
+  });
+
+  it("model sync rolls back stale-model deletion and effort updates when a database write fails", async () => {
+    await upsertAgentModelsForKind("pi", [
+      { model: "existing", thinkingEfforts: ["low"] },
+      { model: "stale", thinkingEfforts: [] },
+    ]);
+    const before = await getPool().query("SELECT * FROM agent_models ORDER BY kind, model");
+    await getPool().query("ALTER TABLE agent_models ADD CONSTRAINT reject_model_sync_test CHECK (model <> 'rejected')");
+    try {
+      const sync = await syncAgentModelsOnStartup(async (kind) => kind === "pi" ? [
+        { model: "existing", thinkingEfforts: ["high"] },
+        { model: "rejected", thinkingEfforts: [] },
+      ] : []);
+      assert.ok(sync.failed.includes("pi"));
+      assert.deepEqual(sync.updated, []);
+      assert.deepEqual((await getPool().query("SELECT * FROM agent_models ORDER BY kind, model")).rows, before.rows);
+    } finally {
+      await getPool().query("ALTER TABLE agent_models DROP CONSTRAINT reject_model_sync_test");
+    }
   });
 
   it("I1 workspace CRUD + settings persist to Postgres", async () => {

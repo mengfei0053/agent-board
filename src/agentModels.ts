@@ -673,8 +673,8 @@ export async function fetchAgentModelsFromCli(
 }
 
 /**
- * Upsert fetched models and their supported thinking efforts for one agent kind.
- * Does not delete or overwrite when `records` is empty.
+ * Atomically upsert fetched models and remove stale models for one agent kind.
+ * Does not delete or overwrite when `records` is empty or normalizes to empty.
  */
 export async function upsertAgentModelsForKind(
   kind: AgentKind,
@@ -693,14 +693,20 @@ export async function upsertAgentModelsForKind(
   }));
 
   await getPool().query(
-    `INSERT INTO agent_models (kind, model, thinking_efforts, updated_at)
-     SELECT kind, model, thinking_efforts, NOW()
-     FROM jsonb_to_recordset($1::jsonb)
-       AS incoming(kind TEXT, model TEXT, thinking_efforts JSONB)
+    `WITH incoming AS (
+       SELECT * FROM jsonb_to_recordset($1::jsonb)
+         AS records(kind TEXT, model TEXT, thinking_efforts JSONB)
+     ), deleted AS (
+       DELETE FROM agent_models
+       WHERE kind = $2
+         AND model NOT IN (SELECT model FROM incoming)
+     )
+     INSERT INTO agent_models (kind, model, thinking_efforts, updated_at)
+     SELECT kind, model, thinking_efforts, NOW() FROM incoming
      ON CONFLICT (kind, model) DO UPDATE SET
        thinking_efforts = EXCLUDED.thinking_efforts,
        updated_at = EXCLUDED.updated_at`,
-    [JSON.stringify(payload)],
+    [JSON.stringify(payload), kind],
   );
   return normalized.length;
 }
@@ -748,8 +754,8 @@ export async function readAgentModels(
 
 /**
  * Fetch models and supported thinking efforts for every supported agent on startup.
- * Upserts into `agent_models` when an agent succeeds; leaves existing DB rows
- * untouched when fetching for that agent fails or returns empty.
+ * Replaces that agent's available models in `agent_models` on success; leaves
+ * existing DB rows untouched when fetching for that agent fails or returns empty.
  */
 export async function syncAgentModelsOnStartup(
   fetcher: AgentModelFetcher = fetchAgentModelsFromCli,
