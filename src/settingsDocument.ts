@@ -1,4 +1,10 @@
 import {
+  applyAgentDefaultsMemory,
+  getAgentDefaultsSettings,
+  planAgentDefaults,
+  type AgentDefaultsByKind,
+} from "./agentDefaults.js";
+import {
   AGENT_KINDS,
   CLAUDE_DEFAULT_EFFORTS,
   normalizeAgentModelRecords,
@@ -197,6 +203,7 @@ export async function readSettingsDocument(): Promise<{
   processEnv: ReturnType<typeof getProcessEnvSettings>["processEnv"];
   quickPrompts: ReturnType<typeof getQuickPromptSettings>["quickPrompts"];
   codexSandbox: boolean;
+  agentDefaults: AgentDefaultsByKind;
   agentModels: AgentModelsByKind;
   thinkingEfforts: ThinkingEffortsByKind;
   modelHistory: ModelHistoryByKind;
@@ -211,6 +218,7 @@ export async function readSettingsDocument(): Promise<{
     ...getProcessEnvSettings(),
     ...getQuickPromptSettings(),
     ...getCodexSandboxSettings(),
+    ...getAgentDefaultsSettings(),
     ...catalog,
   };
 }
@@ -250,6 +258,7 @@ async function writeSettingsBody(
         ["proxy_env", "{}"],
         ["process_env", "{}"],
         ["codex_sandbox", "true"],
+        ["agent_defaults", "{}"],
       ]);
     } catch {
       throw new HttpError(500, "settings write failed");
@@ -258,6 +267,7 @@ async function writeSettingsBody(
     applyProxyEnvMemory({});
     applyProcessEnvMemory({});
     applyCodexSandboxMemory(true);
+    applyAgentDefaultsMemory({});
     return readSettingsDocument();
   }
 
@@ -266,8 +276,9 @@ async function writeSettingsBody(
   const hasProcessEnv = raw.processEnv != null;
   const hasQuick = raw.quickPrompts != null;
   const hasCodexSandbox = raw.codexSandbox != null;
-  if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox) {
-    throw new HttpError(400, "cliPaths, proxyEnv, processEnv, quickPrompts, and/or codexSandbox required (or clear: true)");
+  const hasAgentDefaults = raw.agentDefaults != null;
+  if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox && !hasAgentDefaults) {
+    throw new HttpError(400, "cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, and/or agentDefaults required (or clear: true)");
   }
 
   let cliPlan: ReturnType<typeof planCliPathOverrides> | undefined;
@@ -320,10 +331,12 @@ async function writeSettingsBody(
 
   let quickPlan: ReturnType<typeof planQuickPrompts> | undefined;
   let codexPlan: ReturnType<typeof planCodexSandbox> | undefined;
+  let agentDefaultsPlan: ReturnType<typeof planAgentDefaults> | undefined;
   try {
     if (hasProcessEnv) processPlan = planProcessEnvOverrides(raw.processEnv);
     if (hasQuick) quickPlan = planQuickPrompts(raw.quickPrompts);
     if (hasCodexSandbox) codexPlan = planCodexSandbox(raw.codexSandbox);
+    if (hasAgentDefaults) agentDefaultsPlan = planAgentDefaults(raw.agentDefaults);
   } catch (err) {
     throw settingsValidationError(err);
   }
@@ -334,6 +347,7 @@ async function writeSettingsBody(
   if (processPlan) entries.push(["process_env", processPlan.json]);
   if (quickPlan) entries.push(["quick_prompts", quickPlan.json]);
   if (codexPlan) entries.push(["codex_sandbox", codexPlan.json]);
+  if (agentDefaultsPlan) entries.push(["agent_defaults", agentDefaultsPlan.json]);
   try {
     await metaUpsert(entries);
   } catch {
@@ -344,6 +358,7 @@ async function writeSettingsBody(
   if (processPlan) applyProcessEnvMemory(processPlan.next);
   if (quickPlan) applyQuickPromptsMemory(quickPlan.next);
   if (codexPlan) applyCodexSandboxMemory(codexPlan.next);
+  if (agentDefaultsPlan) applyAgentDefaultsMemory(agentDefaultsPlan.next);
   return readSettingsDocument();
 }
 

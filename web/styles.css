@@ -2891,9 +2891,28 @@ button.topbar-brand[aria-expanded="true"] {
   line-height: 1.4;
 }
 .settings-row input[type="text"]::placeholder { color: var(--faint); }
+.settings-row .model-select {
+  margin-top: 0;
+}
+.settings-row input.model-select-input {
+  padding-right: 48px;
+}
+.settings-row select.settings-select {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  width: 100%;
+  box-sizing: border-box;
+  line-height: 1.4;
+}
 .settings-row input[type="text"]:focus,
 .settings-row input[type="password"]:focus,
 .settings-row input[type="url"]:focus,
+.settings-row select.settings-select:focus,
 .pair-token-field input:focus {
   outline: none;
   border-color: var(--accent);

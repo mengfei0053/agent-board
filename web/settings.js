@@ -148,6 +148,33 @@ document.getElementById("btn-copy-pair-code").addEventListener("click", async ()
 });
 
 const CLI_ORDER = ["pi", "claude", "agent", "devin", "codex", "kimi"];
+const AGENT_KIND_BY_CLI = {
+  pi: "pi",
+  claude: "claude",
+  agent: "cursor",
+  devin: "devin",
+  codex: "codex",
+  kimi: "kimi",
+};
+const EFFORT_CANONICAL_ORDER = [
+  "none",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
+const DEFAULT_EFFORTS_BY_KIND = {
+  pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  cursor: ["low", "medium", "high", "xhigh", "max"],
+  devin: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["low", "medium", "high", "xhigh", "max"],
+  kimi: [],
+};
 const PROXY_ORDER = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"];
 
 const KIND_LABELS = {
@@ -177,6 +204,136 @@ let lastQuick = [];
 let lastProcessEnv = {};
 /** @type {boolean} default ON */
 let lastCodexSandbox = true;
+/** @type {Record<string, { model: string, thinkingEffort: string }>} */
+let lastAgentDefaults = {};
+/** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
+let lastAgentModels = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+/** @type {Record<string, string[]>} */
+let lastThinkingEfforts = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+
+function agentKindOf(cliKey) {
+  return AGENT_KIND_BY_CLI[cliKey] || cliKey;
+}
+
+function extractModelName(item) {
+  if (typeof item === "string") return item.trim();
+  if (item && typeof item.model === "string") return item.model.trim();
+  return "";
+}
+
+function normalizeModelList(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of rawList) {
+    const model = extractModelName(item);
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    const thinkingEfforts = Array.isArray(item?.thinkingEfforts)
+      ? item.thinkingEfforts.filter((e) => typeof e === "string" && e.trim()).map((e) => e.trim())
+      : [];
+    out.push({ model, thinkingEfforts });
+  }
+  return out;
+}
+
+function aggregatedModelEfforts(models) {
+  const aggregated = new Set();
+  for (const item of models) {
+    for (const effort of item.thinkingEfforts || []) aggregated.add(effort);
+  }
+  if (!aggregated.size) return null;
+  const ordered = EFFORT_CANONICAL_ORDER.filter((e) => aggregated.has(e));
+  for (const e of aggregated) {
+    if (!ordered.includes(e)) ordered.push(e);
+  }
+  return ordered;
+}
+
+function getEffortsForAgentModel(agentKind, modelName) {
+  const models = lastAgentModels[agentKind] || [];
+  const lower = String(modelName || "").trim().toLowerCase();
+  const matched = lower ? models.find((m) => m.model.toLowerCase() === lower) : null;
+  if (matched?.thinkingEfforts?.length) return matched.thinkingEfforts;
+  const aggregated = aggregatedModelEfforts(models);
+  if (aggregated) return aggregated;
+  const fromCatalog = lastThinkingEfforts[agentKind];
+  return (Array.isArray(fromCatalog) && fromCatalog.length ? fromCatalog : DEFAULT_EFFORTS_BY_KIND[agentKind]) || [];
+}
+
+function renderEffortOptionsHtml(agentKind, modelName, selectedEffort) {
+  const efforts = getEffortsForAgentModel(agentKind, modelName);
+  const current = String(selectedEffort || "").trim();
+  const validCurrent = current && (!efforts.length || efforts.includes(current)) ? current : "";
+  const defaultOpt = `<option value=""${!validCurrent ? " selected" : ""}>默认（自动）</option>`;
+  const items = efforts.map(
+    (effort) => `<option value="${escapeHtml(effort)}"${effort === validCurrent ? " selected" : ""}>${escapeHtml(effort)}</option>`,
+  );
+  return [defaultOpt, ...items].join("");
+}
+
+function renderAgentDefaultsBlock(kind) {
+  const agentKind = agentKindOf(kind);
+  const label = KIND_LABELS[kind] || kind;
+  const cur = lastAgentDefaults[agentKind] || { model: "", thinkingEffort: "" };
+  const modelVal = cur.model || "";
+  const effortVal = cur.thinkingEffort || "";
+  return `
+    <section class="settings-block" aria-labelledby="defaults-title-${escapeHtml(kind)}">
+      <header class="settings-block-head">
+        <h3 id="defaults-title-${escapeHtml(kind)}" class="settings-sub-title">默认模型与思考强度</h3>
+        <p class="settings-block-desc">设置 ${escapeHtml(label)} 的默认模型与思考强度；打开新建任务弹框或切换到该 Agent 时自动选中。</p>
+      </header>
+      <div class="settings-grid-2">
+        <label class="settings-row">
+          <span class="settings-label">
+            <strong>默认模型</strong>
+            <span class="muted settings-default">留空则不预设模型</span>
+          </span>
+          <div class="model-select" data-settings-model-select="${escapeHtml(agentKind)}">
+            <input
+              type="text"
+              name="default-model-${escapeHtml(agentKind)}"
+              data-default-model="${escapeHtml(agentKind)}"
+              class="model-select-input"
+              value="${escapeHtml(modelVal)}"
+              data-selected-model="${escapeHtml(modelVal)}"
+              placeholder="搜索或选择默认模型（留空不指定）"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="model-select-clear"
+              data-default-model-clear="${escapeHtml(agentKind)}"
+              aria-label="清空默认模型"
+              title="清空"
+              ${modelVal ? "" : "hidden"}
+            >×</button>
+            <span class="model-select-caret" aria-hidden="true">▾</span>
+            <div
+              class="model-select-dropdown hidden"
+              data-default-model-dropdown="${escapeHtml(agentKind)}"
+              role="listbox"
+            ></div>
+          </div>
+        </label>
+        <label class="settings-row">
+          <span class="settings-label">
+            <strong>默认思考强度</strong>
+            <span class="muted settings-default">留空则使用默认强度</span>
+          </span>
+          <select
+            name="default-effort-${escapeHtml(agentKind)}"
+            data-default-effort="${escapeHtml(agentKind)}"
+            class="settings-select"
+          >
+            ${renderEffortOptionsHtml(agentKind, modelVal, effortVal)}
+          </select>
+        </label>
+      </div>
+    </section>`;
+}
 
 function newQuickId() {
   return `qp_${Math.random().toString(36).slice(2, 10)}`;
@@ -429,6 +586,7 @@ function renderPanels() {
         ${hidden ? "hidden" : ""}
       >
         <div class="settings-agent-card">
+          ${renderAgentDefaultsBlock(kind)}
           ${renderCliBlock(kind, lastCli[kind])}
           ${renderProxyBlock(kind, lastProxy[kind])}
           ${renderProcessEnvBlock(kind)}
@@ -531,16 +689,34 @@ function syncProcessEnvFromDom() {
   return lastProcessEnv;
 }
 
+function applyAgentDefaultsFromData(data) {
+  lastAgentDefaults = {};
+  for (const kind of CLI_ORDER) {
+    const agentKind = agentKindOf(kind);
+    const rawDef = data.agentDefaults?.[agentKind] || data.agentDefaults?.[kind] || {};
+    lastAgentDefaults[agentKind] = {
+      model: typeof rawDef.model === "string" ? rawDef.model.trim() : "",
+      thinkingEffort: typeof rawDef.thinkingEffort === "string" ? rawDef.thinkingEffort.trim() : "",
+    };
+    if (Array.isArray(data.agentModels?.[agentKind])) {
+      lastAgentModels[agentKind] = normalizeModelList(data.agentModels[agentKind]);
+    }
+    if (Array.isArray(data.thinkingEfforts?.[agentKind])) {
+      lastThinkingEfforts[agentKind] = data.thinkingEfforts[agentKind].filter(Boolean);
+    }
+  }
+}
+
 function renderAll(data) {
   lastCli = data.cliPaths || {};
   lastProxy = data.proxyEnv || {};
   lastProcessEnv = {};
   for (const kind of CLI_ORDER) {
     const map = data.processEnv && typeof data.processEnv === "object" ? data.processEnv[kind] : null;
-    lastProcessEnv[kind] =
-      map && typeof map === "object" && !Array.isArray(map)
-        ? Object.entries(map).map(([key, value]) => ({ key, value: String(value ?? "") }))
-        : [];
+    const isObj = Boolean(map && typeof map === "object" && !Array.isArray(map));
+    lastProcessEnv[kind] = isObj
+      ? Object.entries(map).map(([key, value]) => ({ key, value: String(value ?? "") }))
+      : [];
   }
   lastQuick = Array.isArray(data.quickPrompts)
     ? data.quickPrompts.map((x) => ({
@@ -550,14 +726,30 @@ function renderAll(data) {
       }))
     : [];
   lastCodexSandbox = data.codexSandbox !== false;
+  applyAgentDefaultsFromData(data);
   renderQuickPrompts();
   renderTabs();
   renderPanels();
   showKind(activeKind);
 }
 
+function collectAgentDefaultsFromDom() {
+  const agentDefaults = {};
+  for (const kind of CLI_ORDER) {
+    const agentKind = agentKindOf(kind);
+    const modelInput = panelsEl.querySelector(`input[data-default-model="${CSS.escape(agentKind)}"]`);
+    const effortSelect = panelsEl.querySelector(`select[data-default-effort="${CSS.escape(agentKind)}"]`);
+    const model = (modelInput ? modelInput.value : lastAgentDefaults[agentKind]?.model || "").trim();
+    const thinkingEffort = (effortSelect ? effortSelect.value : lastAgentDefaults[agentKind]?.thinkingEffort || "").trim();
+    agentDefaults[agentKind] = { model, thinkingEffort };
+  }
+  lastAgentDefaults = agentDefaults;
+  return agentDefaults;
+}
+
 function collectPayload() {
   syncProcessEnvFromDom();
+  const agentDefaults = collectAgentDefaultsFromDom();
   const cliPaths = {};
   for (const input of panelsEl.querySelectorAll("input[data-cli-key]")) {
     cliPaths[input.dataset.cliKey] = input.value;
@@ -596,7 +788,56 @@ function collectPayload() {
     }
     processEnv[kind] = map;
   }
-  return { cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox };
+  return { cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, agentDefaults };
+}
+
+function syncEffortSelectForAgent(agentKind, modelValue) {
+  const effortSelect = panelsEl.querySelector(`select[data-default-effort="${CSS.escape(agentKind)}"]`);
+  if (!effortSelect) return;
+  const prevEffort = effortSelect.value || "";
+  setElementHtml(effortSelect, renderEffortOptionsHtml(agentKind, modelValue, prevEffort));
+}
+
+function filterSettingsModels(agentKind, queryText) {
+  const list = lastAgentModels[agentKind] || [];
+  const q = String(queryText || "").trim().toLowerCase();
+  if (!q) return list;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  return list.filter((item) => {
+    const lower = item.model.toLowerCase();
+    return tokens.every((t) => lower.includes(t));
+  });
+}
+
+function renderSettingsModelDropdown(agentKind, filterQuery = "") {
+  const dropdown = panelsEl.querySelector(`[data-default-model-dropdown="${CSS.escape(agentKind)}"]`);
+  const input = panelsEl.querySelector(`input[data-default-model="${CSS.escape(agentKind)}"]`);
+  if (!dropdown || !input) return;
+  const current = input.value.trim();
+  const filtered = filterSettingsModels(agentKind, filterQuery);
+  const defaultBtn = `<button type="button" class="model-option model-option-default${!current ? " is-selected" : ""}" role="option" data-model-value="">默认模型（不指定）</button>`;
+  const body = filtered.length
+    ? filtered.map((item) => {
+        const sel = item.model === current;
+        return `<button type="button" class="model-option${sel ? " is-selected" : ""}" role="option" data-model-value="${escapeHtml(item.model)}"><span class="model-option-name">${escapeHtml(item.model)}</span></button>`;
+      }).join("")
+    : `<div class="model-option-empty muted">${(lastAgentModels[agentKind] || []).length ? "无匹配模型" : "暂无可用模型"}</div>`;
+  setElementHtml(dropdown, defaultBtn + body);
+}
+
+function setSettingsModelValue(agentKind, value) {
+  const input = panelsEl.querySelector(`input[data-default-model="${CSS.escape(agentKind)}"]`);
+  const clearBtn = panelsEl.querySelector(`button[data-default-model-clear="${CSS.escape(agentKind)}"]`);
+  const dropdown = panelsEl.querySelector(`[data-default-model-dropdown="${CSS.escape(agentKind)}"]`);
+  const nextVal = String(value || "").trim();
+  if (input) {
+    input.value = nextVal;
+    input.dataset.selectedModel = nextVal;
+  }
+  if (clearBtn) clearBtn.hidden = !nextVal;
+  dropdown?.classList.add("hidden");
+  syncEffortSelectForAgent(agentKind, nextVal);
+  setStatus("已修改默认模型（尚未保存）。");
 }
 
 tabsEl.addEventListener("click", (e) => {
@@ -607,6 +848,10 @@ tabsEl.addEventListener("click", (e) => {
 
 panelsEl.addEventListener("change", (e) => {
   const t = e.target;
+  if (t instanceof HTMLSelectElement && t.dataset.defaultEffort) {
+    setStatus("已修改默认思考强度（尚未保存）。");
+    return;
+  }
   if (!(t instanceof HTMLInputElement) || !t.matches("input[data-codex-sandbox]")) return;
   const hint = document.getElementById("codex-sandbox-hint");
   if (hint) {
@@ -615,6 +860,59 @@ panelsEl.addEventListener("change", (e) => {
       : "关：-s danger-full-access（可访问内网；hook 拦截取决于本机 Codex 配置）";
   }
   setStatus(t.checked ? "已勾选启用沙箱（尚未保存）。" : "已取消沙箱（尚未保存）。");
+});
+
+panelsEl.addEventListener("focusin", (e) => {
+  const input = e.target instanceof HTMLInputElement ? e.target.closest("input[data-default-model]") : null;
+  if (!input) return;
+  const agentKind = input.dataset.defaultModel;
+  if (!agentKind) return;
+  for (const openEl of panelsEl.querySelectorAll("[data-default-model-dropdown]")) {
+    if (openEl.dataset.defaultModelDropdown !== agentKind) openEl.classList.add("hidden");
+  }
+  renderSettingsModelDropdown(agentKind, "");
+  const dropdown = panelsEl.querySelector(`[data-default-model-dropdown="${CSS.escape(agentKind)}"]`);
+  dropdown?.classList.remove("hidden");
+});
+
+panelsEl.addEventListener("input", (e) => {
+  const input = e.target instanceof HTMLInputElement ? e.target.closest("input[data-default-model]") : null;
+  if (!input) return;
+  const agentKind = input.dataset.defaultModel;
+  if (!agentKind) return;
+  const clearBtn = panelsEl.querySelector(`button[data-default-model-clear="${CSS.escape(agentKind)}"]`);
+  if (clearBtn) clearBtn.hidden = !input.value.trim();
+  renderSettingsModelDropdown(agentKind, input.value);
+  const dropdown = panelsEl.querySelector(`[data-default-model-dropdown="${CSS.escape(agentKind)}"]`);
+  dropdown?.classList.remove("hidden");
+  syncEffortSelectForAgent(agentKind, input.value.trim());
+});
+
+panelsEl.addEventListener("mousedown", (e) => {
+  const opt = e.target instanceof Element ? e.target.closest("[data-default-model-dropdown] .model-option") : null;
+  if (opt) {
+    e.preventDefault();
+    const dropdown = opt.closest("[data-default-model-dropdown]");
+    const agentKind = dropdown?.dataset.defaultModelDropdown;
+    if (agentKind) setSettingsModelValue(agentKind, opt.dataset.modelValue || "");
+    return;
+  }
+  const clearBtn = e.target instanceof Element ? e.target.closest("button[data-default-model-clear]") : null;
+  if (clearBtn) {
+    e.preventDefault();
+    const agentKind = clearBtn.dataset.defaultModelClear;
+    if (!agentKind) return;
+    setSettingsModelValue(agentKind, "");
+    const input = panelsEl.querySelector(`input[data-default-model="${CSS.escape(agentKind)}"]`);
+    input?.focus();
+  }
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (e.target instanceof Element && e.target.closest("[data-settings-model-select]")) return;
+  for (const openEl of panelsEl.querySelectorAll("[data-default-model-dropdown]")) {
+    openEl.classList.add("hidden");
+  }
 });
 
 panelsEl.addEventListener("click", (e) => {
@@ -693,12 +991,19 @@ quickListEl?.addEventListener("click", (e) => {
 
 async function load() {
   setStatus("加载中…");
-  const res = await fetch("/api/settings");
+  const [res, modelsRes] = await Promise.all([
+    fetch("/api/settings"),
+    fetch("/api/agent-models").catch(() => null),
+  ]);
   if (!res.ok) {
     setStatus(`加载失败：HTTP ${res.status}`, false);
     return;
   }
   const data = await res.json();
+  if (!data.agentModels && modelsRes?.ok) {
+    const modelsData = await modelsRes.json().catch(() => ({}));
+    if (modelsData?.models) data.agentModels = modelsData.models;
+  }
   renderAll(data);
   setStatus("已加载。修改后点保存即可。", true);
 }
@@ -732,7 +1037,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 btnClear.addEventListener("click", async () => {
-  if (!confirm("确定清除全部 CLI 路径、代理覆盖、自定义环境变量，并将 Codex 沙箱恢复为开启？")) return;
+  if (!confirm("确定清除全部默认模型与思考强度、CLI 路径、代理覆盖、自定义环境变量，并将 Codex 沙箱恢复为开启？")) return;
   setStatus("恢复中…");
   try {
     const res = await fetch("/api/settings", {

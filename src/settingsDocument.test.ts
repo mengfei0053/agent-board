@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { _resetAgentDefaultsForTests } from "./agentDefaults.js";
 import { _resetCliPathOverridesForTests } from "./cliPaths.js";
 import { _resetCodexSandboxForTests } from "./codexSandbox.js";
 import { childProcessEnv, _resetProxyEnvOverridesForTests } from "./proxyEnv.js";
@@ -24,6 +25,7 @@ afterEach(() => {
   _resetCliPathOverridesForTests({});
   _resetQuickPromptsForTests([]);
   _resetCodexSandboxForTests(true);
+  _resetAgentDefaultsForTests({});
 });
 
 describe("settings document", () => {
@@ -170,6 +172,31 @@ describe("settings document", () => {
     assert.deepEqual(doc.thinkingEfforts.kimi, []);
     assert.equal(doc.modelHistory.pi[0], "mgp/antigravity/gemini-4-argon");
     assert.equal(JSON.stringify(doc).includes(SECRET), false);
+  });
+
+  it("writes per-agent default model and thinkingEffort and resets them on clear", async () => {
+    setSettingsMetaUpsertForTests(async () => undefined);
+    const saved = await writeSettingsDocument({
+      agentDefaults: {
+        pi: { model: "wb/cn:glm-5.3", thinkingEffort: "HIGH" },
+        agent: { model: "grok-4.7-high-fast", thinkingEffort: "high" },
+      },
+    }, { allowClear: true });
+    assert.deepEqual(saved.agentDefaults.pi, { model: "wb/cn:glm-5.3", thinkingEffort: "high" });
+    assert.deepEqual(saved.agentDefaults.cursor, { model: "grok-4.7-high-fast", thinkingEffort: "high" });
+    assert.deepEqual(saved.agentDefaults.claude, { model: "", thinkingEffort: "" });
+
+    const partial = await writeSettingsDocument({
+      agentDefaults: {
+        pi: { thinkingEffort: "max" },
+      },
+    }, { allowClear: false });
+    assert.deepEqual(partial.agentDefaults.pi, { model: "wb/cn:glm-5.3", thinkingEffort: "max" });
+    assert.deepEqual(partial.agentDefaults.cursor, { model: "grok-4.7-high-fast", thinkingEffort: "high" });
+
+    const cleared = await writeSettingsDocument({ clear: true }, { allowClear: true });
+    assert.deepEqual(cleared.agentDefaults.pi, { model: "", thinkingEffort: "" });
+    assert.deepEqual(cleared.agentDefaults.cursor, { model: "", thinkingEffort: "" });
   });
 });
 

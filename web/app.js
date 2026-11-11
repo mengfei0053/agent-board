@@ -65,6 +65,10 @@ const continueQuickPromptsEl = document.getElementById("continue-quick-prompts")
 let quickPrompts = [];
 /** @type {Record<string, { effective?: string, override?: string, default?: string }>} */
 let cliPathSettings = {};
+/** @type {Record<string, { model: string, thinkingEffort: string }>} */
+let agentDefaultsByKind = {};
+let createPreferredEffort = "";
+let createDefaultsPristine = true;
 const bulkBar = document.getElementById("bulk-bar");
 const wsListEl = document.getElementById("ws-list");
 const wsEmptyEl = document.getElementById("ws-empty");
@@ -424,10 +428,17 @@ function createSearchableModelPicker({
 
   const syncWithKind = () => {
     if (!inputEl) return;
-    if (selectedModel && !findExactModel(selectedModel)) {
-      selectedModel = "";
-      if (!isSearching) inputEl.value = "";
-      inputEl.dataset.selectedModel = "";
+    if (selectedModel) {
+      const matched = findExactModel(selectedModel);
+      if (matched) {
+        selectedModel = matched;
+        if (!isSearching) inputEl.value = matched;
+        inputEl.dataset.selectedModel = matched;
+      } else if (agentModelsLoaded && getAgentModelsForKind(getKind()).length) {
+        selectedModel = "";
+        if (!isSearching) inputEl.value = "";
+        inputEl.dataset.selectedModel = "";
+      }
     } else if (isSearching && inputEl.value.trim()) {
       const matched = findExactModel(inputEl.value.trim());
       selectedModel = matched || "";
@@ -445,6 +456,24 @@ function createSearchableModelPicker({
       inputEl.value = "";
       inputEl.dataset.selectedModel = "";
     }
+    updateClearBtn();
+    closeDropdown();
+  };
+
+  const setValue = (val) => {
+    if (!inputEl) return;
+    const trimmed = String(val || "").trim();
+    if (!trimmed) {
+      clear();
+      return;
+    }
+    const matched = findExactModel(trimmed);
+    const hasLoadedCatalog = agentModelsLoaded && getAgentModelsForKind(getKind()).length > 0;
+    selectedModel = matched || (!hasLoadedCatalog ? trimmed : "");
+    isSearching = false;
+    filterQuery = "";
+    inputEl.value = selectedModel;
+    inputEl.dataset.selectedModel = selectedModel;
     updateClearBtn();
     closeDropdown();
   };
@@ -545,6 +574,7 @@ function createSearchableModelPicker({
 
   return {
     clear,
+    setValue,
     syncWithKind,
     commitOrRevert,
     closeDropdown,
@@ -557,10 +587,29 @@ function createSearchableModelPicker({
   };
 }
 
-function syncCreateThinkingEffort(preferredEffort = createThinkingEffortSelect?.value || "") {
+function getAgentDefaultForKind(kind) {
+  const k = String(kind || "").trim();
+  const def = (k && agentDefaultsByKind[k]) || (k === "cursor" ? agentDefaultsByKind.agent : null);
+  return {
+    model: typeof def?.model === "string" ? def.model.trim() : "",
+    thinkingEffort: typeof def?.thinkingEffort === "string" ? def.thinkingEffort.trim() : "",
+  };
+}
+
+function syncCreateThinkingEffort(preferredEffort = createPreferredEffort || createThinkingEffortSelect?.value || "") {
   const kind = createKindSelect?.value || "pi";
   const model = createModelPicker.getSelectedModel();
   syncThinkingEffortSelect(createThinkingEffortSelect, kind, model, preferredEffort);
+}
+
+function applyCreateAgentDefaults() {
+  const kind = createKindSelect?.value || "pi";
+  const def = getAgentDefaultForKind(kind);
+  createDefaultsPristine = true;
+  createPreferredEffort = def.thinkingEffort || "";
+  createModelPicker.setValue(def.model);
+  createModelPicker.syncWithKind();
+  syncCreateThinkingEffort(createPreferredEffort);
 }
 
 function syncContinueThinkingEffort(preferredEffort = continueThinkingEffort?.value || "") {
@@ -581,7 +630,10 @@ const createModelPicker = createSearchableModelPicker({
   clearBtn: createModelClear,
   getKind: () => createKindSelect?.value || "pi",
   emptyLabel: "默认模型（不指定）",
-  onChange: () => syncCreateThinkingEffort(),
+  onChange: () => {
+    createDefaultsPristine = false;
+    syncCreateThinkingEffort();
+  },
 });
 
 const continueModelPicker = createSearchableModelPicker({
@@ -1460,8 +1512,7 @@ function renderList() {
 function clearCreatePrompt() {
   const ta = document.getElementById("create-prompt");
   if (ta) ta.value = "";
-  createModelPicker.clear();
-  syncCreateThinkingEffort("");
+  applyCreateAgentDefaults();
   formError.hidden = true;
   formError.textContent = "";
 }
@@ -1601,14 +1652,32 @@ function applyQuickPromptsToUi() {
   renderQuickPromptButtons(continueQuickPromptsEl, "continue-prompt");
 }
 
-async function loadQuickPrompts() {
+function normalizeAgentDefaultsPayload(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw)) {
+    if (!v || typeof v !== "object") continue;
+    const key = k === "agent" ? "cursor" : k;
+    out[key] = {
+      model: typeof v.model === "string" ? v.model.trim() : "",
+      thinkingEffort: typeof v.thinkingEffort === "string" ? v.thinkingEffort.trim() : "",
+    };
+  }
+  return out;
+}
+
+async function loadQuickPrompts(opts = {}) {
   try {
     const res = await fetch("/api/settings");
     if (!res.ok) return;
     const data = await res.json();
     quickPrompts = Array.isArray(data.quickPrompts) ? data.quickPrompts : [];
     cliPathSettings = data.cliPaths && typeof data.cliPaths === "object" ? data.cliPaths : {};
+    agentDefaultsByKind = normalizeAgentDefaultsPayload(data.agentDefaults);
     applyQuickPromptsToUi();
+    if (opts.applyCreateDefaults && createDefaultsPristine && !createModalInputActive()) {
+      applyCreateAgentDefaults();
+    }
     if (selectedId && detailModal && !detailModal.classList.contains("hidden")) {
       const open = tasks.get(selectedId);
       if (open) paintDetail(open);
@@ -1782,8 +1851,7 @@ function openCreate(mode = "draft") {
     createHint.textContent = "保存后进入「草稿」列；拖到 Todo 才会开始执行（使用当前工作区路径）。";
     createSubmit.textContent = "保存草稿";
   }
-  createModelPicker.syncWithKind();
-  syncCreateThinkingEffort("");
+  applyCreateAgentDefaults();
   void loadAgentModels();
   createModal.classList.remove("hidden");
   if (createUseWorktree) createUseWorktree.checked = false;
@@ -2472,13 +2540,21 @@ document.getElementById("btn-new").onclick = () => openCreate("draft");
 document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
 if (createKindSelect) {
   createKindSelect.addEventListener("change", () => {
-    createModelPicker.clear();
-    createModelPicker.syncWithKind();
-    syncCreateThinkingEffort("");
+    applyCreateAgentDefaults();
   });
 }
-createModelPicker.syncWithKind();
-syncCreateThinkingEffort("");
+function createModalInputActive() {
+  return document.activeElement === createModelInput || document.activeElement === createThinkingEffortSelect;
+}
+
+createModelInput?.addEventListener("input", () => {
+  createDefaultsPristine = false;
+});
+createThinkingEffortSelect?.addEventListener("change", () => {
+  createDefaultsPristine = false;
+  createPreferredEffort = createThinkingEffortSelect.value || "";
+});
+applyCreateAgentDefaults();
 document.getElementById("create-close").onclick = closeCreate;
 document.getElementById("create-cancel").onclick = closeCreate;
 document.getElementById("detail-close").onclick = closeDetail;
@@ -2541,7 +2617,7 @@ document.addEventListener("click", (e) => {
   if (!item || !target) return;
   fillPromptFromQuick(target, item.content);
 });
-void loadQuickPrompts();
+void loadQuickPrompts({ applyCreateDefaults: true });
 
 detailMetaGrid?.addEventListener("click", async (e) => {
   const btn = e.target?.closest?.("[data-copy-cmd]");

@@ -119,6 +119,14 @@ export function createState(seed = {}) {
       { id: "qp_demo", label: "总结一下", content: "请用三句话总结当前进度" },
     ],
     codexSandbox: true,
+    agentDefaults: seed.agentDefaults || {
+      pi: { model: "", thinkingEffort: "" },
+      claude: { model: "", thinkingEffort: "" },
+      cursor: { model: "", thinkingEffort: "" },
+      devin: { model: "", thinkingEffort: "" },
+      codex: { model: "", thinkingEffort: "" },
+      kimi: { model: "", thinkingEffort: "" },
+    },
   };
   /** @type {{ name: string, url: string, originalName?: string }[]} */
   const uploads = [];
@@ -519,6 +527,14 @@ export function createMockServer(state, extra) {
         };
         state.settings.quickPrompts = [];
         state.settings.codexSandbox = true;
+        state.settings.agentDefaults = {
+          pi: { model: "", thinkingEffort: "" },
+          claude: { model: "", thinkingEffort: "" },
+          cursor: { model: "", thinkingEffort: "" },
+          devin: { model: "", thinkingEffort: "" },
+          codex: { model: "", thinkingEffort: "" },
+          kimi: { model: "", thinkingEffort: "" },
+        };
         return json(res, 200, state.settings);
       }
       if (body.cliPaths && typeof body.cliPaths === "object") {
@@ -547,6 +563,17 @@ export function createMockServer(state, extra) {
       }
       if (typeof body.codexSandbox === "boolean") {
         state.settings.codexSandbox = body.codexSandbox;
+      }
+      if (body.agentDefaults && typeof body.agentDefaults === "object") {
+        if (!state.settings.agentDefaults) state.settings.agentDefaults = {};
+        for (const [rawKind, val] of Object.entries(body.agentDefaults)) {
+          if (!val || typeof val !== "object") continue;
+          const kind = rawKind === "agent" ? "cursor" : rawKind;
+          state.settings.agentDefaults[kind] = {
+            model: typeof val.model === "string" ? val.model.trim() : "",
+            thinkingEffort: typeof val.thinkingEffort === "string" ? val.thinkingEffort.trim() : "",
+          };
+        }
       }
       return json(res, 200, state.settings);
     }

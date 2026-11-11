@@ -73,11 +73,33 @@ async function main() {
       () => document.getElementById("settings-status")?.textContent?.includes("已加载"),
     );
 
-    // edit pi CLI path
+    // edit pi CLI path + default model & thinking effort
     await page.click('#agent-tab-pi');
     const cliInput = await page.waitForSelector('input[data-cli-key="pi"]');
     await cliInput.click({ clickCount: 3 });
     await cliInput.type("/tmp/e2e-fake-pi");
+
+    const piModelInput = await page.waitForSelector('input[data-default-model="pi"]');
+    await piModelInput.click();
+    await page.waitForSelector('[data-default-model-dropdown="pi"]:not(.hidden)');
+    await page.mousedown?.('[data-default-model-dropdown="pi"] [data-model-value="wb/cn:glm-5.3"]').catch(() => {});
+    await page.evaluate(() => {
+      const opt = document.querySelector('[data-default-model-dropdown="pi"] [data-model-value="wb/cn:glm-5.3"]');
+      opt?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    await page.select('select[data-default-effort="pi"]', "high");
+
+    // also configure claude default model & effort
+    await page.click('#agent-tab-claude');
+    await page.waitForSelector('input[data-default-model="claude"]');
+    await page.evaluate(() => {
+      const input = document.querySelector('input[data-default-model="claude"]');
+      input?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      const opt = document.querySelector('[data-default-model-dropdown="claude"] [data-model-value="opus"]');
+      opt?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    await page.select('select[data-default-effort="claude"]', "max");
+    await page.click('#agent-tab-pi');
 
     // add a custom process environment variable
     await page.click('[data-add-process-env="pi"]');
@@ -105,6 +127,8 @@ async function main() {
       () => document.getElementById("settings-status")?.textContent?.includes("已保存"),
     );
     assert.equal(state.settings.cliPaths.pi.override, "/tmp/e2e-fake-pi");
+    assert.deepEqual(state.settings.agentDefaults.pi, { model: "wb/cn:glm-5.3", thinkingEffort: "high" });
+    assert.deepEqual(state.settings.agentDefaults.claude, { model: "opus", thinkingEffort: "max" });
     assert.equal(state.settings.processEnv.pi.OPENAI_BASE_URL, "https://e2e.example/v1");
     assert.ok(state.settings.quickPrompts.some((q) => q.label === "复盘" && q.content.includes("复盘")));
 
@@ -115,6 +139,10 @@ async function main() {
     );
     const cliVal = await page.$eval('input[data-cli-key="pi"]', (el) => el.value);
     assert.equal(cliVal, "/tmp/e2e-fake-pi");
+    const piDefModel = await page.$eval('input[data-default-model="pi"]', (el) => el.value);
+    const piDefEffort = await page.$eval('select[data-default-effort="pi"]', (el) => el.value);
+    assert.equal(piDefModel, "wb/cn:glm-5.3");
+    assert.equal(piDefEffort, "high");
     const envKeys = await page.$$eval(
       '[data-process-env-list="pi"] [data-process-env-key]',
       (els) => els.map((e) => e.value),
@@ -233,10 +261,23 @@ async function main() {
     }, { timeout: 4000 }, liveDuration);
     await page.click("#detail-close");
 
-    // —— E7 image upload mock on create form ——
+    // —— E7 image upload mock on create form + default model/effort on create modal ——
     await page.click("#btn-new");
     await page.waitForSelector("#create-modal:not(.hidden)");
     await page.waitForSelector("#create-prompt");
+    await page.waitForFunction(
+      () => document.getElementById("create-model")?.value === "wb/cn:glm-5.3",
+    );
+    assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:glm-5.3");
+    assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "high");
+
+    // switching Agent in create modal applies that agent's default model and thinking effort
+    await page.select('#create-form select[name="kind"]', "claude");
+    assert.equal(await page.$eval("#create-model", (el) => el.value), "opus");
+    assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "max");
+    await page.select('#create-form select[name="kind"]', "pi");
+    assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:glm-5.3");
+    assert.equal(await page.$eval("#create-thinking-effort", (el) => el.value), "high");
 
     const uploaded = await page.evaluate(async () => {
       const bytes = Uint8Array.from([

@@ -20,6 +20,7 @@ import { publish } from "./bus.js";
 import { runners } from "./runners/index.js";
 import type { BoardLane, CreateTaskInput, SideJob, Task, TaskAttachment, TaskStatus, Workspace } from "./types.js";
 import { resolveDefaultModel } from "./runners/resolveDefaultModel.js";
+import { getAgentDefault } from "./agentDefaults.js";
 import { applyWorkspaceToPrompt } from "./workspaceApply.js";
 import type { RunnerHandle } from "./runners/types.js";
 import {
@@ -393,6 +394,17 @@ function allocateTaskId(): string {
   return makeTaskId();
 }
 
+function resolveCreateModelAndEffort(input: CreateTaskInput): {
+  model?: string;
+  thinkingEffort?: string;
+} {
+  const agentDefault = getAgentDefault(input.kind);
+  return {
+    model: input.model?.trim() || agentDefault.model || resolveDefaultModel(input.kind),
+    thinkingEffort: input.thinkingEffort?.trim() || agentDefault.thinkingEffort || undefined,
+  };
+}
+
 /** Create a draft — do not spawn. */
 export async function createDraft(input: CreateTaskInput): Promise<Task> {
   const id = allocateTaskId();
@@ -418,6 +430,7 @@ export async function createDraft(input: CreateTaskInput): Promise<Task> {
     };
   }
 
+  const { model, thinkingEffort } = resolveCreateModelAndEffort(input);
   const task: Task = {
     id,
     title,
@@ -425,8 +438,8 @@ export async function createDraft(input: CreateTaskInput): Promise<Task> {
     workspaceId,
     cwd: taskCwd,
     prompt: input.prompt,
-    model: input.model?.trim() || resolveDefaultModel(input.kind),
-    thinkingEffort: input.thinkingEffort?.trim() || undefined,
+    model,
+    thinkingEffort,
     iteration: 1,
     status: "draft",
     createdAt,
