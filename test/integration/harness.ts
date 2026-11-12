@@ -66,20 +66,27 @@ async function freePort(): Promise<number> {
 
 export async function startTestDb(): Promise<string> {
   if (databaseUrl) return databaseUrl;
-  const port = await freePort();
-  pgDir = mkdtempSync(join(tmpdir(), "agent-board-pg-"));
-  pg = new EmbeddedPostgres({
-    databaseDir: pgDir,
-    user: "postgres",
-    password: "postgres",
-    port,
-    persistent: false,
-  });
-  await pg.initialise();
-  await pg.start();
-  await pg.createDatabase("agent_board_test");
-  databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/agent_board_test`;
   testDataDir = mkdtempSync(join(tmpdir(), "agent-board-data-"));
+  const backend = process.env.TEST_DATABASE_BACKEND || "postgres";
+  if (backend === "sqlite") {
+    databaseUrl = `sqlite:${join(testDataDir, "test.db")}`;
+  } else if (backend === "postgres") {
+    const port = await freePort();
+    pgDir = mkdtempSync(join(tmpdir(), "agent-board-pg-"));
+    pg = new EmbeddedPostgres({
+      databaseDir: pgDir,
+      user: "postgres",
+      password: "postgres",
+      port,
+      persistent: false,
+    });
+    await pg.initialise();
+    await pg.start();
+    await pg.createDatabase("agent_board_test");
+    databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/agent_board_test`;
+  } else {
+    throw new Error("TEST_DATABASE_BACKEND must be postgres or sqlite");
+  }
   process.env.DATABASE_URL = databaseUrl;
   process.env.DATA_DIR = testDataDir;
   process.env.UPLOADS_DIR = join(testDataDir, "uploads");

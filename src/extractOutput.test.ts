@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   encodeStreamLogLine,
+  boardMetaLineSqlPattern,
+  BOARD_META_TYPE_LIST,
   extractFinalOutput,
   extractOutputsByIteration,
   extractPromptsByIteration,
@@ -16,6 +18,18 @@ import {
   upsertOutputTurn,
   upsertPromptTurn,
 } from "./extractOutput.js";
+
+describe("board metadata SQL patterns", () => {
+  it("uses JavaScript whitespace for SQLite without losing compact or spaced metadata", () => {
+    const regex = new RegExp(boardMetaLineSqlPattern("sqlite"));
+    for (const type of BOARD_META_TYPE_LIST) {
+      assert.ok(regex.test(JSON.stringify({ type })));
+      assert.ok(regex.test(`{ "type" \t: \t"${type}" }`));
+    }
+    assert.equal(regex.test('{"type":"message_update"}'), false);
+    assert.ok(boardMetaLineSqlPattern("postgres").includes("[[:space:]]"));
+  });
+});
 
 describe("extractTextFromEventLine", () => {
   it("ignores non-json / empty", () => {

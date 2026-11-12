@@ -18,7 +18,7 @@ import {
 import { extname, join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type { TaskAttachment } from "./types.js";
-import { assertDataRootAllowed, dataDir, databaseUrl, getPool, hasPool } from "./db.js";
+import { assertDataRootAllowed, arrayParameter, arrayPredicate, dataDir, databaseUrl, getPool, hasPool } from "./db.js";
 
 const OWNER_FILE = ".agent-board-upload-owner";
 const TRASH_DIR = ".trash";
@@ -536,7 +536,7 @@ export async function removeUploadsIfUnreferenced(
   }
   if (!dropped.length) return;
   try {
-    await getPool().query(`DELETE FROM uploads WHERE name = ANY($1::text[])`, [dropped]);
+    await getPool().query(`DELETE FROM uploads WHERE ${arrayPredicate("name", 1)}`, [arrayParameter(dropped)]);
   } catch (err) {
     console.warn("[uploads] could not drop upload rows:", err);
   }
@@ -618,7 +618,7 @@ export async function gcOrphanUploads(
   }
   if (dropped.length && opts.dropRows !== false) {
     try {
-      await getPool().query(`DELETE FROM uploads WHERE name = ANY($1::text[])`, [dropped]);
+      await getPool().query(`DELETE FROM uploads WHERE ${arrayPredicate("name", 1)}`, [arrayParameter(dropped)]);
     } catch (err) {
       console.warn("[uploads] gc row delete failed:", err);
     }

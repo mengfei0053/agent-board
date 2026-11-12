@@ -29,7 +29,7 @@
 | 进行中 / 已完成 / 归档 | SSE 实时刷新卡片与日志；可停止进程；已完成卡片可归档 |
 | 继续任务 | 终态和已归档任务可按 CLI session 续跑，迭代次数 +1；归档续跑后重新进入活动看板 |
 | Webhook | `POST /api/hooks/tasks`（需 `AGENT_BOARD_WEBHOOK_SECRET`） |
-| 存储 | Postgres（`DATABASE_URL`） |
+| 存储 | SQLite（本机默认）或 Postgres（显式 `DATABASE_URL`） |
 
 整体架构及多端通信图解见文档站的 [项目架构](./website/docs/architecture.md)，本机功能细节见 [ARCHITECTURE.md](./ARCHITECTURE.md)，HTTP 接口见运行中的 [/docs](http://127.0.0.1:8791/docs)。
 
@@ -44,7 +44,7 @@
 | Codex | `~/.codex/config.toml` | `~/.codex/skills/` |
 | Kimi Code | `~/.kimi-code/mcp.json` | `~/.kimi-code/skills/` |
 
-会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在 Postgres 的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。Agent 目录存在同名 Skill 时自动勾选；勾选直接覆盖对应 Agent 的同名目录，取消勾选直接删除该目录，不恢复旧版本。切换只作用于当前技能和目标 Agent；「重新同步」会按全部勾选状态覆盖分发。卸载会删除各 Agent 的同名技能，保留管理中心主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复。其他名称的技能保持原样。MCP 同名配置冲突会单独报告，修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
+会识别 `PI_CODING_AGENT_DIR`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`KIMI_CODE_HOME`、`XDG_CONFIG_HOME`（Windows Devin 使用 `APPDATA`）。管理清单保存在当前所选数据库的 `meta.extensions`，Skill 主副本在 `DATA_DIR/extensions/skills/`。Agent 目录存在同名 Skill 时自动勾选；勾选直接覆盖对应 Agent 的同名目录，取消勾选直接删除该目录，不恢复旧版本。切换只作用于当前技能和目标 Agent；「重新同步」会按全部勾选状态覆盖分发。卸载会删除各 Agent 的同名技能，保留管理中心主副本，可以通过「导入本机 Skill → 管理中心（已卸载）」恢复。其他名称的技能保持原样。MCP 同名配置冲突会单独报告，修改前保留 `.agent-board.bak`，Codex TOML 会重新排版（原注释保留在备份中）。
 
 工作区 MCP 继续按原有规则覆盖全局设置；各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。删除技能链接不会删除链接指向的外部目录。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
 
@@ -58,14 +58,18 @@
 
 - Node 20+（本机开发）或 Docker / Docker Compose（一键启动）
 - 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`、`codex`、`kimi`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
-- Postgres（本机或 Compose 内置）
+- 本机默认 SQLite，无需另装数据库；可选 Postgres（本机或 Compose 内置）
+- SQLite 使用 `better-sqlite3` 11.x，保持 Node 20+ 兼容；安装时需允许其原生构建。如果预编译文件不可用，需 Python 3 和 C/C++ 构建工具（Linux 为 `make`、`g++`）；Docker 构建已包含编译回退。
 
 ## 一键启动（Docker Compose）
+
+现有 Compose 仍专用 PostgreSQL，不提供 SQLite 模式；本机 SQLite 快速开始见下方「本机启动（非 Docker）」。
 
 ```bash
 cd ~/projects/agent-board   # 或你的 clone 路径
 cp -n .env.example .env
-# 必填：把 POSTGRES_PASSWORD 换成随机 URL-safe 长密码，并同步 DATABASE_URL。
+# 必填：把 POSTGRES_PASSWORD 换成随机 URL-safe 长密码。
+# 若本机进程也连此 PG，须显式设置对应的 DATABASE_URL（宿主机端口 5433）。
 # 占位符 replace-with-a-long-random-password 不是强密码。已有 volume 需 ALTER USER。
 
 docker compose up -d --build
@@ -106,11 +110,13 @@ pnpm install && pnpm dev
 | --- | --- | --- |
 | `PORT` | `8791` | HTTP 端口 |
 | `HOST` | 本机默认 `127.0.0.1`；Compose 内 `0.0.0.0` | 监听地址（容器内需 `0.0.0.0` 才能映射端口） |
-| `DATABASE_URL` | Compose 内由 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 拼出，不再默认 `postgres:postgres`；本机未设置时回退到本机 `127.0.0.1:5432` 的开发库 | Postgres 连接串 |
-| `DATA_DIR` / `UPLOADS_DIR` | 仓库 `data/` 与 `data/uploads` | 测试和第二个实例必须指向独立目录。启动 GC 只清理带本库 owner 戳、且在认领之后写入的孤儿文件 |
+| `DATABASE_URL` | 本机未设置、空字符串或纯空白 → SQLite；Compose 内仍由 `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 拼出 PG URL | 默认 SQLite 文件为解析后的绝对路径 `DATA_DIR/agent-board.db`。显式支持 `sqlite:./relative.db`（相对进程 cwd）、`sqlite:/absolute/path.db`、`sqlite::memory:`（不持久化）；`postgres:` / `postgresql:` 保持原行为 |
+| `DATA_DIR` / `UPLOADS_DIR` | `DATA_DIR` 缺省为仓库 `data/`；上传目录默认为 `DATA_DIR/uploads` | `DATA_DIR` 决定默认 SQLite 文件位置，但不改变显式 SQLite URL 的路径解析。测试和第二个独立实例必须指向独立数据库及目录。启动 GC 只清理带本库 owner 戳、且在认领之后写入的孤儿文件 |
 | `AGENT_BOARD_WEBHOOK_SECRET` | 空（webhook 关闭） | 设置后开启 `POST /api/hooks/tasks` |
 
 模板见 [.env.example](./.env.example)。Compose 会读取同目录 `.env` 里的 `AGENT_BOARD_WEBHOOK_SECRET`（若有）。
+
+**已有 PostgreSQL 用户必须保留显式 PG `DATABASE_URL`**：删除或清空后会打开独立的 SQLite 数据库，看不到原 PG 数据，不代表数据丢失。切换 URL 只选择数据库，不双写、不自动迁移 PG 数据，也不会在 PG 连接失败时 fallback 到 SQLite。
 
 ### Docker 与 CLI（重要）
 
@@ -118,7 +124,7 @@ pnpm install && pnpm dev
 
 因此：
 
-- **推荐**：`docker compose up -d postgres` + 本机 `pnpm dev` —— 完整建任务 / 跑 / 停 / 续跑。
+- **推荐**：本机 `pnpm dev`（默认 SQLite）；若选 PG，可用 `docker compose up -d postgres` + 显式 PG `DATABASE_URL` + 本机 `pnpm dev` —— 完整建任务 / 跑 / 停 / 续跑。
 - **仅 Compose 起 `app`**：适合看 UI、调 HTTP/SSE、用 webhook 建草稿；在容器里点「开跑」通常会因找不到 CLI 而失败。
 - 若坚持在容器里 spawn：需自行挂载宿主机 home（工作区路径）、把 CLI 二进制挂进 `PATH`，并挂载各 CLI 的配置/凭证目录；不同工具路径不一，且权限/网络与宿主机差异大，本仓库不默认开启。
 
@@ -126,19 +132,16 @@ pnpm install && pnpm dev
 
 ## 本机启动（非 Docker）
 
-不破坏原有流程；与 Compose 可并存（注意 Postgres 端口）。
+新安装推荐本机单实例 SQLite，无需启动 Postgres。**已有 PG 用户请继续使用原来的显式 `DATABASE_URL`，不要执行下面的 `unset`。**
 
 ```bash
 cd ~/projects/agent-board
 pnpm install   # 或 npm i / bun i
 
-# 默认连本机 Postgres :5432 / 库 agent_board
-export DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/agent_board'
-# 若库不存在：
-#   PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE agent_board;'
-# 或只用 Compose 的库（127.0.0.1:5433，密码见 .env）：
-#   docker compose up -d postgres
-#   export DATABASE_URL='postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5433/agent_board'
+# 仅新安装 / 确认要选择独立 SQLite 数据库时：
+unset DATABASE_URL
+# 默认使用仓库 data/agent-board.db（绝对路径）；也可先设置 DATA_DIR。
+# 自定义 SQLite：export DATABASE_URL='sqlite:./relative.db'  # 相对进程 cwd
 
 pnpm dev
 # 或生产式：pnpm start   # 默认 PORT=8791
@@ -146,13 +149,25 @@ pnpm dev
 
 浏览器打开 http://127.0.0.1:8791
 
+若选择 PostgreSQL，使用已有数据库的显式 `postgres:` / `postgresql:` URL；或先复制 `.env.example` 为 `.env` 并设置随机 URL-safe 的 `POSTGRES_PASSWORD`，再执行：
+
+```bash
+docker compose up -d postgres
+export DATABASE_URL='postgresql://postgres:<POSTGRES_PASSWORD>@127.0.0.1:5433/agent_board'
+pnpm dev
+```
+
+将 `<POSTGRES_PASSWORD>` 替换为 `.env` 中的密码；Compose 的数据库端口为 **5433**，不是本机已有 PG 常用的 5432。
+
 在 Linux 上，已配置 `.env.relay` 时，可执行 `./scripts/board.sh` 一键启动或重启。也可以用 `./scripts/board.sh start` 仅启动，或 `./scripts/board.sh restart` 启动或重启。脚本发现运行中的任务时会停止操作，等任务结束后再执行；日志默认写入 `/tmp/agent-board-server.log`。需要自定义数据库连接时，在运行脚本前设置 `DATABASE_URL`。
 
-首次启动若存在 `data/db.json`，会自动迁移到 Postgres，并将 JSON 改名为 `db.json.migrated-*`。
+启动时若存在旧 `DATA_DIR/db.json`（默认 `data/db.json`），会一次性导入**当前选择的后端**（SQLite 或 PG），并将 JSON 改名为 `db.json.migrated-*`；这不是 PG 与 SQLite 之间的数据迁移。
+
+SQLite 推荐用于单实例本机部署，启用外键（FK）、WAL 和 5 秒 `busy_timeout`，单进程内事务串行执行。数据库文件不能放在网络共享盘上。备份时先停止服务，再复制数据库文件；在线备份必须正确处理 WAL，不能只复制正在使用的主 `.db` 文件。业务层仍有内存缓存，选择 PG 也不意味着已支持多个看板实例共享数据库时的一致性。
 
 任务完成、失败或停止后，可在详情页的「下一轮模型」选择同一执行器内的兼容模型，再点击「继续任务」；留空沿用当前模型。切换保留任务、原 CLI 会话、工作目录及对话历史，不支持通过续跑更换执行器。没有原会话时禁止切换模型；续接失败不会自动新建会话或回退模型。模型上下文窗口、历史格式转换及 CLI 自动压缩仍可能影响实际送入模型的上下文。
 
-新建或继续任务时使用的模型会按 Agent 保存到 Postgres 的 `model_history` 表；下拉列表优先显示最近使用的模型，可跨浏览器和设备共享，删除任务后仍保留。服务启动时会补齐已有任务中的模型记录，页面会将旧版浏览器 `localStorage` 中的模型历史导入数据库，成功后清理本地记录。`GET /api/model-history` 返回各 Agent 最近 20 个模型；`POST /api/model-history/import` 接收 `{ "history": { "pi": ["model-name"] } }`，按需合并旧记录。
+新建或继续任务时使用的模型会按 Agent 保存到当前所选数据库的 `model_history` 表；下拉列表优先显示最近使用的模型，可跨浏览器和设备共享，删除任务后仍保留。服务启动时会补齐已有任务中的模型记录，页面会将旧版浏览器 `localStorage` 中的模型历史导入数据库，成功后清理本地记录。`GET /api/model-history` 返回各 Agent 最近 20 个模型；`POST /api/model-history/import` 接收 `{ "history": { "pi": ["model-name"] } }`，按需合并旧记录。
 
 ## Android、中继、connector
 
@@ -219,14 +234,16 @@ pnpm start   # tsx src/server.ts，不要用 watch
 pnpm install
 pnpm test              # 单元 + 集成 + e2e
 pnpm test:unit         # node:test 纯函数 / 解析（src/*.test.ts、src/runners/*.test.ts、src/relay/*.test.ts）
-pnpm test:integration  # 真 API + embedded Postgres + fake runner（I1–I12）
+pnpm test:integration:postgres # 真 API + embedded Postgres + fake runner（I1–I12）
+pnpm test:integration:sqlite   # 真 API + SQLite + fake runner
+pnpm test:integration  # 顺序运行 Postgres、SQLite 两套集成测试
 pnpm test:coverage     # 单元 + c8（含 runners buildArgs / db；不含 server/store/manager）
 pnpm test:coverage:full # 同上但 all=true，报告写入 coverage-full/（全仓诚实视图）
 pnpm coverage          # test:coverage 别名
 pnpm test:e2e          # puppeteer-core：空间设置 + E1–E4 + E5–E7 + E8–E9（mock API）
 ```
 
-集成测试会临时拉起 `embedded-postgres`（不碰生产 `DATABASE_URL`），用 Hono `app.request` 打真实路由，runner 换成内存 fake（不 spawn 本机 CLI）。首次需允许原生依赖构建：`pnpm` 的 `onlyBuiltDependencies` 已包含 `@embedded-postgres/linux-x64`。
+`test:integration:postgres` 会临时拉起 `embedded-postgres`，`test:integration:sqlite` 使用隔离的 SQLite 测试库；`test:integration` 顺序运行两套后端，均不碰生产 `DATABASE_URL`。测试用 Hono `app.request` 打真实路由，runner 换成内存 fake（不 spawn 本机 CLI）。首次需允许原生依赖构建，包括 `@embedded-postgres/linux-x64` 和 `better-sqlite3`（11.x，支持 Node 20+）。
 
 覆盖率报告（仅单元；集成/e2e 不并进同一报告）：
 

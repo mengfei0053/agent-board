@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolveCliCommand, type CliCommandKey } from "./cliPaths.js";
-import { getPool } from "./db.js";
+import { getPool, arrayParameter, arrayPredicate } from "./db.js";
+import { insertRows } from "./databaseAdapter.js";
 import { MAX_MODEL_CHARS } from "./limits.js";
 import { childProcessEnv } from "./proxyEnv.js";
 import { spawnCollect } from "./spawnCollect.js";
@@ -686,32 +687,29 @@ export async function upsertAgentModelsForKind(
   const normalized = normalizeAgentModelRecords(records);
   if (!normalized.length) return 0;
 
-  const payload = normalized.map((r) => ({
-    kind,
-    model: r.model,
-    thinking_efforts: r.thinkingEfforts,
-  }));
-
-  await getPool().query(
-    `WITH incoming AS (
-       SELECT * FROM jsonb_to_recordset($1::jsonb)
-         AS records(kind TEXT, model TEXT, thinking_efforts JSONB)
-     ), deleted AS (
-       DELETE FROM agent_models
-       WHERE kind = $2
-         AND model NOT IN (SELECT model FROM incoming)
-     )
-     INSERT INTO agent_models (kind, model, thinking_efforts, updated_at)
-     SELECT kind, model, thinking_efforts, NOW() FROM incoming
-     ON CONFLICT (kind, model) DO UPDATE SET
-       thinking_efforts = EXCLUDED.thinking_efforts,
-       updated_at = EXCLUDED.updated_at`,
-    [JSON.stringify(payload), kind],
-  );
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM agent_models WHERE kind = $1 AND NOT (${arrayPredicate("model", 2)})`,
+      [kind, arrayParameter(normalized.map((record) => record.model))],
+    );
+    const updatedAt = new Date().toISOString();
+    await insertRows(client, "agent_models", ["kind", "model", "thinking_efforts", "updated_at"],
+      normalized.map((record) => [kind, record.model, JSON.stringify(record.thinkingEfforts), updatedAt]),
+      `ON CONFLICT (kind, model) DO UPDATE SET
+        thinking_efforts = EXCLUDED.thinking_efforts, updated_at = EXCLUDED.updated_at`);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
   return normalized.length;
 }
 
-/** Read all persisted agent models and supported thinking efforts from Postgres. */
+/** Read all persisted agent models and supported thinking efforts. */
 export async function readAgentModels(
   kindFilter?: AgentKind,
 ): Promise<AgentModelsByKind> {

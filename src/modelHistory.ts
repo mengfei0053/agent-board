@@ -1,4 +1,5 @@
 import { getPool } from "./db.js";
+import { insertRows } from "./databaseAdapter.js";
 import { HttpError } from "./httpError.js";
 import { MAX_MODEL_CHARS } from "./limits.js";
 import type { AgentKind } from "./types.js";
@@ -44,12 +45,19 @@ export async function importModelHistory(raw: unknown): Promise<ModelHistory> {
     }
   }
   if (records.length) {
-    await getPool().query(`
-      INSERT INTO model_history (kind, model, last_used_at)
-      SELECT kind, model, last_used_at FROM jsonb_to_recordset($1::jsonb)
-        AS imported(kind TEXT, model TEXT, last_used_at TIMESTAMPTZ)
-      ON CONFLICT (kind, model) DO NOTHING
-    `, [JSON.stringify(records)]);
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      await insertRows(client, "model_history", ["kind", "model", "last_used_at"],
+        records.map((record) => [record.kind, record.model, record.last_used_at]),
+        "ON CONFLICT (kind, model) DO NOTHING");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
   return readModelHistory();
 }

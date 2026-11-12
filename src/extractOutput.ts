@@ -196,9 +196,10 @@ export const BOARD_META_TYPE_LIST = [
 
 const BOARD_META_TYPES = new Set<string>(BOARD_META_TYPE_LIST);
 
-/** POSIX regex for Postgres `~`. Used to retain meta rows across the same trim as memory. */
-export function boardMetaLineSqlPattern(): string {
-  return `"type"[[:space:]]*:[[:space:]]*"(${BOARD_META_TYPE_LIST.join("|")})"`;
+/** PostgreSQL uses POSIX whitespace; SQLite's registered regexp uses JavaScript syntax. */
+export function boardMetaLineSqlPattern(dialect: "postgres" | "sqlite" = "postgres"): string {
+  const space = dialect === "sqlite" ? "\\s" : "[[:space:]]";
+  return `"type"${space}*:${space}*"(${BOARD_META_TYPE_LIST.join("|")})"`;
 }
 
 function stripAnsi(s: string): string {

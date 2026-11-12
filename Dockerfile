@@ -3,10 +3,17 @@ FROM docker.m.daocloud.io/library/node:20-bookworm-slim
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@10.34.9 --activate
 
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+# Include dependency overrides and native-build policy when using the lockfile.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Compile SQLite locally if prebuilt binary downloads are unavailable.
+# Official Node images already include matching headers under /usr/local.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && npm_config_nodedir=/usr/local pnpm install --frozen-lockfile \
+ && apt-get purge -y --auto-remove python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -20,8 +27,8 @@ ENV NODE_ENV=production
 ENV PORT=8791
 EXPOSE 8791
 
-# tsx is in devDependencies; image installs full lockfile so `pnpm start` works.
+# tsx is in devDependencies; start directly without runtime Corepack downloads.
 # The process is not root. Database role in Compose is still the configured
 # POSTGRES_USER (superuser on a fresh volume until you ALTER it).
 USER app
-CMD ["pnpm", "start"]
+CMD ["node", "--import", "tsx", "src/server.ts"]

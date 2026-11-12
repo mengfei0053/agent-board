@@ -1,6 +1,6 @@
 # agent-board 架构与本机功能细节
 
-Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android 客户端及独立 connector 组成。本机服务执行 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI** 任务，以 PostgreSQL 持久化，通过 SSE 向浏览器推送，通过嵌入 Relay 拨号支持手机遥控。
+Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android 客户端及独立 connector 组成。本机服务执行 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI** 任务，以 SQLite（默认）或 PostgreSQL 持久化，通过 SSE 向浏览器推送，通过嵌入 Relay 拨号支持手机遥控。
 
 完整的模块职责、部署拓扑、执行流程、数据模型、远程协议及测试入口见文档站的 **[项目架构](./website/docs/architecture.md)**。本文保留本机功能的实现约定，远程消息字段以 [PROTOCOL.md](./PROTOCOL.md) 为准。
 
@@ -26,7 +26,7 @@ Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android �
 ```
 浏览器 ──REST/SSE──▶ Hono 服务（本机）
                         │
-                        ├─ TaskStore（Postgres · DATABASE_URL）
+                        ├─ TaskStore（SQLite / Postgres · DATABASE_URL）
                         │     workspaces + tasks.workspace_id
                         ├─ Runner 注册表（命令名可被设置页覆盖，见 meta.cli_paths）
                         │    ├─ pi:    pi -p --mode json --session-id
@@ -34,7 +34,7 @@ Agent Board 由本机看板服务、Web 界面、可选公网 Relay、Android �
                         │    ├─ cursor: agent -p --output-format stream-json
                         │    ├─ devin:  devin -p --permission-mode accept-edits (plain stdout)
                         │    └─ codex:  codex exec --json --approve-for-me
-                        ├─ 每任务：子进程；日志存于内存 + Postgres task_logs
+                        ├─ 每任务：子进程；日志存于内存 + 当前数据库 task_logs
                         └─ 可选：嵌入中继拨号（src/relay/，默认关）
                               进程内 BoardFacade → 公网 WSS
                               不另起 connector，也不回环打自己的 HTTP
@@ -156,14 +156,20 @@ curl -sS -X POST http://127.0.0.1:8791/webhook/tasks \
   - 兼容：若读到旧版全局扁平 `{ HTTP_PROXY: "..." }`，启动时复制到全部 kind 并写回新结构
 - Runner：`resolveCliCommand(kind)` 取命令；`childProcessEnv(kind, extras)` 把**该 kind** 的代理覆盖与自定义环境变量注入 `spawn` / `spawnSync`（日志只记注入的代理键名，不记值）
 
-## 存储（Postgres）
+## 存储（SQLite / Postgres）
 
-- 连接串：环境变量 `DATABASE_URL`（默认 `postgresql://postgres:postgres@127.0.0.1:5432/agent_board`）
+- 后端选择：`DATABASE_URL` 未设置、为空或纯空白时使用 SQLite，默认文件为解析后的绝对路径 `DATA_DIR/agent-board.db`；`DATA_DIR` 缺省为仓库 `data/`
+- 显式 SQLite URL：`sqlite:./relative.db` 相对**进程 cwd**（不相对 `DATA_DIR`）；`sqlite:/absolute/path.db` 使用绝对路径；`sqlite::memory:` 为不持久化的内存库
+- 显式 `postgres:` / `postgresql:` URL 保持原行为。已有 PG 用户必须保留原 URL；切换数据库看到的是独立数据，不双写、不自动迁移 PG 数据，也不在 PG 失败时 fallback 到 SQLite
+- SQLite 驱动为 `better-sqlite3` 11.x，保持 Node 20+；开启外键（FK）、WAL、5 秒 `busy_timeout`，单进程内事务串行执行
 - 表：`workspaces`、`tasks`、`task_logs`、`task_prompts`、`task_outputs`、`task_side_jobs`、`uploads`、`meta`（含 `default_workspace_id`、`cli_paths`、`proxy_env`、`process_env`、`quick_prompts`、`codex_sandbox` 等）
 - 进程内有内存镜像；创建、启动、续跑等关键步骤等待落库，高频状态与日志更新通过写队列合并、批量异步落库；持久化降级时 `/api/health` 返回 503
 - 当前日志写入 `task_logs`，按行数与字符数限制保留；归档清理原始日志，保留轮次输入和回复。JSONL 仅用于旧数据迁移与清理
-- 旧 `data/db.json` + `data/logs/*.jsonl`：启动时一次性迁移，JSON 归档为 `db.json.migrated-*`
-- 可选：`docker compose up -d` 起隔离库（宿主机 **5433**），见 `docker-compose.yml`
+- 旧 `DATA_DIR/db.json` + `DATA_DIR/logs/*.jsonl`（默认位于 `data/`）：启动时一次性导入当前选择的后端，JSON 归档为 `db.json.migrated-*`；不提供 PG ↔ SQLite 自动迁移
+- SQLite 推荐单实例本机使用，数据库文件不能置于网络共享盘。备份应停止服务后复制文件；在线备份需正确处理 WAL，不能直接只复制主 `.db` 文件
+- 业务层保留进程内内存缓存，因此选择 PG 也不代表已支持多实例共享数据库的一致性
+- 现有 Compose 仍专用 PG：`docker compose up -d postgres` 起隔离库（宿主机 **5433**），本机看板需显式设置对应 PG URL，见 `docker-compose.yml`
+- 集成测试：`pnpm test:integration:postgres` / `pnpm test:integration:sqlite` 分别覆盖两种后端，`pnpm test:integration` 顺序运行两套测试
 
 ## 工作区 Git 状态
 

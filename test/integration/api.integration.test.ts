@@ -20,7 +20,7 @@ import { writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, 
 import { join } from "node:path";
 import { clearGitStatusCacheForTests, gitReadOnlyEnv } from "../../src/gitStatus.js";
 import { browseHome } from "../../src/fsbrowse.js";
-import { ensureSchema, isRepoDataPath, jsonDbPath, logsDir } from "../../src/db.js";
+import { ensureSchema, isRepoDataPath, jsonDbPath, logsDir, databaseKind, arrayPredicate, arrayParameter } from "../../src/db.js";
 
 await startTestDb();
 
@@ -115,10 +115,10 @@ describe("integration I1–I12", () => {
     await saveTaskDurable({ ...getTask(old.id)!, summary: "updated later", updatedAt: new Date(now + 5000).toISOString() });
     assert.deepEqual((await jsonOf(await app.request("/api/model-history"))).history.pi, ["new-model", "old-model"]);
 
-    await getPool().query(`
-      INSERT INTO model_history (kind, model, last_used_at)
-      SELECT 'claude', 'model-' || n, NOW() + n * INTERVAL '1 second' FROM generate_series(1, 25) n
-    `);
+    for (let n = 1; n <= 25; n++) {
+      await getPool().query(`INSERT INTO model_history (kind, model, last_used_at) VALUES ($1, $2, $3)`,
+        ["claude", `model-${n}`, new Date(now + n * 1000).toISOString()]);
+    }
     const { history } = await jsonOf(await app.request("/api/model-history"));
     assert.equal(history.claude.length, 20);
     assert.equal(history.claude[0], "model-25");
@@ -251,7 +251,12 @@ describe("integration I1–I12", () => {
       { model: "stale", thinkingEfforts: [] },
     ]);
     const before = await getPool().query("SELECT * FROM agent_models ORDER BY kind, model");
-    await getPool().query("ALTER TABLE agent_models ADD CONSTRAINT reject_model_sync_test CHECK (model <> 'rejected')");
+    if (databaseKind() === "sqlite") {
+      await getPool().query(`CREATE TRIGGER reject_model_sync_test BEFORE INSERT ON agent_models
+        WHEN NEW.model = 'rejected' BEGIN SELECT RAISE(ABORT, 'rejected model'); END`);
+    } else {
+      await getPool().query("ALTER TABLE agent_models ADD CONSTRAINT reject_model_sync_test CHECK (model <> 'rejected')");
+    }
     try {
       const sync = await syncAgentModelsOnStartup(async (kind) => kind === "pi" ? [
         { model: "existing", thinkingEfforts: ["high"] },
@@ -261,7 +266,8 @@ describe("integration I1–I12", () => {
       assert.deepEqual(sync.updated, []);
       assert.deepEqual((await getPool().query("SELECT * FROM agent_models ORDER BY kind, model")).rows, before.rows);
     } finally {
-      await getPool().query("ALTER TABLE agent_models DROP CONSTRAINT reject_model_sync_test");
+      if (databaseKind() === "sqlite") await getPool().query("DROP TRIGGER reject_model_sync_test");
+      else await getPool().query("ALTER TABLE agent_models DROP CONSTRAINT reject_model_sync_test");
     }
   });
 
@@ -1098,6 +1104,8 @@ describe("integration I1–I12", () => {
     appendLog(task.id, "A");
     appendLog(task.id, "B");
     appendLog(task.id, cont);
+    // Trigger the coarse database prune path (> keep + 50), not just exact trimming.
+    for (let index = 0; index < 60; index++) appendLog(task.id, `filler-${index}`);
     appendLog(task.id, "C");
     appendLog(task.id, exit);
     await flushPersist();
@@ -1183,8 +1191,8 @@ describe("integration I1–I12", () => {
     assert.equal(health.status, 503);
     await flushPersist().catch(() => undefined);
     const rows = await getPool().query<{ title: string }>(
-      `SELECT title FROM tasks WHERE id = ANY($1::text[]) ORDER BY title ASC`,
-      [[a.id, b.id]],
+      `SELECT title FROM tasks WHERE ${arrayPredicate("id", 1)} ORDER BY title ASC`,
+      [arrayParameter([a.id, b.id])],
     );
     assert.deepEqual(rows.rows.map((r) => r.title), ["title-a2", "title-b2"]);
     const health2 = await app.request("/api/health");

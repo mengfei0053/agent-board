@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync } from "no
 import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SqlitePool, type DatabasePool } from "./databaseAdapter.js";
+
 const { Pool } = pg;
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,15 +54,46 @@ export function ensureDataDirs(): void {
   mkdirSync(logs, { recursive: true });
 }
 
-/**
- * Local-dev fallback only. Compose does not use this password; set
- * POSTGRES_PASSWORD and DATABASE_URL explicitly. Not a production default.
- */
-export const DEFAULT_DATABASE_URL =
-  "postgresql://postgres:postgres@127.0.0.1:5432/agent_board";
+/** SQLite defaults stay under DATA_DIR, including isolated test roots. */
+export const DEFAULT_DATABASE_URL = `sqlite:${join(repoDataDir(), "agent-board.db")}`;
 
 export function databaseUrl(): string {
-  return (process.env.DATABASE_URL || DEFAULT_DATABASE_URL).trim();
+  return process.env.DATABASE_URL?.trim() || `sqlite:${join(dataDir(), "agent-board.db")}`;
+}
+
+export function databaseKind(url = databaseUrl()): "postgres" | "sqlite" {
+  if (/^postgres(?:ql)?:\/\//.test(url)) return "postgres";
+  if (url.startsWith("sqlite:")) return "sqlite";
+  throw new Error("DATABASE_URL must use postgres://, postgresql://, or sqlite:");
+}
+
+export function sqliteFilename(url = databaseUrl()): string {
+  if (!url.startsWith("sqlite:")) throw new Error("Expected a sqlite: database URL");
+  const filename = url.slice("sqlite:".length);
+  if (filename === ":memory:") return filename;
+  if (!filename || filename.startsWith("//") || /[?#\0]/.test(filename)) {
+    throw new Error("Use sqlite:./file.db, sqlite:/absolute/file.db, or sqlite::memory:");
+  }
+  return resolve(filename);
+}
+
+/** Array values are encoded as JSON only on SQLite; PostgreSQL keeps typed arrays. */
+export function arrayParameter(values: readonly unknown[]): string | readonly unknown[] {
+  return databaseKind() === "sqlite" ? JSON.stringify(values) : values;
+}
+
+export function arrayPredicate(column: string, parameter: number, type = "text"): string {
+  return databaseKind() === "sqlite"
+    ? `${column} IN (SELECT value FROM json_each($${parameter}))`
+    : `${column} = ANY($${parameter}::${type}[])`;
+}
+
+export function regexPredicate(column: string, parameter: number): string {
+  return `${column} ${databaseKind() === "sqlite" ? "REGEXP" : "~"} $${parameter}`;
+}
+
+export function latestTimestamp(left: string, right: string): string {
+  return `${databaseKind() === "sqlite" ? "MAX" : "GREATEST"}(${left}, ${right})`;
 }
 
 /** Hide password in DATABASE_URL for logs. */
@@ -74,15 +107,26 @@ export function redactDatabaseUrl(url?: string): string {
   }
 }
 
-let pool: pg.Pool | null = null;
+let pool: DatabasePool | null = null;
 
 export function hasPool(): boolean {
   return pool !== null;
 }
 
-export function getPool(): pg.Pool {
+export function getPool(): DatabasePool {
   if (!pool) {
-    pool = new Pool({ connectionString: databaseUrl() });
+    const url = databaseUrl();
+    if (databaseKind(url) === "sqlite") {
+      const filename = sqliteFilename(url);
+      if (filename !== ":memory:") {
+        assertDataRootAllowed(filename);
+        mkdirSync(dirname(filename), { recursive: true });
+      }
+      pool = new SqlitePool(filename);
+    } else {
+      // SAFETY: pg supplies the same async query/connect/end contract; our rows omit pg-only metadata.
+      pool = new Pool({ connectionString: url }) as unknown as DatabasePool;
+    }
   }
   return pool;
 }
@@ -226,25 +270,35 @@ export async function upsertMetaMany(entries: ReadonlyArray<readonly [string, st
 
 export async function ensureSchema(): Promise<void> {
   const p = getPool();
-  await p.query(SCHEMA_SQL);
-  // Existing DBs created before workspaces: add column if missing
-  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id TEXT`);
-  await p.query(
-    `CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`,
-  );
-  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS attachments JSONB`);
-  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worktree JSONB`);
-  await p.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS thinking_effort TEXT`);
-  await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS settings JSONB`);
-  await p.query(`ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS sort_order INT`);
+  const sqlite = databaseKind() === "sqlite";
+  const schema = sqlite
+    ? SCHEMA_SQL.replace(/BIGSERIAL PRIMARY KEY/g, "INTEGER PRIMARY KEY AUTOINCREMENT")
+      .replace(/TIMESTAMPTZ|JSONB/g, "TEXT")
+      .replace(/'\[\]'::jsonb/g, "'[]'")
+      .replace(/NOW\(\)/g, "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")
+    : SCHEMA_SQL;
+  // SQLite prepares one statement at a time. This schema is static DDL only.
+  for (const statement of schema.split(";").filter((sql) => sql.trim())) await p.query(statement);
+  for (const [table, column, type] of [
+    ["tasks", "workspace_id", "TEXT"], ["tasks", "attachments", "JSONB"],
+    ["tasks", "worktree", "JSONB"], ["tasks", "thinking_effort", "TEXT"],
+    ["workspaces", "settings", "JSONB"], ["workspaces", "sort_order", "INT"],
+  ]) {
+    if (sqlite) {
+      const { rows } = await p.query<{ name: string }>(`PRAGMA table_info(${table})`);
+      if (rows.some((row) => row.name === column)) continue;
+    }
+    await p.query(`ALTER TABLE ${table} ADD COLUMN ${sqlite ? "" : "IF NOT EXISTS "}${column} ${sqlite && type === "JSONB" ? "TEXT" : type}`);
+  }
+  await p.query(`CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`);
   // Recover models used before model history was introduced.
   await p.query(`
     INSERT INTO model_history (kind, model, last_used_at)
-    SELECT kind, BTRIM(model), MAX(created_at) FROM tasks
-    WHERE model IS NOT NULL AND BTRIM(model) <> ''
-    GROUP BY kind, BTRIM(model)
+    SELECT kind, TRIM(model), MAX(created_at) FROM tasks
+    WHERE model IS NOT NULL AND TRIM(model) <> ''
+    GROUP BY kind, TRIM(model)
     ON CONFLICT (kind, model) DO UPDATE SET
-      last_used_at = GREATEST(model_history.last_used_at, EXCLUDED.last_used_at)
+      last_used_at = ${latestTimestamp("model_history.last_used_at", "EXCLUDED.last_used_at")}
   `);
 }
 

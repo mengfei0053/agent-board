@@ -5,6 +5,11 @@ import type { OutputTurn, PromptTurn, SideJob, Task, Workspace } from "./types.j
 import { normalizeWorkspaceSettings } from "./workspaceApply.js";
 import {
   archiveJsonDb,
+  arrayParameter,
+  arrayPredicate,
+  databaseKind,
+  latestTimestamp,
+  regexPredicate,
   dataDir,
   ensureDataDirs,
   ensureSchema,
@@ -16,6 +21,7 @@ import {
   readJsonDbRaw,
   redactDatabaseUrl,
 } from "./db.js";
+import { insertRows } from "./databaseAdapter.js";
 import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadProcessEnvOverrides } from "./processEnv.js";
@@ -486,7 +492,7 @@ async function persistWorkspace(ws: Workspace): Promise<void> {
       : null;
   await p.query(
     `INSERT INTO workspaces (id, name, path, created_at, updated_at, settings, sort_order)
-     VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz, $6::jsonb, $7)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        path = EXCLUDED.path,
@@ -500,7 +506,7 @@ async function persistWorkspace(ws: Workspace): Promise<void> {
 async function persistDeleteWorkspaces(ids: string[]): Promise<void> {
   if (!ids.length) return;
   const p = getPool();
-  await p.query(`DELETE FROM workspaces WHERE id = ANY($1::text[])`, [ids]);
+  await p.query(`DELETE FROM workspaces WHERE ${arrayPredicate("id", 1)}`, [arrayParameter(ids)]);
 }
 
 async function persistTask(task: Task): Promise<void> {
@@ -516,8 +522,8 @@ async function persistTask(task: Task): Promise<void> {
         last_event, error, exit_code, attachments, worktree
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-        $12::timestamptz,$13::timestamptz,$14::timestamptz,$15::timestamptz,$16,$17,$18,
-        $19,$20,$21,$22::jsonb,$23::jsonb
+        $12,$13,$14,$15,$16,$17,$18,
+        $19,$20,$21,$22,$23
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
@@ -574,9 +580,9 @@ async function persistTask(task: Task): Promise<void> {
       // Use the persisted turn time, not status-update time, to promote resumed models.
       await client.query(`
         INSERT INTO model_history (kind, model, last_used_at)
-        VALUES ($1, $2, $3::timestamptz)
+        VALUES ($1, $2, $3)
         ON CONFLICT (kind, model) DO UPDATE SET
-          last_used_at = GREATEST(model_history.last_used_at, EXCLUDED.last_used_at)
+          last_used_at = ${latestTimestamp("model_history.last_used_at", "EXCLUDED.last_used_at")}
       `, [task.kind, task.model.trim(), task.prompts?.at(-1)?.at || task.createdAt]);
     }
 
@@ -584,7 +590,7 @@ async function persistTask(task: Task): Promise<void> {
     for (const o of task.outputs || []) {
       await client.query(
         `INSERT INTO task_outputs (task_id, iteration, text, at)
-         VALUES ($1, $2, $3, $4::timestamptz)`,
+         VALUES ($1, $2, $3, $4)`,
         [task.id, o.iteration, o.text, o.at ?? null],
       );
     }
@@ -593,7 +599,7 @@ async function persistTask(task: Task): Promise<void> {
     for (const pr of task.prompts || []) {
       await client.query(
         `INSERT INTO task_prompts (task_id, iteration, prompt, at)
-         VALUES ($1, $2, $3, $4::timestamptz)`,
+         VALUES ($1, $2, $3, $4)`,
         [task.id, pr.iteration, pr.prompt, pr.at ?? null],
       );
     }
@@ -603,7 +609,7 @@ async function persistTask(task: Task): Promise<void> {
       await client.query(
         `INSERT INTO task_side_jobs (
           task_id, job_id, kind, title, summary, status, tool_name, started_at, ended_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9::timestamptz)`,
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           task.id,
           j.id,
@@ -634,11 +640,11 @@ async function persistDelete(ids: string[]): Promise<void> {
   try {
     await client.query("BEGIN");
     // Explicit child deletes (FK also has ON DELETE CASCADE — belt and suspenders).
-    await client.query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [ids]);
-    await client.query(`DELETE FROM task_outputs WHERE task_id = ANY($1::text[])`, [ids]);
-    await client.query(`DELETE FROM task_prompts WHERE task_id = ANY($1::text[])`, [ids]);
-    await client.query(`DELETE FROM task_side_jobs WHERE task_id = ANY($1::text[])`, [ids]);
-    await client.query(`DELETE FROM tasks WHERE id = ANY($1::text[])`, [ids]);
+    await client.query(`DELETE FROM task_logs WHERE ${arrayPredicate("task_id", 1)}`, [arrayParameter(ids)]);
+    await client.query(`DELETE FROM task_outputs WHERE ${arrayPredicate("task_id", 1)}`, [arrayParameter(ids)]);
+    await client.query(`DELETE FROM task_prompts WHERE ${arrayPredicate("task_id", 1)}`, [arrayParameter(ids)]);
+    await client.query(`DELETE FROM task_side_jobs WHERE ${arrayPredicate("task_id", 1)}`, [arrayParameter(ids)]);
+    await client.query(`DELETE FROM tasks WHERE ${arrayPredicate("id", 1)}`, [arrayParameter(ids)]);
     await client.query("COMMIT");
   } catch (err) {
     try {
@@ -675,7 +681,7 @@ async function pruneTaskLogsInDb(
   }
   const p = getPool();
   const countRes = await p.query<{ n: string; c: string }>(
-    `SELECT COUNT(*)::text AS n, COALESCE(SUM(char_length(line)), 0)::text AS c
+    `SELECT COUNT(*) AS n, COALESCE(SUM(length(line)), 0) AS c
      FROM task_logs WHERE task_id = $1`,
     [taskId],
   );
@@ -693,11 +699,10 @@ async function pruneTaskLogsInDb(
            SELECT id FROM task_logs
            WHERE task_id = $1
            ORDER BY id DESC
-           OFFSET $2
-           LIMIT 1
+           LIMIT 1 OFFSET $2
          )
-         AND NOT (t.line ~ $3)`,
-      [taskId, keep - 1, boardMetaLineSqlPattern()],
+         AND NOT (${regexPredicate("t.line", 3)})`,
+      [taskId, keep - 1, boardMetaLineSqlPattern(databaseKind())],
     );
   }
 
@@ -717,9 +722,9 @@ async function pruneTaskLogsInDb(
   const keepIds = new Set(indices.map((i) => res.rows[i]!.id));
   const dropIds = res.rows.filter((r) => !keepIds.has(r.id)).map((r) => r.id);
   if (!dropIds.length) return;
-  await p.query(`DELETE FROM task_logs WHERE task_id = $1 AND id = ANY($2::bigint[])`, [
+  await p.query(`DELETE FROM task_logs WHERE task_id = $1 AND ${arrayPredicate("id", 2, "bigint")}`, [
     taskId,
-    dropIds,
+    arrayParameter(dropIds),
   ]);
 }
 
@@ -736,11 +741,17 @@ async function insertLogRows(rows: LogRow[]): Promise<void> {
   if (!rows.length) return;
   consumePersistFault("log");
   if (persistDryRun) return;
-  await getPool().query(
-    `INSERT INTO task_logs (task_id, line)
-     SELECT * FROM UNNEST($1::text[], $2::text[])`,
-    [rows.map((r) => r.taskId), rows.map((r) => r.line)],
-  );
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await insertRows(client, "task_logs", ["task_id", "line"], rows.map((r) => [r.taskId, r.line]));
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function persistLogLine(taskId: string, line: string): Promise<void> {
@@ -843,9 +854,9 @@ async function loadAllFromPg(): Promise<void> {
        FROM task_logs
      ) t
      WHERE rn <= $1
-        OR line ~ $2
+        OR ${regexPredicate("line", 2)}
      ORDER BY task_id ASC, id ASC`,
-    [MAX_LOG_LINES_KEPT + LOG_DB_PRUNE_EVERY, boardMetaLineSqlPattern()],
+    [MAX_LOG_LINES_KEPT + LOG_DB_PRUNE_EVERY, boardMetaLineSqlPattern(databaseKind())],
   );
   for (const r of logRes.rows) {
     const arr = logs.get(r.task_id) || [];
@@ -1277,7 +1288,7 @@ export function clearTaskLogs(ids: string[]): void {
   for (const id of uniq) logs.delete(id);
   dropQueuedLogs(new Set(uniq));
   enqueuePersist(async () => {
-    await getPool().query(`DELETE FROM task_logs WHERE task_id = ANY($1::text[])`, [uniq]);
+    await getPool().query(`DELETE FROM task_logs WHERE ${arrayPredicate("task_id", 1)}`, [arrayParameter(uniq)]);
     for (const id of uniq) {
       try {
         const path = `${logsDir()}/${id}.jsonl`;
@@ -1296,8 +1307,8 @@ export async function purgeArchivedTaskLogs(): Promise<{ tasks: number; rows: nu
   if (!ids.length) return { tasks: 0, rows: 0 };
   for (const id of ids) logs.delete(id);
   const del = await p.query(
-    `DELETE FROM task_logs WHERE task_id = ANY($1::text[]) RETURNING id`,
-    [ids],
+    `DELETE FROM task_logs WHERE ${arrayPredicate("task_id", 1)} RETURNING id`,
+    [arrayParameter(ids)],
   );
   for (const id of ids) {
     try {
@@ -1443,9 +1454,23 @@ export async function resetStoreForTests(): Promise<void> {
   logBatch = [];
   pendingTaskWrites.clear();
   const p = getPool();
-  await p.query(
-    `TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta, model_history, agent_models RESTART IDENTITY CASCADE`,
-  );
+  if (databaseKind() === "sqlite") {
+    const client = await p.connect();
+    try {
+      await client.query("BEGIN");
+      for (const table of ["task_logs", "task_outputs", "task_prompts", "task_side_jobs", "tasks", "uploads", "workspaces", "meta", "model_history", "agent_models", "sqlite_sequence"]) {
+        await client.query(`DELETE FROM ${table}`);
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } else {
+    await p.query(`TRUNCATE task_logs, task_outputs, task_prompts, task_side_jobs, tasks, uploads, workspaces, meta, model_history, agent_models RESTART IDENTITY CASCADE`);
+  }
   tasks = new Map();
   workspaces = new Map();
   logs = new Map();
