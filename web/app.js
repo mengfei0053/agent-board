@@ -907,7 +907,7 @@ function previewText(t) {
 function matchesQuery(t) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [t.title, t.cwd, t.prompt, t.kind, t.model, t.status, t.summary, t.output, STATUS_LABEL[t.status], `迭代${iterationOf(t)}`]
+  return [t.id, t.title, t.cwd, t.prompt, t.kind, t.model, t.status, t.summary, t.output, STATUS_LABEL[t.status], `迭代${iterationOf(t)}`]
     .filter(Boolean)
     .some((x) => String(x).toLowerCase().includes(q));
 }

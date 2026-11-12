@@ -584,7 +584,9 @@ async function main() {
     {
       const statuses = ["draft", "queued", "running", "blocked", "succeeded", "failed", "stopped", "archived"];
       const countState = createState({ tasks: statuses.map((status) => makeTask({
-        id: `count_${status}`, workspaceId: "ws_default", status,
+        id: status === "draft" ? "AbC123xYz9" : `count_${status}`,
+        title: `状态任务 ${status}`, prompt: `搜索回归内容 ${status}`,
+        workspaceId: "ws_default", status,
       })) });
       const streams = new Set();
       const countServer = createMockServer(countState, (req, res, url) => {
@@ -607,12 +609,32 @@ async function main() {
         await expectWorkspaceCounts(countPage, "ws_default", [1, 1, 2, 3, 1]);
         await expectWorkspaceCounts(countPage, "ws_extra", [0, 0, 0, 0, 0]);
 
+        for (const search of ["AbC123xYz9", "123xY", "ABC123XYZ9", "  aBc123xYz9  ", "状态任务 draft", "搜索回归内容 draft"]) {
+          await countPage.evaluate((value) => {
+            const input = document.getElementById("search");
+            input.value = value;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          }, search);
+          await countPage.waitForFunction(() => {
+            const cards = [...document.querySelectorAll(".card[data-id]")];
+            return cards.length === 1 && cards[0].dataset.id === "AbC123xYz9"
+              && document.getElementById("count-draft")?.textContent === "1";
+          });
+          await expectWorkspaceCounts(countPage, "ws_default", [1, 1, 2, 3, 1]);
+        }
+        await countPage.evaluate(() => {
+          const input = document.getElementById("search");
+          input.value = "";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await countPage.waitForFunction(() => document.querySelectorAll(".card[data-id]").length === 8);
+
         await countPage.type("#search", "no matching task");
         await countPage.waitForFunction(() => document.getElementById("count-draft")?.textContent === "0");
         await expectWorkspaceCounts(countPage, "ws_default", [1, 1, 2, 3, 1]);
         await selectWorkspace(countPage, "ws_extra");
 
-        const task = countState.tasks.get("count_draft");
+        const task = countState.tasks.get("AbC123xYz9");
         for (const [status, expected] of [
           ["queued", [0, 2, 2, 3, 1]],
           ["running", [0, 1, 3, 3, 1]],
