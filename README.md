@@ -48,6 +48,12 @@
 
 工作区 MCP 继续按原有规则覆盖全局设置；各工具的通用目录扫描、跨工具自动导入仍可能让未勾选的资源可见。删除技能链接不会删除链接指向的外部目录。Pi 需要支持 MCP 的版本或适配器，OAuth 需在各 CLI 分别登录。Docker 中的路径指容器文件系统，需要自行挂载相应配置与主副本目录。参考实现：[cc-switch MCP](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.1-mcp.md)、[Skills](https://github.com/farion1231/cc-switch/blob/main/docs/user-manual/zh/3-extensions/3.3-skills.md)；Cursor / Devin 路径依据各自官方文档。
 
+## 发布变更日志
+
+运行 `pnpm changelog`，根据 Git 提交和版本标签生成根目录的 [CHANGELOG.md](./CHANGELOG.md) 与 [CHANGELOG.zh.md](./CHANGELOG.zh.md)。需要包含完整历史和标签的克隆；可用 `pnpm changelog --ref 1.0.1 --output-dir /tmp/agent-board-release` 指定版本与输出目录。两份文件分别使用英文和中文标题、分类，具体变更描述保留提交原文，不自动翻译。
+
+发布 GitHub Release 时，现有 APK 工作流会自动生成并附加这两份文件；手动运行工作流时保存为 Actions artifact，不自动提交回仓库。详细发布步骤见 [Android 发布说明](./android/README.md#github-release)。
+
 ## 要求
 
 - Node 20+（本机开发）或 Docker / Docker Compose（一键启动）

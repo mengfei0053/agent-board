@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
+    "changelog": "node scripts/generate-changelog.mjs",
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
     "test:unit": "tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts test/unit/*.test.mjs",
     "test:coverage": "c8 tsx --test src/*.test.ts src/runners/*.test.ts src/relay/*.test.ts",

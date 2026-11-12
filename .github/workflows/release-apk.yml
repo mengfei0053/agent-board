@@ -18,6 +18,26 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      # Use the runner's Node.js; these scripts need no npm dependencies.
+      - name: Test changelog generation
+        run: node --test test/unit/changelog.test.mjs
+
+      - name: Generate bilingual changelogs
+        if: github.event_name != 'pull_request'
+        run: node scripts/generate-changelog.mjs
+
+      - name: Keep changelogs as workflow artifacts
+        if: github.event_name != 'pull_request'
+        # actions/upload-artifact v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: changelogs
+          path: |
+            CHANGELOG.md
+            CHANGELOG.zh.md
+          if-no-files-found: error
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
@@ -132,13 +152,16 @@ jobs:
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
 
-      - name: Attach the APK to the GitHub Release
+      - name: Attach the APK and changelogs to the GitHub Release
         if: github.event_name == 'release'
         # softprops/action-gh-release v2
         uses: >-
           softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: ${{ steps.apk.outputs.path }}
+          files: |
+            ${{ steps.apk.outputs.path }}
+            CHANGELOG.md
+            CHANGELOG.zh.md
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

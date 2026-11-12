@@ -119,10 +119,18 @@ Also configure the repository variable `ANDROID_RELEASE_CERT_SHA256` with the ex
 
 1. Update `versionName` in `app/build.gradle.kts` to the intended tag (an optional `v` prefix on the tag is accepted), and increase `versionCode`.
 2. Push the verified commit and tag, then publish a GitHub Release for that tag. Pushing a tag alone does not trigger this workflow.
-3. `.github/workflows/release-apk.yml` runs `:app:testReleaseUnitTest :protocol:test :app:assembleRelease` with the production key decoded only under the temporary runner directory, then removes the keystore when the build step exits.
+3. `.github/workflows/release-apk.yml` generates `CHANGELOG.md` and `CHANGELOG.zh.md` from the full Git history and version tags, then runs `:app:testReleaseUnitTest :protocol:test :app:assembleRelease` with the production key decoded only under the temporary runner directory, then removes the keystore when the build step exits.
 4. Before uploading, the workflow verifies the APK signature (API 30+), production certificate fingerprint, non-debuggable flag, application ID, internal versionName/versionCode, and that versionName matches the published tag.
-5. It attaches `agent-board-<tag>-<sha>-release.apk` to the GitHub Release and keeps an Actions artifact. Missing credentials or failed verification block publication; there is no debug fallback.
+5. It attaches `agent-board-<tag>-<sha>-release.apk`, `CHANGELOG.md`, and `CHANGELOG.zh.md` to the GitHub Release and keeps Actions artifacts. Missing credentials or failed verification block publication; there is no debug fallback.
 
-`workflow_dispatch` also builds and verifies a production release APK, but only stores an Actions artifact; it does not attach a release asset. Select a trusted branch or tag. Pull requests run unit tests and `assembleDebug` without receiving production signing credentials.
+`workflow_dispatch` also generates both changelogs and builds and verifies a production release APK, but only stores Actions artifacts; it does not attach release assets. Select a trusted branch or tag. Pull requests run unit tests and `assembleDebug` without receiving production signing credentials.
+
+### Changelog generation
+
+From the repository root, run `pnpm changelog` (or `node scripts/generate-changelog.mjs`) to regenerate both files. Use `pnpm changelog --ref 1.0.1 --output-dir /tmp/agent-board-release` to generate a specific release without modifying the working tree. A full clone with tags is required; shallow clones are rejected rather than producing incomplete logs.
+
+Each file includes the selected release and earlier version tags (`1.0.1` and `v1.0.1` are both supported). Commits after the latest tag appear under Unreleased. Only version tags on the first-parent history delimit releases; merge commits are omitted, but their individual changes are included. Conventional Commit subjects are grouped into features, bug fixes, performance, documentation, and other changes. English and Chinese headings are generated independently; descriptions retain the original commit language and are **not automatically translated**. Commit dates are used for section dates.
+
+CI generates these files for the checked-out release tag (or selected ref for a manual run). It uploads them as artifacts/assets but does not commit generated changes back to the repository or change the GitHub Release description. To keep the root files current in Git, run the command and include both files in a normal commit before publishing.
 
 The historical `1.0.0` release used the old debug workflow and remains unchanged. Production signing starts with `1.0.1` (`versionCode = 2`).
