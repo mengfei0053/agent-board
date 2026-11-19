@@ -3444,7 +3444,7 @@ function updateWorkspaceCounts() {
   }
   for (const btn of wsListEl.querySelectorAll(".ws-item")) {
     const lanes = counts.get(btn.dataset.workspaceId);
-    const total = lanes ? Object.values(lanes).reduce((sum, count) => sum + count, 0) : 0;
+    const total = lanes ? lanes.draft + lanes.todo + lanes.running + lanes.done : 0;
     btn.querySelector(".ws-item-count").textContent = `${total} 个任务`;
     for (const countEl of btn.querySelectorAll(".ws-lane-count")) {
       countEl.textContent = lanes?.[countEl.dataset.lane] || 0;
@@ -3476,6 +3476,7 @@ function renderWorkspaces() {
     const stats = document.createElement("span");
     stats.className = "ws-item-stats";
     for (const lane of LANES) {
+      if (lane === "archived") continue;
       const stat = document.createElement("span");
       stat.className = "ws-lane-stat";
       stat.dataset.lane = lane;

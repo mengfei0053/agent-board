@@ -58,7 +58,9 @@ async function selectWorkspace(page, id) {
   );
 }
 
-async function expectWorkspaceCounts(page, workspaceId, expected) {
+async function expectWorkspaceCounts(page, workspaceId, fullExpected) {
+  // 侧栏不显示归档数量，也不计入总数
+  const expected = fullExpected.slice(0, 4);
   await page.waitForFunction((id, counts) => {
     const item = document.querySelector(`.ws-item[data-workspace-id="${id}"]`);
     if (!item) return false;
