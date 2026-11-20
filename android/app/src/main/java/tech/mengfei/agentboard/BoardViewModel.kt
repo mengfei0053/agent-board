@@ -635,19 +635,26 @@ class BoardViewModel(
             render()
             return
         }
+        val holder = slot(session.sessionId)
+        if (holder.inflight?.cmd == "cmd.create") {
+            banner = zh("上一个新建任务请求还在处理中，请稍后再试。", "The previous create request is still pending. Try again shortly.")
+            render()
+            return
+        }
         val current = _state.value
         val selectedPath = current.workspaces.find { it.id == current.selectedWorkspaceId }?.path
         val nextCwd = cwdForNewTask(current.draftCwd, selectedPath, current.workspaces.map { it.path })
-        val holder = slot(session.sessionId)
-        if (holder.inflight == null) {
-            commandNote = null
-            formError = null
-        }
+        holder.settled.remove(actionKey(session.sessionId, "cmd.create", null))
+        if (holder.inflight == null) commandNote = null
+        formError = null
         val nextEffort = pickDefaultThinkingEffort(
             supportedThinkingEfforts(holder.modelCatalog, current.draftAgent, current.draftModel),
             current.draftThinkingEffort,
         )
-        _state.updateCopy { copy(draftUseGitWorktree = false, draftCwd = nextCwd, draftThinkingEffort = nextEffort) }
+        _state.updateCopy {
+            copy(draftTitle = "", draftPrompt = "", draftAttachments = emptyList(),
+                draftUseGitWorktree = false, draftCwd = nextCwd, draftThinkingEffort = nextEffort)
+        }
         push(Screen.Create(session.sessionId))
         if (CAP_BOARD_SETTINGS in capabilities(session) && !holder.settingsLoaded) {
             requestBoardSettings(session)
@@ -851,7 +858,9 @@ class BoardViewModel(
         sendRaw(session, "cmd.settings.put", null, key, envelope)
     }
 
-    fun startDifferentCreate() = clearSettled("cmd.create", null)
+    fun startDifferentCreate() {
+        if (_state.value.createMode == "lookup") openCreate()
+    }
     fun startDifferentWorkspaceCreate() = clearSettled("cmd.workspace.create", null)
     fun startDifferentWorkspaceDelete() = clearSettled("cmd.workspace.delete", _state.value.selectedWorkspaceId)
     fun resendStop() = resend("cmd.stop")
@@ -1627,6 +1636,7 @@ class BoardViewModel(
             onLookupReply(sessionId, message, current)
             return
         }
+        if (ref != current.requestId) return
         val interpreted = interpretCommand(message) ?: return
         when (nextCommandAction(current.lookupId != null, interpreted)) {
             CommandAction.Wait -> {
@@ -1805,8 +1815,8 @@ class BoardViewModel(
                 disk = store.readDisk()
             }
         }
-        if (current?.cmd == "cmd.create" && interpreted?.retry == Retry.None && interpreted.settled) {
-            _state.updateCopy { copy(draftAttachments = emptyList()) }
+        if (sessionId == activeId && current?.cmd == "cmd.create" && interpreted?.retry == Retry.None && interpreted.settled) {
+            _state.updateCopy { copy(draftTitle = "", draftPrompt = "", draftAttachments = emptyList()) }
         }
         if (current?.cmd == "cmd.continue") {
             val kept = if (interpreted?.retry == Retry.None && interpreted.settled) "" else holder.continuePrompt
@@ -1828,7 +1838,8 @@ class BoardViewModel(
             holder.continueThinkingEffort = resolveContinueEffort(holder, task)
             _state.updateCopy { copy(selectedTaskId = openedTask, createdHidden = createHiddenBanner(chip)) }
             banner = createHiddenBanner(chip) ?: banner
-            push(Screen.Detail(sessionId, openedTask))
+            val detail = Screen.Detail(sessionId, openedTask)
+            if (screen == Screen.Create(sessionId)) show(detail) else push(detail)
         }
         render()
     }

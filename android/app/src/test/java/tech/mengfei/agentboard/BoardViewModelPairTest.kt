@@ -360,6 +360,97 @@ class BoardConnectionTest {
     }
 
     @Test
+    fun consecutiveCreatesStartBlankAndCompleteIndependently() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticateWithWorkspaceAndSettings()
+            model.openCreate()
+            model.updateDraftTitle("First")
+            model.updateDraftPrompt("First prompt")
+            model.submitCreate()
+            val first = relay.sent.last { it.type == "cmd.create" }
+            relay.replyCreated(first.id, "task_1")
+            assertEquals(Screen.Detail("s1", "task_1"), model.state.value.screen)
+            model.pop()
+            assertEquals(Screen.Tasks, model.state.value.screen)
+
+            model.openCreate()
+            assertEquals("", model.state.value.draftTitle)
+            assertEquals("", model.state.value.draftPrompt)
+            model.updateDraftTitle("Second")
+            model.updateDraftPrompt("Second prompt")
+            model.submitCreate()
+            val creates = relay.sent.filter { it.type == "cmd.create" }
+            assertEquals(2, creates.size)
+            val second = creates.last()
+            assertEquals("Second", second.text("title"))
+            assertEquals("Second prompt", second.text("prompt"))
+            assertFalse(first.text("idempotencyKey") == second.text("idempotencyKey"))
+            relay.replyCreated(first.id, "task_1") // A late reply cannot finish the second create.
+            assertEquals("busy", model.state.value.createMode)
+            relay.replyCreated(second.id, "task_2")
+            assertEquals(Screen.Detail("s1", "task_2"), model.state.value.screen)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun reopeningDiscardsCancelledDraftButNotPendingCreate() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticateWithWorkspaceAndSettings()
+            model.openCreate()
+            model.updateDraftTitle("Abandoned")
+            model.updateDraftPrompt("Abandoned prompt")
+            model.pop()
+            model.openCreate()
+            assertEquals("", model.state.value.draftTitle)
+            assertEquals("", model.state.value.draftPrompt)
+
+            model.updateDraftTitle("Pending")
+            model.updateDraftPrompt("Pending prompt")
+            model.submitCreate()
+            model.pop()
+            model.openCreate()
+            assertEquals(Screen.Tasks, model.state.value.screen)
+            assertEquals("busy", model.state.value.createMode)
+            val pending = relay.sent.single { it.type == "cmd.create" }
+            relay.replyCreated(pending.id, "task_1")
+            assertEquals(Screen.Detail("s1", "task_1"), model.state.value.screen)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun newFormAfterLookupDoesNotSubmitTheOldCommand() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            model.onForeground()
+            relay.authenticateWithWorkspaceAndSettings()
+            model.openCreate()
+            model.updateDraftTitle("Old")
+            model.updateDraftPrompt("Old prompt")
+            model.submitCreate()
+            val first = relay.sent.last { it.type == "cmd.create" }
+            relay.listener.onMessage("""{"v":1,"id":"timeout","type":"ack","ts":2,"payload":{"ref":"${first.id}","stage":"timeout"}}""")
+            val lookup = relay.sent.last { it.type == "cmd.lookup" }
+            relay.listener.onMessage("""{"v":1,"id":"result","type":"ack","ts":3,"payload":{"ref":"${lookup.id}","stage":"unknown"}}""")
+            assertEquals("lookup", model.state.value.createMode)
+            assertEquals("Old prompt", model.state.value.draftPrompt)
+            model.pop()
+            model.openCreate()
+            assertEquals("send", model.state.value.createMode)
+            assertEquals("", model.state.value.draftTitle)
+            assertEquals("", model.state.value.draftPrompt)
+            model.updateDraftTitle("New")
+            model.updateDraftPrompt("New prompt")
+            model.submitCreate()
+            assertEquals("cmd.create", relay.sent.last().type)
+            assertFalse(first.text("idempotencyKey") == relay.sent.last().text("idempotencyKey"))
+        } finally { owner.clear() }
+    }
+
+    @Test
     fun continueTaskForwardsSelectedModelAndThinkingEffort() = kotlinx.coroutines.test.runTest(main.scheduler) {
         val (model, relay, owner) = harness()
         try {
@@ -458,6 +549,9 @@ private class ConnectionRelay : RelayApi {
         val hello = sent.last { it.type == "client.hello" }
         listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
         listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[{"id":"task_1","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","sessionId":"sess_1"}],"workspaces":[{"id":"ws_1","name":"Main","path":"/tmp/main","isGit":true}]}}""")
+    }
+    fun replyCreated(ref: String, taskId: String) {
+        listener.onMessage("""{"v":1,"id":"ack-$taskId","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"executed","task":{"id":"$taskId","title":"Created","status":"queued","updatedAt":2,"workspaceId":"ws_1"}}}""")
     }
     fun replyDetailWithEffort(ref: String, taskId: String, effort: String) {
         listener.onMessage("""{"v":1,"id":"detail-ack","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"executed","boardId":"board-a","task":{"id":"$taskId","title":"Done task","status":"succeeded","updatedAt":10,"agent":"pi","workspaceId":"ws_1","model":"old-model","thinkingEffort":"$effort","sessionId":"sess_1","detail":"full"}}}""")
