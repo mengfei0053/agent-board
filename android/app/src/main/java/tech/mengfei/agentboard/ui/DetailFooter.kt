@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,7 +31,7 @@ import tech.mengfei.agentboard.protocol.agentEnabled
 import tech.mengfei.agentboard.protocol.canContinueStatus
 import tech.mengfei.agentboard.protocol.canStopStatus
 
-private enum class DetailPanel { More, Options, Queue }
+private enum class DetailPanel { More, Options, Queue, Attachments }
 
 @Composable
 internal fun DetailFooter(
@@ -45,14 +46,13 @@ internal fun DetailFooter(
     val composerAllowed = !archived && agentEnabled(task.agent, state.grokEnabled)
     val queueMode = composerAllowed && active
     val continueMode = composerAllowed && !active && canContinueStatus(task.status)
-    val canAdd =
-        queueMode && state.canQueueFollowup && state.continuePrompt.isNotBlank() &&
-            state.followups.size < 5 && state.continueAttachments.isEmpty()
+    val showAttachments = (continueMode || queueMode) && task.agent != "grok"
+    val hasInput = state.continuePrompt.isNotBlank() || state.continueAttachments.isNotEmpty()
+    val canAdd = queueMode && state.canQueueFollowup && hasInput && state.followups.size < 5
     val addToQueue: () -> Unit = {
         if (canAdd && model.queueFollowup(state.continuePrompt)) model.updateContinuePrompt("")
     }
     val pendingLookup = state.followups.any { it.needsLookup }
-    val hasInput = state.continuePrompt.isNotBlank() || state.continueAttachments.isNotEmpty()
     val canContinue =
         state.writesAllowed && !state.followupBusy && state.continueMode != "busy" &&
             (state.continueMode != "send" || (!pendingLookup && (hasInput || state.followups.isNotEmpty())))
@@ -64,7 +64,11 @@ internal fun DetailFooter(
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (continueMode || queueMode) {
-            DetailPromptField(state.continuePrompt, model::updateContinuePrompt, if (queueMode) addToQueue else null)
+            DetailPromptField(state.continuePrompt, model::updateContinuePrompt, if (queueMode) addToQueue else null) {
+                if (showAttachments) TextButton(onClick = { panel = DetailPanel.Attachments }) {
+                    Text(stringResource(R.string.detail_attach_count, state.continueAttachments.size))
+                }
+            }
         }
         // One row even at large font scales; narrow windows can scroll to the trailing actions.
         Row(
@@ -101,12 +105,12 @@ internal fun DetailFooter(
                     if (state.followups.isEmpty()) Text(stringResource(R.string.detail_queue_empty))
                     state.followups.forEach { item ->
                         FollowupRow(
-                            prompt = item.prompt,
+                            prompt = listOf(item.prompt, item.attachments.joinToString(" · ") { it.originalName }).filter { it.isNotBlank() }.joinToString("\n"),
                             needsLookup = item.needsLookup,
                             canSend =
                                 !state.followupBusy && state.writesAllowed && (
                                     item.needsLookup ||
-                                        (state.canSteerFollowup && !pendingLookup && state.continueMode != "lookup")
+                                        (state.canSteerFollowup && (!active || item.attachments.isEmpty()) && !pendingLookup && state.continueMode != "lookup")
                                 ),
                             canRemove = !state.followupBusy,
                             onSend = { model.sendFollowup(item.id) },
@@ -114,6 +118,13 @@ internal fun DetailFooter(
                         )
                     }
                 }
+            }
+        }
+
+        DetailPanel.Attachments -> if (showAttachments) {
+            DetailActionDialog(stringResource(R.string.attachments_label), { panel = null }) {
+                if (active) Text(stringResource(R.string.detail_attachment_queue_hint))
+                AttachmentPickerSection(state.continueAttachments, model::addContinueAttachments, model::removeContinueAttachment)
             }
         }
 
@@ -133,16 +144,6 @@ internal fun DetailFooter(
                         { panel = DetailPanel.Options },
                         Modifier.fillMaxWidth(),
                     )
-                }
-                if (queueMode) {
-                    // Do not strand an attachment if another client starts the next round while composing.
-                    state.continueAttachments.forEachIndexed { index, att ->
-                        MakeAction(
-                            "${stringResource(R.string.delete)} · ${att.originalName}",
-                            { model.removeContinueAttachment(index) },
-                            Modifier.fillMaxWidth(),
-                        )
-                    }
                 }
                 if (!archived) {
                     if (!continueMode && state.continueMode in setOf("lookup", "reuse")) {

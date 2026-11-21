@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,6 +26,7 @@ import tech.mengfei.agentboard.protocol.CatalogDocument
 import tech.mengfei.agentboard.protocol.CredentialSecret
 import tech.mengfei.agentboard.protocol.DiskOp
 import tech.mengfei.agentboard.protocol.MigrationState
+import tech.mengfei.agentboard.protocol.OutgoingAttachment
 import tech.mengfei.agentboard.protocol.PhoneSession
 import tech.mengfei.agentboard.protocol.SWITCHED_PREFIX
 import tech.mengfei.agentboard.protocol.decodeCatalog
@@ -492,7 +494,10 @@ class BoardConnectionTest {
             model.openTask("task_1")
             assertFalse(model.queueFollowup("  "))
             repeat(5) { assertTrue(model.queueFollowup(" p$it ")) }
+            val file = OutgoingAttachment("note.txt", dataBase64 = "QQ==")
+            model.addContinueAttachments(listOf(file))
             assertFalse(model.queueFollowup("overflow"))
+            assertEquals(listOf(file), model.state.value.continueAttachments)
             val fromA = model.state.value.followups
             assertEquals("p0", fromA.first().prompt)
             relay.task("task_2", "running", 3)
@@ -510,6 +515,41 @@ class BoardConnectionTest {
             model.openTask("task_1")
             model.removeFollowup(fromA.first().id)
             assertEquals(fromA.drop(1), model.state.value.followups)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun queueValidationPreservesDraftAndAttachmentBudgetIsSharedAcrossTasks() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.authenticate()
+            relay.task("task_1", "running", 2)
+            model.openTask("task_1")
+            val invalid = OutgoingAttachment("note.txt", dataBase64 = "")
+            model.addContinueAttachments(listOf(invalid))
+            model.updateContinuePrompt("keep my draft")
+            assertFalse(model.queueFollowup(model.state.value.continuePrompt))
+            assertEquals("keep my draft", model.state.value.continuePrompt)
+            assertEquals(listOf(invalid), model.state.value.continueAttachments)
+            assertTrue(model.state.value.followups.isEmpty())
+            model.removeContinueAttachment(0)
+
+            val file = OutgoingAttachment("big.bin", dataBase64 = "AAAA".repeat(2 * 1024 * 1024))
+            model.addContinueAttachments(listOf(file, file))
+            assertTrue(model.queueFollowup("fits"))
+            val first = model.state.value.followups.single()
+            relay.task("task_2", "running", 3)
+            model.openTask("task_2")
+            val extra = OutgoingAttachment("extra.bin", dataBase64 = "QQ==")
+            model.addContinueAttachments(listOf(extra))
+            assertFalse(model.queueFollowup("over budget"))
+            assertEquals(listOf(extra), model.state.value.continueAttachments)
+            assertTrue(model.state.value.followups.isEmpty())
+            model.openTask("task_1")
+            model.removeFollowup(first.id)
+            model.openTask("task_2")
+            model.addContinueAttachments(listOf(extra))
+            assertTrue(model.queueFollowup("space available"))
         } finally { owner.clear() }
     }
 
@@ -549,19 +589,20 @@ class BoardConnectionTest {
     }
 
     @Test
-    fun manualTerminalSendChoosesTheTappedItemWithoutSteerCapability() = kotlinx.coroutines.test.runTest(main.scheduler) {
+    fun attachmentItemSkipsSteerAndManualTerminalSendIncludesItsPayload() = kotlinx.coroutines.test.runTest(main.scheduler) {
         val (model, relay, owner) = harness()
         try {
+            relay.offerSteer = true
             relay.authenticate()
             relay.task("task_1", "running", 2)
             model.openTask("task_1")
-            model.addContinueAttachments(listOf(tech.mengfei.agentboard.protocol.OutgoingAttachment("note.txt", dataBase64 = "QQ==")))
-            assertFalse(model.queueFollowup("not without my file"))
-            assertEquals(1, model.state.value.continueAttachments.size)
-            model.removeContinueAttachment(0)
             model.queueFollowup("first")
-            model.queueFollowup("second")
-            assertFalse(model.state.value.canSteerFollowup)
+            val file = OutgoingAttachment("note.txt", "text/plain", 1L, "QQ==")
+            model.addContinueAttachments(listOf(file))
+            assertTrue(model.queueFollowup("second"))
+            assertTrue(model.state.value.continueAttachments.isEmpty())
+            assertEquals(listOf(file), model.state.value.followups.last().attachments)
+            assertTrue(model.state.value.canSteerFollowup)
             model.sendFollowup(model.state.value.followups.last().id)
             assertFalse(relay.sent.any { it.type == "cmd.steer" })
             relay.snapshot("board-a", 1) // No automatic writes after a replay.
@@ -570,7 +611,21 @@ class BoardConnectionTest {
             model.sendFollowup(model.state.value.followups.last().id)
             val cmd = relay.sent.single { it.type == "cmd.continue" }
             assertEquals("second", cmd.text("prompt"))
-            relay.replyCreated(cmd.id, "task_1")
+            assertEquals(Json.parseToJsonElement("""[{"originalName":"note.txt","mime":"text/plain","size":1,"data":"QQ=="}]"""),
+                cmd.payload["attachments"])
+            relay.stage(cmd.id, "timeout")
+            relay.stage(relay.sent.single { it.type == "cmd.lookup" }.id, "unknown")
+            val held = model.state.value.followups.last()
+            assertTrue(held.needsLookup)
+            assertEquals(listOf(file), held.attachments)
+            relay.task("task_1", "running", 5)
+            model.sendFollowup(held.id)
+            val lookup = relay.sent.last { it.type == "cmd.lookup" }
+            assertEquals("cmd.continue", lookup.text("cmd"))
+            assertEquals(cmd.text("idempotencyKey"), lookup.text("idempotencyKey"))
+            assertFalse(relay.sent.any { it.type == "cmd.steer" })
+            assertEquals(1, relay.sent.count { it.type == "cmd.continue" })
+            relay.replyCreated(lookup.id, "task_1")
             assertEquals(listOf("first"), model.state.value.followups.map { it.prompt })
         } finally { owner.clear() }
     }
@@ -607,7 +662,8 @@ class BoardConnectionTest {
             relay.authenticate()
             relay.task("task_1", "running", 2, agent = "codex")
             model.openTask("task_1")
-            model.queueFollowup("first")
+            model.addContinueAttachments(listOf(OutgoingAttachment("log.txt", "text/plain", 5L, "aGVsbG8=")))
+            assertTrue(model.queueFollowup("  "))
             model.queueFollowup("second")
             assertFalse(model.state.value.canSteerFollowup)
             model.sendFollowup(model.state.value.followups.first().id)
@@ -618,15 +674,20 @@ class BoardConnectionTest {
             relay.task("task_2", "running", 4)
             model.openTask("task_2")
             model.updateContinuePrompt("a different task's draft")
+            val draftFile = OutgoingAttachment("other.txt", dataBase64 = "QQ==")
+            model.addContinueAttachments(listOf(draftFile))
             relay.task("task_1", "succeeded", 5, agent = "codex")
             val cmd = relay.sent.single { it.type == "cmd.continue" }
-            assertEquals("first", cmd.text("prompt"))
+            assertNull(cmd.text("prompt"))
+            assertEquals(Json.parseToJsonElement("""[{"originalName":"log.txt","mime":"text/plain","size":5,"data":"aGVsbG8="}]"""),
+                cmd.payload["attachments"])
             assertEquals("task_1", cmd.text("taskId"))
             assertNull(cmd.text("thinkingEffort"))
             relay.stage(cmd.id, "accepted")
             relay.task("task_1", "succeeded", 6, agent = "codex")
             relay.replyCreated(cmd.id, "task_1")
             assertEquals("a different task's draft", model.state.value.continuePrompt)
+            assertEquals(listOf(draftFile), model.state.value.continueAttachments)
             model.openTask("task_1")
             assertEquals(listOf("second"), model.state.value.followups.map { it.prompt })
             relay.snapshot("board-a", 1)

@@ -30,6 +30,7 @@ internal fun DetailPromptField(
     value: String,
     onChange: (String) -> Unit,
     onQueue: (() -> Unit)? = null,
+    attachmentAction: (@Composable () -> Unit)? = null,
 ) {
     val label = stringResource(if (onQueue == null) R.string.continue_prompt_label else R.string.detail_queue_prompt)
     OutlinedTextField(
@@ -37,6 +38,7 @@ internal fun DetailPromptField(
         onChange,
         modifier = Modifier.fillMaxWidth().semantics { contentDescription = label },
         placeholder = { Text(label, maxLines = 1) },
+        trailingIcon = attachmentAction,
         singleLine = onQueue != null,
         maxLines = if (onQueue == null) 2 else 1,
         keyboardOptions = KeyboardOptions(imeAction = if (onQueue == null) ImeAction.Default else ImeAction.Done),

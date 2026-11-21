@@ -64,6 +64,8 @@
     <string name="thinking_not_supported">Not supported for this agent</string>
     <string name="attachments_label">Attachments</string>
     <string name="add_attachment">Add attachment</string>
+    <string name="detail_attach_count">Files (%1$d)</string>
+    <string name="detail_attachment_queue_hint">Queued files are sent with the next round, not injected into a running session.</string>
     <string name="attachment_limit_hint">Up to 10 files (max 8 MB each)</string>
     <string name="attachment_too_large">File exceeds 8 MB limit</string>
     <string name="exit_code">Exit code</string>

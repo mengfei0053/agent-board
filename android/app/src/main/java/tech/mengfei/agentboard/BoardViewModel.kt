@@ -243,9 +243,18 @@ data class SessionRow(
 )
 
 private const val MAX_FOLLOWUPS = 5
+// Shared by all session/task queues; count the retained encoding, not the reported file size.
+private const val MAX_QUEUED_BASE64_CHARS = 16L * 1024 * 1024
 private val followupActiveStatuses = setOf("queued", "running", "paused", "blocked")
 
-data class TaskFollowup(val id: String, val prompt: String, val needsLookup: Boolean = false)
+data class TaskFollowup(
+    val id: String,
+    val prompt: String,
+    val needsLookup: Boolean = false,
+    val attachments: List<OutgoingAttachment> = emptyList(),
+)
+
+private fun List<OutgoingAttachment>.base64Chars() = sumOf { it.dataBase64.length.toLong() }
 
 data class UiState(
     val screen: Screen = Screen.Pair,
@@ -761,10 +770,14 @@ class BoardViewModel(
         if (task.status !in followupActiveStatuses || !followupAgentEnabled(holder, task) || !writesOk(session)) return false
         val queue = holder.followups[task.id].orEmpty()
         val clean = prompt.trim()
+        val attachments = holder.continueAttachments
         val error = when {
-            holder.continueAttachments.isNotEmpty() -> zh("待办仅支持文本", "Queued prompts are text only.")
+            attachments.isNotEmpty() && task.agent == "grok" -> zh("Grok 不支持本地附件", "Grok does not support local attachments.")
             queue.size >= MAX_FOLLOWUPS -> zh("待办最多 5 条", "Queue limit: 5 prompts.")
-            else -> (validatePhoneContinue(ids(), clock(), session.boardId, task.id, keys(), clean) as? Validated.Invalid)?.message?.let(::say)
+            attachments.isNotEmpty() && queuedAttachmentChars() + attachments.base64Chars() > MAX_QUEUED_BASE64_CHARS ->
+                zh("待办附件总量已达上限，请先发送或移除附件待办", "Queued attachments exceed the limit. Send or remove an attachment item first.")
+            else -> (validatePhoneContinue(ids(), clock(), session.boardId, task.id, keys(), clean,
+                attachments = attachments) as? Validated.Invalid)?.message?.let(::say)
         }
         if (error != null) {
             formError = error
@@ -772,10 +785,15 @@ class BoardViewModel(
             return false
         }
         if (queue.isEmpty()) holder.view.seq?.let { holder.autoAfterSeq[task.id] = it }
-        holder.followups[task.id] = queue + TaskFollowup(newLocalId("q"), clean)
+        holder.followups[task.id] = queue + TaskFollowup(newLocalId("q"), clean, attachments = attachments)
+        holder.continueAttachments = emptyList()
         formError = null
         render()
         return true
+    }
+
+    private fun queuedAttachmentChars(): Long = slots.values.sumOf { slot ->
+        slot.followups.values.sumOf { queue -> queue.sumOf { it.attachments.base64Chars() } }
     }
 
     fun removeFollowup(id: String) {
@@ -1786,14 +1804,15 @@ class BoardViewModel(
         val key = keys()
         val message = when (cmd) {
             "cmd.steer" -> {
-                if (!canSteer(holder, task)) return
+                if (!canSteer(holder, task) || item.attachments.isNotEmpty()) return
                 validateSteer(ids(), clock(), session.boardId, task.id, key, item.prompt)
             }
             "cmd.continue" -> {
-                if (task.status !in TERMINAL_STATUSES) return
+                if (task.status !in TERMINAL_STATUSES || (task.agent == "grok" && item.attachments.isNotEmpty())) return
                 validatePhoneContinue(ids(), clock(), session.boardId, task.id, key, item.prompt,
                     model = holder.continueModel.takeIf { !automatic && task.agent != "grok" && it.isNotBlank() },
-                    thinkingEffort = holder.continueThinkingEffort.takeIf { !automatic && task.agent != "grok" && it.isNotBlank() })
+                    thinkingEffort = holder.continueThinkingEffort.takeIf { !automatic && task.agent != "grok" && it.isNotBlank() },
+                    attachments = item.attachments)
             }
             else -> return
         }

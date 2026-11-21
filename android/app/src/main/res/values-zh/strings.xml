@@ -64,6 +64,8 @@
     <string name="thinking_not_supported">当前 Agent 无思考强度选项</string>
     <string name="attachments_label">附件</string>
     <string name="add_attachment">添加附件</string>
+    <string name="detail_attach_count">附件 (%1$d)</string>
+    <string name="detail_attachment_queue_hint">带附件的待办会在下一轮继续时发送，不能插入正在执行的会话。</string>
     <string name="attachment_limit_hint">单次最多 10 个文件（单个上限 8 MB）</string>
     <string name="attachment_too_large">文件超过 8 MB 上限</string>
     <string name="exit_code">退出码</string>

@@ -692,11 +692,6 @@ private fun DetailInputOptions(state: UiState, model: BoardViewModel, task: Rela
         onSelectEffort = model::updateContinueThinkingEffort,
     )
     QuickFill(state) { model.updateContinuePrompt(it); onFilled() }
-    if (task.agent != "grok") AttachmentPickerSection(
-        attachments = state.continueAttachments,
-        onAdd = model::addContinueAttachments,
-        onRemove = model::removeContinueAttachment,
-    )
 }
 
 @Composable
@@ -1142,7 +1137,7 @@ private fun ModelOptionRow(
 }
 
 @Composable
-private fun AttachmentPickerSection(
+internal fun AttachmentPickerSection(
     attachments: List<OutgoingAttachment>,
     onAdd: (List<OutgoingAttachment>) -> Unit,
     onRemove: (Int) -> Unit,
