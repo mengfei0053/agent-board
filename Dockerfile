@@ -1,5 +1,5 @@
 # agent-board — Hono + static web UI
-FROM docker.m.daocloud.io/library/node:20-bookworm-slim
+FROM docker.m.daocloud.io/library/node:22-bookworm-slim
 
 WORKDIR /app
 

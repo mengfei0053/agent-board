@@ -8,6 +8,12 @@ allowBuilds:
   core-js: false
   core-js-pure: false
   better-sqlite3: true
+  # BDK ships its CLI prebuilt; don't install its optional user-level skills.
+  '@grok/agent-sdk': false
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - '@grok/agent-sdk@0.7.2'
 
 overrides:
   webpack: 5.101.3

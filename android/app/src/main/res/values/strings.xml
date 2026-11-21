@@ -222,7 +222,7 @@
     <string name="git_clean">Clean</string>
     <string name="git_repos">Repositories: %1$d</string>
     <string name="enable_grok_bot">Enable Grok Bot tasks</string>
-    <string name="grok_bot_hint">Install @cursor/bdk on the board server, authenticate, and deploy the target agent first. This connects to that bot, not desktop Grok, and does not switch models.</string>
+    <string name="grok_bot_hint">The board server includes @grok/agent-sdk. Authenticate on the server and deploy the target agent first. This connects to that bot, not desktop Grok, and does not switch models.</string>
     <string name="grok_hosted_task">The hosted bot cannot access the board’s local workspace, worktrees or attachments. Send instructions as text.</string>
     <string name="grok_bot_slug">Deployed agent slug</string>
     <string name="grok_slug_error">Use 1–63 lowercase letters, digits or hyphens. Start and end with a letter or digit.</string>

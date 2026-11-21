@@ -5,8 +5,8 @@
 ## 操作者准备
 
 1. 准备专用服务账号/系统用户，把 agent 预先部署至受信任的 Cursor 团队，确认其 slug、权限与成本上限。Board 不负责部署或登录。CLI 未指定 `--team` 时使用凭据的默认团队；**不要跨团队复用/切换运行 Board 的身份**。同名 slug 在不同团队并不代表同一个 bot。
-2. 使用 Node ≥22.13，在可信目录显式安装 `npm install --global @cursor/bdk@0.7.2`。以 Board 的运行身份检查 `bdk --version --json`（此版本输出的 name 为 `@grok/agent-sdk`），按需执行 `bdk login`。或者仅在服务端注入 Cursor 凭据（`CURSOR_API_KEY`、`CURSOR_API_KEY_FILE` 或 `CURSOR_SERVICE_ACCOUNT_KEY`）。**不要**把密钥填入 Board 设置、任务、CLI 路径或 URL。
-3. 在 Board 设置启用 Grok Bot 并填入该部署 slug。优先配置服务环境 `AGENT_BOARD_BDK_BIN=/absolute/path/to/bdk`，否则从服务账号可信的绝对 PATH 目录查找 `bdk`；不搜索相对目录、`node_modules/.bin`、工作区或运行 `npx`。子进程不继承自定义 API 地址、`NODE_OPTIONS`、Board 数据库或 webhook 凭据。只使用非交互 CLI。保持自己的 PATH、可执行文件、认证目录及其父目录不可被工作区用户修改。
+2. 使用 Node ≥22.13，在看板项目目录执行 `pnpm install`，会随服务端依赖安装 `@grok/agent-sdk@0.7.2`，无需全局安装。以 Board 的运行身份在该目录执行 `pnpm exec bdk --version --json`（此版本输出的 name 为 `@grok/agent-sdk`），按需执行 `pnpm exec bdk login`。Docker 部署请在重新构建的看板容器内认证。或者仅在服务端注入 Cursor 凭据（`CURSOR_API_KEY`、`CURSOR_API_KEY_FILE` 或 `CURSOR_SERVICE_ACCOUNT_KEY`）。**不要**把密钥填入 Board 设置、任务、CLI 路径或 URL。
+3. 在 Board 设置启用 Grok Bot 并填入该部署 slug。Board 默认用自己的 Node 运行随项目安装的 CLI，不从任务工作区或 PATH 查找 `bdk`，也不会运行 `npx`。只有需要覆盖时才设置 `AGENT_BOARD_BDK_BIN=/absolute/path/to/bdk`，覆盖的 CLI 也必须是同一版本。子进程不继承自定义 API 地址、`NODE_OPTIONS`、Board 数据库或 webhook 凭据。只使用非交互 CLI。保持自己的 PATH、可执行文件、认证目录及其父目录不可被工作区用户修改。
 
 ## 一轮任务到底何时算完成
 
@@ -27,4 +27,4 @@ bdk session create --prod --slug <原slug> --session <原ses_id> --message=<新�
 
 ## 可复核的上游依据
 
-固定版本的 [npm 发布包](https://registry.npmjs.org/@cursor/bdk/-/bdk-0.7.2.tgz)：[命令解析](https://unpkg.com/@cursor/bdk@0.7.2/dist/internal/cli/commands/session.js)、[托管提交、等待与续接](https://unpkg.com/@cursor/bdk@0.7.2/dist/internal/cli-ax.js)、[事件快照输出](https://unpkg.com/@cursor/bdk@0.7.2/dist/internal/hosted-session-view.js)、[回答/终态提取语义](https://unpkg.com/@cursor/bdk@0.7.2/dist/internal/trajectory.js)、[部署与认证说明](https://unpkg.com/@cursor/bdk@0.7.2/docs/deployment.md)。离线验证：`node_modules/.bin/tsx --test src/runners/grok.test.ts`。测试只使用临时的假 CLI，不需要 Cursor 账号。
+固定版本的 [npm 发布包](https://registry.npmjs.org/@grok/agent-sdk/-/agent-sdk-0.7.2.tgz)：[命令解析](https://unpkg.com/@grok/agent-sdk@0.7.2/dist/internal/cli/commands/session.js)、[托管提交、等待与续接](https://unpkg.com/@grok/agent-sdk@0.7.2/dist/internal/cli-ax.js)、[事件快照输出](https://unpkg.com/@grok/agent-sdk@0.7.2/dist/internal/hosted-session-view.js)、[回答/终态提取语义](https://unpkg.com/@grok/agent-sdk@0.7.2/dist/internal/trajectory.js)、[部署与认证说明](https://unpkg.com/@grok/agent-sdk@0.7.2/docs/deployment.md)。离线验证：`node_modules/.bin/tsx --test src/runners/grok.test.ts`。测试只使用临时的假 CLI，不需要 Cursor 账号。

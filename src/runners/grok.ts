@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { delimiter, isAbsolute, parse } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { getGrokBotSettings } from "../grokBot.js";
 import { summarizeOutput, upsertOutputTurn } from "../extractOutput.js";
@@ -29,10 +30,20 @@ function object(value: unknown): JsonObject {
   return value as JsonObject;
 }
 
-function readCli(bin: string, args: string[], env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<JsonObject> {
+export function resolveBdkCommand(override = process.env.AGENT_BOARD_BDK_BIN): [string, ...string[]] {
+  if (override !== undefined) {
+    if (!isAbsolute(override)) throw new RunError("AGENT_BOARD_BDK_BIN must be an absolute executable path.");
+    return [override];
+  }
+  // Resolve relative to the board module, never the task cwd or the user's PATH.
+  const manifest = import.meta.resolve("@grok/agent-sdk/package.json");
+  return [process.execPath, fileURLToPath(new URL("./dist/bin/agent-serve.js", manifest))];
+}
+
+function readCli([bin, ...prefix]: [string, ...string[]], args: string[], env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<JsonObject> {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
-    const child = spawn(bin, args, {
+    const child = spawn(bin, [...prefix, ...args], {
       cwd: parse(process.cwd()).root, env, stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
     });
     // Wait for close even after killing the local CLI. A stopped observer never cancels a deployment.
@@ -51,7 +62,7 @@ function readCli(bin: string, args: string[], env: NodeJS.ProcessEnv, signal: Ab
     child.on("close", code => {
       clearTimeout(timer);
       signal.removeEventListener("abort", kill);
-      if (launchError) return reject(new RunError("Cannot start bdk. Check the operator-installed executable and Node version."));
+      if (launchError) return reject(new RunError("Cannot start bdk. Check the board dependencies, executable override and Node version."));
       if (size > 8 * 1024 * 1024) return reject(new RunError("BDK response exceeds the observation limit."));
       if (code !== 0) {
         const reason = code === 5 ? "authentication/permission denied" : code === 3 ? "delivery pending" : `exit ${code ?? "signal/timeout"}`;
@@ -107,12 +118,11 @@ export const grokRunner: Runner = {
       const prompt = (opts?.continuePrompt ?? task.prompt).trim();
       const wake = `[Agent Board request: ${randomUUID()}]\n${prompt}`;
       if (!prompt || wake.length > 65536 || wake.includes("\0") || Buffer.byteLength(wake) > 120_000) throw new RunError("Empty or oversized/invalid Grok message.");
-      const bin = process.env.AGENT_BOARD_BDK_BIN ?? "bdk";
-      if (bin !== "bdk" && !isAbsolute(bin)) throw new RunError("AGENT_BOARD_BDK_BIN must be an absolute executable path.");
+      const command = resolveBdkCommand();
       const env = cliEnv();
-      const cli = (...args: string[]) => readCli(bin, args, env, observing);
+      const cli = (...args: string[]) => readCli(command, args, env, observing);
       const version = await cli("--version", "--json");
-      if (version.name !== "@grok/agent-sdk" || version.version !== "0.7.2") throw new RunError("Expected operator-installed @cursor/bdk@0.7.2.");
+      if (version.name !== "@grok/agent-sdk" || version.version !== "0.7.2") throw new RunError("Expected @grok/agent-sdk@0.7.2.");
       observing.throwIfAborted();
       hooks.onStatus({ status: "running", startedAt: new Date().toISOString(), lastEvent: "grok_submitting", summary: "Hosted Grok: stopping the board does not cancel remote work." });
       submitting = true;

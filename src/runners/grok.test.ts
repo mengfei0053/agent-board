@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { applyGrokBotSettings } from "../grokBot.js";
 import type { Task } from "../types.js";
-import { grokRunner } from "./grok.js";
+import { grokRunner, resolveBdkCommand } from "./grok.js";
 import { runners } from "./index.js";
 
 const id = "ses_0123456789abcdef01234567";
@@ -76,6 +77,16 @@ describe("Grok hosted runner (offline)", () => {
     }, { continuePrompt });
     return { handle, updates, logs };
   }
+  it("resolves the bundled CLI outside the task cwd without a global bdk", () => {
+    delete process.env.AGENT_BOARD_BDK_BIN;
+    const [node, ...args] = resolveBdkCommand();
+    assert.equal(node, process.execPath);
+    const version = execFileSync(node, [...args, "--version", "--json"], {
+      cwd: dir, env: { HOME: dir, PATH: "", CI: "1", AGENT_SERVE_NO_UPDATE_CHECK: "1" }, encoding: "utf8",
+    });
+    assert.equal(JSON.parse(version).version, "0.7.2");
+    assert.throws(() => resolveBdkCommand("./bdk"), /absolute/);
+  });
   it("uses an installed noninteractive CLI, fixed prod slug, one literal prompt; publishes only parent reply", async () => {
     assert.equal(runners.grok, grokRunner);
     const { handle, updates, logs } = start();

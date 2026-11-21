@@ -222,7 +222,7 @@
     <string name="git_clean">干净</string>
     <string name="git_repos">%1$d 个仓库</string>
     <string name="enable_grok_bot">启用 Grok Bot 任务</string>
-    <string name="grok_bot_hint">请先在服务端安装 @cursor/bdk、完成认证并部署目标 Agent。此选项仅连接已部署的 Bot，不连接桌面 Grok，也不切换模型。</string>
+    <string name="grok_bot_hint">服务端随项目安装 @grok/agent-sdk。请先完成认证并部署目标 Agent。此选项仅连接已部署的 Bot，不连接桌面 Grok，也不切换模型。</string>
     <string name="grok_hosted_task">托管 Bot 无法读取看板的本地目录、worktree 或附件。请用文字描述任务。</string>
     <string name="grok_bot_slug">已部署的 Agent slug</string>
     <string name="grok_slug_error">请输入 1–63 位小写字母、数字或短横线，首尾不能是短横线。</string>

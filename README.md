@@ -2,7 +2,7 @@
 
 本机 Agent 看板：左侧**工作区** CRUD，右侧五列泳道（草稿 / Todo / 进行中 / 已完成 / 归档）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
-另可接入已部署的 [Grok Bot（@cursor/bdk）](./docs/grok-bot.md)：在看板设置填写部署 slug 并启用后，Web 和 Android 才显示 Grok 任务入口。运行发生在托管部署，不读取本机工作区，也不接管其他 Agent 的会话。
+另可接入已部署的 [Grok Bot（@grok/agent-sdk）](./docs/grok-bot.md)：在看板设置填写部署 slug 并启用后，Web 和 Android 才显示 Grok 任务入口。运行发生在托管部署，不读取本机工作区，也不接管其他 Agent 的会话。
 
 ## 界面预览
 
@@ -58,7 +58,7 @@
 
 ## 要求
 
-- Node 20+（本机开发）或 Docker / Docker Compose（一键启动）
+- Node ≥22.13（本机开发；`pnpm install` 同时安装 Grok Bot 所需的 BDK，无需全局安装）或 Docker / Docker Compose（一键启动）
 - 本机 PATH 中可找到：`pi`、`claude`、`agent`、`devin`、`codex`、`kimi`（按你实际使用的 Agent；见下方「Docker 与 CLI」）
 - 本机默认 SQLite，无需另装数据库；可选 Postgres（本机或 Compose 内置）
 - SQLite 使用 `better-sqlite3` 11.x，保持 Node 20+ 兼容；安装时需允许其原生构建。如果预编译文件不可用，需 Python 3 和 C/C++ 构建工具（Linux 为 `make`、`g++`）；Docker 构建已包含编译回退。
