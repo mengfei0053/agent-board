@@ -26,6 +26,7 @@ import { loadCliPathOverrides } from "./cliPaths.js";
 import { loadProxyEnvOverrides } from "./proxyEnv.js";
 import { loadProcessEnvOverrides } from "./processEnv.js";
 import { loadQuickPrompts } from "./quickPrompts.js";
+import { loadGrokBot } from "./grokBot.js";
 import { loadCodexSandbox } from "./codexSandbox.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { syncAgentModelsOnStartup } from "./agentModels.js";
@@ -1020,6 +1021,7 @@ export async function initStore(): Promise<void> {
   await loadProcessEnvOverrides();
   await loadQuickPrompts();
   await loadCodexSandbox();
+  await loadGrokBot();
   await loadAgentDefaults();
   if (process.env.AGENT_BOARD_SKIP_MODEL_SYNC !== "1") {
     await syncAgentModelsOnStartup();

@@ -6,6 +6,7 @@ import { cursorRunner } from "./cursor.js";
 import { devinRunner } from "./devin.js";
 import { codexRunner } from "./codex.js";
 import { kimiRunner } from "./kimi.js";
+import { grokRunner } from "./grok.js";
 
 export const runners: Record<AgentKind, Runner> = {
   pi: piRunner,
@@ -14,4 +15,5 @@ export const runners: Record<AgentKind, Runner> = {
   devin: devinRunner,
   codex: codexRunner,
   kimi: kimiRunner,
+  grok: grokRunner,
 };

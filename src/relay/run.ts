@@ -79,7 +79,7 @@ function sendFrame(ws: WebSocket, type: string, payload: Record<string, unknown>
     return false;
   }
   const raw = encodeFrame(frame(type, payload, id));
-  if (Buffer.byteLength(raw) > RELAY_LIMITS.maxFrameBytes) {
+  if (Buffer.byteLength(raw) > RELAY_LIMITS.maxOutboundFrameBytes) {
     safeClose(ws);
     return false;
   }
@@ -103,7 +103,7 @@ function openSocket(
       reject(new Error("aborted"));
       return;
     }
-    const ws = new WebSocket(url, { handshakeTimeout: timeoutMs });
+    const ws = new WebSocket(url, { handshakeTimeout: timeoutMs, maxPayload: RELAY_LIMITS.maxInboundFrameBytes });
     onSocket(ws);
     let settled = false;
     let opened = false;
@@ -164,17 +164,14 @@ async function runOnce(opts: {
     ws = await openSocket(opts.config.relayWsUrl, opts.signal, opts.config.openTimeoutMs, opts.onSocket);
     opts.onSocket(ws);
     const registerId = newMessageId("r");
-    const inbox: Envelope[] = [];
+    const inbox: Array<{ msg: Envelope; bytes: number }> = [];
+    let inboxBytes = 0;
     let phase: Phase = "register";
     let resolveAck: ((msg: Envelope) => void) | null = null;
 
     ws.on("message", (data) => {
       try {
         const text = rawText(data);
-        if (Buffer.byteLength(text) > RELAY_LIMITS.maxFrameBytes) {
-          safeClose(ws);
-          return;
-        }
         const msg = parseEnvelope(text);
         if (!msg) {
           safeClose(ws);
@@ -190,15 +187,17 @@ async function runOnce(opts: {
           done(msg);
           return;
         }
+        const bytes = Buffer.byteLength(text);
         if (phase !== "live") {
-          if (inbox.length >= RELAY_LIMITS.maxPendingFrames) {
+          if (inbox.length >= RELAY_LIMITS.maxPendingFrames || inboxBytes + bytes > RELAY_LIMITS.maxQueuedBytes) {
             safeClose(ws);
             return;
           }
-          inbox.push(msg);
+          inboxBytes += bytes;
+          inbox.push({ msg, bytes });
           return;
         }
-        session?.handleCommand(msg);
+        session?.handleCommand(msg, bytes);
       } catch {
         safeClose(ws);
       }
@@ -279,10 +278,7 @@ async function runOnce(opts: {
     if (winner !== "ok") throw winner instanceof Error ? winner : new Error("bootstrap failed");
 
     phase = "live";
-    while (inbox.length) {
-      const pending = inbox.splice(0);
-      for (const msg of pending) session.handleCommand(msg);
-    }
+    for (const { msg, bytes } of inbox.splice(0)) session.handleCommand(msg, bytes);
     opts.onBootstrapped();
 
     await Promise.race([

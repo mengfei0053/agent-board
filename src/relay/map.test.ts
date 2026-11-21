@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isTerminalStatus, mapBoardTask, mapStatus, taskSignature, wireMappedTask } from "./map.js";
+import { isAgentKind, isTerminalStatus, mapBoardTask, mapStatus, taskSignature, wireMappedTask } from "./map.js";
 import { makeTask } from "./harness.js";
 
 describe("relay map", () => {
@@ -31,6 +31,13 @@ describe("relay map", () => {
     assert.equal(mapped?.workspaceId, "w1");
     assert.equal(mapped?.updatedAt, Date.parse("2026-10-31T00:00:00.000Z"));
     assert.equal(mapBoardTask(makeTask({ status: "archived" })), null);
+  });
+
+  it("keeps the Grok agent without synthesizing a CLI resume command", () => {
+    assert.ok(isAgentKind("grok"));
+    const task = mapBoardTask(makeTask({ kind: "grok", sessionId: "bot-session" }));
+    assert.equal(task?.agent, "grok");
+    assert.equal(task?.resumeCommand, undefined);
   });
 
   it("omits a missing or unusable workspace id and still maps the task", () => {

@@ -1040,7 +1040,7 @@ function readOptionalBoolean(
 }
 
 const CLI_KINDS = ["pi", "claude", "agent", "devin", "codex", "kimi"] as const;
-const AGENT_MODEL_KINDS = ["pi", "claude", "cursor", "agent", "devin", "codex", "kimi"] as const;
+const AGENT_MODEL_KINDS = ["pi", "claude", "cursor", "agent", "devin", "codex", "kimi", "grok"] as const;
 const PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"] as const;
 
 /** Same userinfo rule as the board (`src/proxyEnv.ts`). Idempotent on `user:***@`. */
@@ -1136,10 +1136,23 @@ function readSettingsPatch(record: Record<string, unknown>): { ok: true; value: 
     if (typeof record.codexSandbox !== "boolean") return { ok: false, message: "codexSandbox must be a boolean" };
     body.codexSandbox = record.codexSandbox;
   }
-  if (!body.cliPaths && !body.proxyEnv && !body.quickPrompts && body.codexSandbox === undefined) {
-    return { ok: false, message: "cliPaths, proxyEnv, quickPrompts, and/or codexSandbox required" };
+  if (record.grokBot !== undefined) {
+    const grokBot = readGrokBot(record.grokBot);
+    if (!grokBot.ok) return grokBot;
+    body.grokBot = grokBot.value;
+  }
+  if (Object.keys(body).length === 0) {
+    return { ok: false, message: "cliPaths, proxyEnv, quickPrompts, codexSandbox, and/or grokBot required" };
   }
   return { ok: true, value: body };
+}
+
+function readGrokBot(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
+  if (!isRecord(value) || typeof value.enabled !== "boolean") return { ok: false, message: "grokBot.enabled must be a boolean" };
+  if (typeof value.slug !== "string" || Object.keys(value).length !== 2) return { ok: false, message: "grokBot only accepts enabled and slug" };
+  const slug = value.slug.trim();
+  if ((slug || value.enabled) && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) return { ok: false, message: "invalid grokBot.slug" };
+  return { ok: true, value: { enabled: value.enabled, slug } };
 }
 
 function readCliPathPatch(value: unknown): { ok: true; value: JsonObject } | { ok: false; message: string } {
@@ -1217,6 +1230,11 @@ function readBoardSettings(value: unknown): { ok: true; value: JsonObject } | { 
     quickPrompts: quickPrompts.value,
     codexSandbox: value.codexSandbox,
   };
+  if (value.grokBot !== undefined) {
+    const grokBot = readGrokBot(value.grokBot);
+    if (!grokBot.ok) return grokBot;
+    settings.grokBot = grokBot.value;
+  }
   if (value.agentModels !== undefined) {
     const agentModels = readAgentModelsDocument(value.agentModels);
     if (!agentModels.ok) return agentModels;

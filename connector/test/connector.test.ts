@@ -9,6 +9,21 @@ import { startMockBoard, type MockBoard } from "./mock-board.js";
 
 type Env = { v: number; id: string; type: string; ts: number; payload?: Record<string, unknown> };
 
+test("standalone settings forwards bot routing without adding it to legacy patches", async () => {
+  const bot = { enabled: true, slug: "review-bot" };
+  const api = new BoardClient("http://127.0.0.1", 1_000);
+  const writes: Record<string, unknown>[] = [];
+  api.getSettings = async () => ({ grokBot: bot });
+  api.putSettings = async (body) => { writes.push(body); return { grokBot: bot }; };
+  const frames: Env[] = [];
+  const session = new ConnectorSession("board", api, (message) => frames.push(message), 1);
+  for (const [id, type, patch] of [["get", "cmd.settings.get", {}], ["toggle", "cmd.settings.put", { grokBot: bot }], ["legacy", "cmd.settings.put", { codexSandbox: false }]] as const) {
+    await session.onMessage({ v: 1, ts: 1, type, id, payload: { boardId: "board", idempotencyKey: `settings-${id}`, ...patch } });
+    assert.deepEqual(frames.at(-1)?.payload?.settings, { grokBot: bot });
+  }
+  assert.deepEqual(writes, [{ grokBot: bot }, { codexSandbox: false }]);
+});
+
 test("connector maps commands and emits one completion", { timeout: 20_000 }, async () => {
   const adminToken = "admin-connector-token";
   const boardToken = "board-connector-token";
@@ -59,6 +74,17 @@ test("connector maps commands and emits one completion", { timeout: 20_000 }, as
     assert.equal(isRecord(create?.body) ? create?.body.kind : undefined, "cursor");
     assert.equal(isRecord(create?.body) ? create?.body.cwd : undefined, "/home/me/src/app");
     assert.equal(isRecord(create?.body) ? create?.body.start : undefined, true);
+
+    // Never acknowledge work as executed after silently dropping the phone's file.
+    const attachments = [{ originalName: "sample.png", data: "aGVsbG8=" }];
+    for (const cmd of ["cmd.create", "cmd.continue"]) {
+      const attached = await client.request(cmd, {
+        boardId: "thinkbook-main", taskId, idempotencyKey: `file-${cmd}`, title: "Image",
+        prompt: "Example", agent: "pi", cwd: "/tmp/repo", attachments,
+      });
+      assert.equal(attached.payload?.stage, "failed");
+      assert.equal(attached.payload?.code, "unsupported");
+    }
 
     const missingCwd = await client.request("cmd.create", {
       boardId: "thinkbook-main",

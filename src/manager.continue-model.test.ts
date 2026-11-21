@@ -52,6 +52,7 @@ describe("continue with a different model", () => {
   }
 
   for (const kind of Object.keys(runners) as Task["kind"][]) {
+    if (kind === "grok") continue; // Deployment owns the model; no per-turn override.
     it(`${kind}: switches model without changing session, cwd, or history`, async () => {
       const task = await seed(kind);
       const continued = await continueTask(task.id, "follow up", "  next-model  ");

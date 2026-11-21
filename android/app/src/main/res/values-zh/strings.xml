@@ -111,7 +111,7 @@
     <string name="side_stopped">已停止</string>
     <string name="side_unknown">未知</string>
     <string name="create_hint">需要选择 Agent 和本机工作目录。路径可以不是工作区根目录，看板仍可能把它归到默认工作区。</string>
-    <string name="title">标题</string>
+    <string name="title">标题（选填）</string>
     <string name="worktree">在 Git worktree 中启动</string>
     <string name="worktree_on">默认关闭。当前目录与快照里的 Git 工作区根目录一致。</string>
     <string name="worktree_off">默认关闭。需要当前目录是快照里的 Git 工作区根目录，中继已连接，且任务列表没有过期。</string>
@@ -221,4 +221,9 @@
     <string name="git_dirty">有未提交改动</string>
     <string name="git_clean">干净</string>
     <string name="git_repos">%1$d 个仓库</string>
+    <string name="enable_grok_bot">启用 Grok Bot 任务</string>
+    <string name="grok_bot_hint">请先在服务端安装 @cursor/bdk、完成认证并部署目标 Agent。此选项仅连接已部署的 Bot，不连接桌面 Grok，也不切换模型。</string>
+    <string name="grok_hosted_task">托管 Bot 无法读取看板的本地目录、worktree 或附件。请用文字描述任务。</string>
+    <string name="grok_bot_slug">已部署的 Agent slug</string>
+    <string name="grok_slug_error">请输入 1–63 位小写字母、数字或短横线，首尾不能是短横线。</string>
 </resources>

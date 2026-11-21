@@ -73,6 +73,36 @@ describe("integration I1–I12", () => {
     await stopTestDb();
   });
 
+  it("gates Grok create, start and continue at the board, not just in the picker", async () => {
+    const workspaceId = (await jsonOf(await app.request("/api/workspaces"))).defaultWorkspaceId;
+    const jsonRequest = (url: string, method: string, body: unknown) => app.request(url, {
+      method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const create = () => jsonRequest("/api/tasks", "POST", { kind: "grok", workspaceId, prompt: "hello" });
+    const configure = async (enabled: boolean) => assert.equal((await jsonRequest("/api/settings", "PUT", {
+      grokBot: { enabled, slug: "test-bot" },
+    })).status, 200);
+    assert.equal((await create()).status, 409);
+    await configure(true);
+    const created = await create();
+    assert.equal(created.status, 201);
+    const { task } = await jsonOf(created);
+    const start = () => jsonRequest(`/api/tasks/${task.id}/start`, "POST", {});
+    const resume = () => jsonRequest(`/api/tasks/${task.id}/continue`, "POST", { prompt: "continue" });
+    await configure(false);
+    assert.equal((await start()).status, 409);
+    await configure(true);
+    assert.equal((await start()).status, 200);
+    await waitSettled(task.id);
+    assert.equal((await jsonRequest(`/api/tasks/${task.id}/continue`, "POST", { model: "other" })).status, 400);
+    assert.equal(getTask(task.id)?.iteration, 1);
+    assert.equal((await resume()).status, 200);
+    await waitSettled(task.id);
+    await configure(false);
+    assert.equal((await resume()).status, 409);
+    assert.equal(getTask(task.id)?.iteration, 2);
+  });
+
   it("model history is durable, survives task deletion, and backfills existing tasks", async () => {
     const workspaces = await jsonOf(await app.request("/api/workspaces"));
     const created = await app.request("/api/tasks", {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { applyGrokBotSettings, requireEnabledAgent } from "./grokBot.js";
 import { _resetAgentDefaultsForTests } from "./agentDefaults.js";
 import { _resetCliPathOverridesForTests } from "./cliPaths.js";
 import { _resetCodexSandboxForTests } from "./codexSandbox.js";
@@ -26,9 +27,25 @@ afterEach(() => {
   _resetQuickPromptsForTests([]);
   _resetCodexSandboxForTests(true);
   _resetAgentDefaultsForTests({});
+  applyGrokBotSettings();
 });
 
 describe("settings document", () => {
+  it("enables Grok only after a durable opt-in, and disables it on reset", async () => {
+    assert.throws(() => requireEnabledAgent("grok"), /disabled/);
+    const patch = { grokBot: { enabled: true, slug: "board-grok" } };
+    setSettingsMetaUpsertForTests(async () => { throw Error("disk full"); });
+    await assert.rejects(writeSettingsDocument(patch, { allowClear: false }), /write failed/);
+    assert.throws(() => requireEnabledAgent("grok"), /disabled/);
+    setSettingsMetaUpsertForTests(async () => {});
+    await assert.rejects(writeSettingsDocument({ grokBot: { enabled: "true" } }, { allowClear: false }), /boolean/);
+    await assert.rejects(writeSettingsDocument({ grokBot: { enabled: true, slug: "" } }, { allowClear: false }), /slug/);
+    assert.deepEqual((await writeSettingsDocument(patch, { allowClear: false })).grokBot, patch.grokBot);
+    assert.doesNotThrow(() => requireEnabledAgent("grok"));
+    assert.equal((await writeSettingsDocument({ quickPrompts: [] }, { allowClear: false })).grokBot.enabled, true);
+    assert.equal((await writeSettingsDocument({ clear: true }, { allowClear: true })).grokBot.enabled, false);
+  });
+
   it("redacts a new proxy credential and keeps a *** placeholder", async () => {
     const logs = captureConsole();
     setSettingsMetaUpsertForTests(async () => undefined);

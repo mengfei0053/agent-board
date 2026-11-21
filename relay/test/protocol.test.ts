@@ -227,6 +227,25 @@ function frame(type: string, id: string, payload: Record<string, unknown>) {
   return { v: 1, id, type, ts: 1761890000000, payload };
 }
 
+test("grokBot settings preserve valid routing, reject invalid patches and remain absent for legacy boards", () => {
+  const target = { boardId: "thinkbook-main", idempotencyKey: "settings-key-1" };
+  const settings = { cliPaths: {}, proxyEnv: {}, quickPrompts: [], codexSandbox: false };
+  for (const enabled of [true, false, undefined]) {
+    const group = enabled === undefined ? {} : { grokBot: { enabled, slug: enabled ? "review-bot" : "" } };
+    const patch = enabled === undefined ? { codexSandbox: false } : group;
+    const put = parseMessage(frame("cmd.settings.put", "put", { ...target, ...patch }));
+    assert.ok(put.ok);
+    assert.deepEqual(put.envelope.payload, { ...target, ...patch });
+    const document = { ...settings, ...group, agentModels: { grok: [] } };
+    const ack = parseMessage(frame("ack", "read", { ref: "get", stage: "executed", settings: document }));
+    assert.ok(ack.ok);
+    assert.deepEqual(ack.envelope.payload?.settings, document);
+  }
+  for (const grokBot of [null, {}, { enabled: "true", slug: "bot" }, { enabled: true }, { enabled: true, slug: "" }, { enabled: false, slug: "bad slug" }, { enabled: true, slug: "x".repeat(64) }, { enabled: true, slug: "bot", token: "private" }]) {
+    assert.equal(parseMessage(frame("cmd.settings.put", "put", { ...target, grokBot })).ok, false);
+  }
+});
+
 test("board.register accepts the capability names and lookup accepts the new commands", () => {
   const parsed = parseMessage({
     v: 1,

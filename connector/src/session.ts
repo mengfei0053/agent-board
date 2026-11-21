@@ -89,6 +89,13 @@ export class ConnectorSession {
       this.fail(message.id, "forbidden", "command boardId does not match this connector");
       return;
     }
+    // This HTTP adapter has no inline upload step. Do not start a different
+    // task by silently dropping files; the embedded dialer supports them.
+    if ((message.type === "cmd.create" || message.type === "cmd.continue")
+      && Array.isArray(payload.attachments) && payload.attachments.length > 0) {
+      this.fail(message.id, "unsupported", "inline attachments require the embedded board connection");
+      return;
+    }
     try {
       if (message.type === "cmd.create") await this.create(message.id, payload);
       else if (message.type === "cmd.continue") await this.continueTask(message.id, payload);

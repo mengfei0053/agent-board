@@ -42,6 +42,7 @@ export class ConnectorSession {
   private acceptLive = false;
   private pumpQueued = false;
   private pendingCommands = 0;
+  private pendingBytes = 0;
   private drainingJobs = false;
   private readonly jobs: SessionJob[] = [];
   private readonly workspaceOps: WorkspaceIdempotency;
@@ -93,7 +94,7 @@ export class ConnectorSession {
     });
   }
 
-  handleCommand(message: Envelope): void {
+  handleCommand(message: Envelope, bytes = Buffer.byteLength(JSON.stringify(message))): void {
     if (this.closed || this.overflowed) return;
     // Once the relay rejects a sequence or rate-limits an event frame, this
     // cursor cannot repair the hole. Re-registering creates a fresh baseline.
@@ -111,12 +112,18 @@ export class ConnectorSession {
       this.opts.onOverflow();
       return;
     }
+    if (this.pendingBytes + bytes > RELAY_LIMITS.maxQueuedBytes) {
+      this.fail(message, new RelayCommandError("rate_limited", "relay command queue is full"));
+      return;
+    }
+    this.pendingBytes += bytes;
     this.pendingCommands += 1;
     void this.enqueue(async () => {
       try {
         await this.applyCommand(message);
       } finally {
         this.pendingCommands -= 1;
+        this.pendingBytes -= bytes;
       }
     }, true).catch(() => {});
   }

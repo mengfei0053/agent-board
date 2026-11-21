@@ -444,6 +444,8 @@ fun continueHint(task: RelayTask, english: Boolean = false): String {
     val session = task.sessionId
     return if (!session.isNullOrBlank()) {
         if (english) "Will resume session $session" else "将续会话 $session"
+    } else if (task.agent == "grok") {
+        if (english) "No previous Grok Bot session." else "无可恢复的 Grok Bot 会话。"
     } else if (english) {
         "Without a sessionId the board tries the CLI continue for the latest session in this directory."
     } else {

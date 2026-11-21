@@ -377,6 +377,7 @@ describe("U16 runner buildArgs (no spawn)", () => {
         "codex",
         "cursor",
         "devin",
+        "grok",
         "kimi",
         "pi",
       ]);

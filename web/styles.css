@@ -1417,6 +1417,7 @@ textarea { resize: vertical; min-height: 96px; }
   gap: 10px;
   align-items: end;
 }
+#create-form [hidden], .footer-continue [hidden] { display: none !important; }
 .continue-model-label { display: grid; gap: 6px; margin-bottom: 6px; }
 .continue-model-label select { margin-top: 0; }
 #continue-model-hint { margin-bottom: 8px; }

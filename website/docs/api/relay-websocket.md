@@ -10,7 +10,7 @@ description: Relay v1 WebSocket 信封、认证、任务与设置命令、事件
 
 ## 传输与信封
 
-每条消息是一个 JSON 对象，仅接受文本帧，单帧最大 **256 KiB**。默认每连接每秒最多 40 条消息（`WS_MESSAGES_PER_SEC`），超限返回 `err/rate_limited`。默认最多 200 个连接，超出后以 WebSocket `1013 overloaded` 关闭。服务每 30 秒发送 WebSocket ping 控制帧，不是业务 JSON 消息。
+每条消息是一个 JSON 对象，仅接受文本帧，Relay 接收的单帧最大 **16 MiB**（含 JSON 和附件的 base64）；内置看板连接发出的事件与确认仍限 **256 KiB**。默认每连接每秒最多 40 条消息（`WS_MESSAGES_PER_SEC`），超限返回 `err/rate_limited`。默认最多 200 个连接，超出后以 WebSocket `1013 overloaded` 关闭。服务每 30 秒发送 WebSocket ping 控制帧，不是业务 JSON 消息。
 
 ```json
 {
@@ -124,7 +124,7 @@ boards 每项至少 `{boardId,online}`；已有运行记录时还可能含 gener
 }
 ```
 
-lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup 自身。它查询原键，不创建任务；命中返回记录的 stage、commandId 和结果或错误，未命中 stage 为 unknown。
+lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup 自身。它查询原键，不创建任务；命中返回记录的 stage、commandId 和结果或错误，未命中 stage 为 unknown。超时后若原看板连接在记录过期前补回确认，同一键的下一次查询可读到最终结果，无需再发命令。
 
 `board_offline`、`forbidden`、`unauthorized`、`unsupported`、`bad_request`、`rate_limited` 等在记录前的拒绝不消耗键。看板离线时不会排队。已 accepted 后发生超时、断线或失败，应先 lookup；不要把更换键当成无风险重试。重新打开只读详情、刷新设置或翻页，应生成新键以获得新数据。
 
@@ -157,7 +157,7 @@ lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup
 - Relay 线协议允许省略 agent/cwd，但当前看板的嵌入连接器仍要求显式传入：agent 必须为 pi / claude / cursor / devin / codex / kimi，缺失或未知返回 unknown_agent；cwd 缺失返回 cwd_required。不要假定连接器会补默认值。
 - cwd 是**看板主机**上的绝对目录（最多 1,024 字符），不是 Relay 的路径。即使传了 workspaceId，当前嵌入连接器也要求 cwd；实际执行时 workspaceId 对应的目录优先。
 - useGitWorktree 是严格 boolean；仅 true 向看板转发隔离请求，false/省略使用原目录。Relay 本身不操作 Git。
-- cmd.create 创建并启动任务，不支持本机 HTTP 的 start、model、attachments 等未声明字段；unknown 字段不会转发。
+- cmd.create 创建并启动任务，不转发本机 HTTP 的 start。内置看板连接支持 cmd.create / cmd.continue 的内联 attachments；独立 HTTP connector 不上传附件，返回 unsupported 而不启动任务。
 - cmd.continue 未传有效追加指令时使用默认继续指令。归档任务只读；要恢复归档任务请使用本机 Web 的 move 接口。
 
 ### 归档与能力门控

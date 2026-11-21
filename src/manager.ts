@@ -1,4 +1,5 @@
-import { customAlphabet, nanoid } from "nanoid";
+import { requireEnabledAgent, validateGrokOptions } from "./grokBot.js";
+import { customAlphabet } from "nanoid";
 import {
   appendLog,
   deleteTasks,
@@ -302,7 +303,7 @@ function spawnRunner(task: Task): Task {
     task.attachments,
   );
   const wsSettings = getWorkspace(task.workspaceId)?.settings;
-  const runnerPrompt = applyWorkspaceToPrompt(wsSettings, withUploads);
+  const runnerPrompt = task.kind === "grok" ? task.prompt : applyWorkspaceToPrompt(wsSettings, withUploads);
   if (runnerPrompt !== withUploads) {
     writeLog(
       id,
@@ -324,7 +325,7 @@ function spawnRunner(task: Task): Task {
       if (currentRunId(id) !== runId) return;
       writeLog(id, line, source);
     },
-  }, { workspaceMcp: wsSettings?.mcp });
+  }, { workspaceMcp: task.kind === "grok" ? undefined : wsSettings?.mcp });
   if (currentRunId(id) !== runId) {
     try { handle.stop(); } catch { /* ignore */ }
     return getTask(id)!;
@@ -398,6 +399,7 @@ function resolveCreateModelAndEffort(input: CreateTaskInput): {
   model?: string;
   thinkingEffort?: string;
 } {
+  if (input.kind === "grok") return {}; // The deployed bot selects its own model.
   const agentDefault = getAgentDefault(input.kind);
   return {
     model: input.model?.trim() || agentDefault.model || resolveDefaultModel(input.kind),
@@ -407,6 +409,8 @@ function resolveCreateModelAndEffort(input: CreateTaskInput): {
 
 /** Create a draft — do not spawn. */
 export async function createDraft(input: CreateTaskInput): Promise<Task> {
+  requireEnabledAgent(input.kind);
+  validateGrokOptions(input.kind, input);
   const id = allocateTaskId();
   const { workspaceId, cwd } = resolveCreateCwd(input);
   const plainPrompt = stripImageMarkdown(input.prompt) || input.prompt.trim();
@@ -491,6 +495,7 @@ async function startTaskBody(id: string): Promise<Task> {
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is already running");
   }
+  requireEnabledAgent(t.kind);
   if (t.status === "blocked") {
     throw new Error("task is blocked; stop it before starting again");
   }
@@ -558,6 +563,8 @@ async function continueTaskBody(
   if (t.status === "queued" || t.status === "running") {
     throw new Error("task is still running; stop it before continue");
   }
+  requireEnabledAgent(t.kind);
+  validateGrokOptions(t.kind, { model, thinkingEffort, attachments });
   const nextModel = model === undefined ? t.model : model.trim();
   if (model !== undefined) {
     assertTextLimit(model, MAX_MODEL_CHARS, "model");
@@ -647,10 +654,10 @@ async function continueTaskBody(
   const hasSession = Boolean(fresh.sessionId);
   // Re-apply workspace prefix only when continuing without a session (fresh run).
   const wsSettings = getWorkspace(fresh.workspaceId)?.settings;
-  const runnerPrompt = applyWorkspaceToPrompt(wsSettings, basePrompt, {
+  const runnerPrompt = fresh.kind === "grok" ? fresh.prompt : applyWorkspaceToPrompt(wsSettings, basePrompt, {
     continueWithSession: hasSession,
   });
-  const contPrompt = appendAttachmentsToPrompt(
+  const contPrompt = fresh.kind === "grok" ? continuePrompt : appendAttachmentsToPrompt(
     expandUploadUrlsInPrompt(continuePrompt),
     attachments,
   );
@@ -670,7 +677,7 @@ async function continueTaskBody(
         writeLog(id, line, source);
       },
     },
-    { continuePrompt: contPrompt, workspaceMcp: wsSettings?.mcp },
+    { continuePrompt: contPrompt, workspaceMcp: fresh.kind === "grok" ? undefined : wsSettings?.mcp },
   );
   if (currentRunId(id) !== runId) {
     try { handle.stop(); } catch { /* ignore */ }

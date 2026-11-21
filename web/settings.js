@@ -1,3 +1,5 @@
+import { validBotSlug } from "./grokBot.js";
+
 const tabsEl = document.getElementById("agent-tabs");
 const panelsEl = document.getElementById("agent-panels");
 const form = document.getElementById("settings-form");
@@ -204,6 +206,9 @@ let lastQuick = [];
 let lastProcessEnv = {};
 /** @type {boolean} default ON */
 let lastCodexSandbox = true;
+const grokBotSetting = document.getElementById("grok-bot-setting");
+const grokBotEnabled = document.getElementById("grok-bot-enabled");
+const grokBotSlug = document.getElementById("grok-bot-slug");
 /** @type {Record<string, { model: string, thinkingEffort: string }>} */
 let lastAgentDefaults = {};
 /** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
@@ -726,6 +731,10 @@ function renderAll(data) {
       }))
     : [];
   lastCodexSandbox = data.codexSandbox !== false;
+  grokBotSetting.hidden = typeof data.grokBot?.enabled !== "boolean" || typeof data.grokBot.slug !== "string";
+  grokBotSlug.defaultValue = grokBotSlug.value = grokBotSetting.hidden ? "" : data.grokBot.slug;
+  grokBotEnabled.checked = data.grokBot?.enabled === true;
+  grokBotEnabled.defaultChecked = grokBotEnabled.checked;
   applyAgentDefaultsFromData(data);
   renderQuickPrompts();
   renderTabs();
@@ -788,7 +797,14 @@ function collectPayload() {
     }
     processEnv[kind] = map;
   }
-  return { cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, agentDefaults };
+  const payload = { cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, agentDefaults };
+  if (!grokBotSetting.hidden) {
+    const enabled = grokBotEnabled.checked;
+    const slug = grokBotSlug.value.trim();
+    if ((enabled || slug) && !validBotSlug(slug)) throw new Error("目标 Agent slug 需为 1–63 位小写字母、数字或短横线，首尾不能是短横线。");
+    if (enabled !== grokBotEnabled.defaultChecked || slug !== grokBotSlug.defaultValue) payload.grokBot = { enabled, slug };
+  }
+  return payload;
 }
 
 function syncEffortSelectForAgent(agentKind, modelValue) {
@@ -1037,7 +1053,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 btnClear.addEventListener("click", async () => {
-  if (!confirm("确定清除全部默认模型与思考强度、CLI 路径、代理覆盖、自定义环境变量，并将 Codex 沙箱恢复为开启？")) return;
+  if (!confirm("确定清除全部默认模型与思考强度、CLI 路径、代理覆盖、自定义环境变量，并将 Codex 沙箱及 Grok Bot 恢复为默认设置？")) return;
   setStatus("恢复中…");
   try {
     const res = await fetch("/api/settings", {

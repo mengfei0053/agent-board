@@ -2,6 +2,8 @@
 
 本机 Agent 看板：左侧**工作区** CRUD，右侧五列泳道（草稿 / Todo / 进行中 / 已完成 / 归档）；新建草稿与 Todo 自动使用当前选中工作区路径。支持 **pi / Claude Code / Cursor CLI / Devin CLI / Codex CLI / Kimi Code CLI**，实时日志（SSE）、停止 / 继续任务、深浅色主题。
 
+另可接入已部署的 [Grok Bot（@cursor/bdk）](./docs/grok-bot.md)：在看板设置填写部署 slug 并启用后，Web 和 Android 才显示 Grok 任务入口。运行发生在托管部署，不读取本机工作区，也不接管其他 Agent 的会话。
+
 ## 界面预览
 
 主界面（侧栏工作区 + 泳道），深色：

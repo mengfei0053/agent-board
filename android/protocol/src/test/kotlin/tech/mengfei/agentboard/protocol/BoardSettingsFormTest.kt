@@ -37,9 +37,28 @@ class BoardSettingsFormTest {
         assertEquals("http://user:***@proxy:8899", envelope.payload.obj("proxyEnv")!!.obj("codex")!!.text("HTTP_PROXY"))
         assertEquals("", envelope.payload.obj("proxyEnv")!!.obj("pi")!!.text("HTTP_PROXY"))
         assertEquals(false, envelope.payload.bool("codexSandbox"))
+        assertFalse("grokBot" in envelope.payload)
         assertFalse("clear" in envelope.payload)
         assertFalse("default" in envelope.payload.obj("cliPaths")!!)
         assertEquals("Fix this", readQuickPrompts(buildJsonObject { put("settings", envelope.payload) })!!.single().content)
+    }
+
+    @Test
+    fun grokOptInNeedsADeployedSlugAndWritesOnlyRouting() {
+        val raw = settingsPayload().obj("settings")!!
+        val routing = buildJsonObject { put("enabled", true); put("slug", "review-1") }
+        val payload = buildJsonObject { put("settings", JsonObject(raw + ("grokBot" to routing))) }
+        val form = readBoardSettingsForm(payload)!!
+        assertEquals(true, form.grokBot?.available)
+        val write = settingsPutFormEnvelope("save", 1, "board-1", emptyList(), form, "settings-key-2")
+        assertEquals(routing, write.payload.obj("grokBot"))
+        assertFalse(agentEnabled("grok", false))
+        assertTrue(agentEnabled("codex", false))
+        assertTrue(agentEnabled("grok", true))
+        assertFalse(GrokBotSettings(false, "review-1").available)
+        assertTrue(GrokBotSettings(false, "").valid)
+        for (slug in listOf("", "A", "-review", "a b", "a".repeat(64))) assertFalse(GrokBotSettings(true, slug).available)
+        assertTrue(GrokBotSettings(true, "x".repeat(63)).available)
     }
 
     @Test
@@ -115,10 +134,11 @@ class BoardSettingsFormTest {
             boardId = "board-1",
             title = "Build feature",
             prompt = "Implement it",
-            agent = "pi",
+            agent = "grok",
             cwd = "/tmp/repo",
             idempotencyKey = "idem-create-02",
         ) as Validated.Ok
+        assertEquals("grok", defaultCreate.value.payload.text("agent"))
         assertNull(defaultCreate.value.payload.text("model"))
         assertNull(defaultCreate.value.payload.text("thinkingEffort"))
 
@@ -133,6 +153,7 @@ class BoardSettingsFormTest {
             thinkingEffort = "max",
             attachments = listOf(OutgoingAttachment("note.txt", "text/plain", 5L, "aGVsbG8=")),
         ) as Validated.Ok
+        assertFalse("agent" in continued.value.payload || "sessionId" in continued.value.payload)
         assertEquals("claude-opus-4-6", continued.value.payload.text("model"))
         assertEquals("max", continued.value.payload.text("thinkingEffort"))
         assertEquals("note.txt", (continued.value.payload.array("attachments")!!.single() as JsonObject).text("originalName"))

@@ -14,6 +14,7 @@ export const AGENT_KINDS: readonly AgentKind[] = [
   "devin",
   "codex",
   "kimi",
+  "grok",
 ];
 
 export const PI_THINKING_EFFORTS = [
@@ -539,7 +540,7 @@ function probeClaudeInitialize(
   });
 }
 
-function cliKeyForAgent(kind: AgentKind): CliCommandKey {
+function cliKeyForAgent(kind: Exclude<AgentKind, "grok">): CliCommandKey {
   return kind === "cursor" ? "agent" : kind;
 }
 
@@ -548,6 +549,7 @@ export async function fetchAgentModelsFromCli(
   kind: AgentKind,
   timeoutMs = 20_000,
 ): Promise<AgentModelRecord[]> {
+  if (kind === "grok") return []; // BDK uses a bot, not a model-listing CLI.
   const cliKey = cliKeyForAgent(kind);
   const cmd = resolveCliCommand(cliKey);
   const env = childProcessEnv(cliKey, { NO_COLOR: "1" });
@@ -720,6 +722,7 @@ export async function readAgentModels(
     devin: [],
     codex: [],
     kimi: [],
+    grok: [],
   };
   const params: unknown[] = [];
   const where =
@@ -784,7 +787,7 @@ export async function syncAgentModelsOnStartup(
     }
   };
 
-  await Promise.allSettled(AGENT_KINDS.map((kind) => syncOne(kind)));
+  await Promise.allSettled(AGENT_KINDS.filter((kind) => kind !== "grok").map(syncOne));
 
   return { updated, failed };
 }

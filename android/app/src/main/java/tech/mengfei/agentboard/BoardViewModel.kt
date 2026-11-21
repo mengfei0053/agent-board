@@ -146,6 +146,7 @@ import tech.mengfei.agentboard.protocol.settingsAckEffect
 import tech.mengfei.agentboard.protocol.settingsEntry
 import tech.mengfei.agentboard.protocol.settingsGetEnvelope
 import tech.mengfei.agentboard.protocol.AgentModelCatalog
+import tech.mengfei.agentboard.protocol.agentEnabled
 import tech.mengfei.agentboard.protocol.BoardSettingsForm
 import tech.mengfei.agentboard.protocol.OutgoingAttachment
 import tech.mengfei.agentboard.protocol.modelOptionsForAgent
@@ -289,6 +290,7 @@ data class UiState(
     val modelCatalog: AgentModelCatalog = AgentModelCatalog(),
     val settingsLoaded: Boolean = false,
     val boardForm: BoardSettingsForm? = null,
+    val grokEnabled: Boolean = false,
     val canPop: Boolean = false,
     val englishUi: Boolean = false,
     val sawSnapshot: Boolean = false,
@@ -370,6 +372,7 @@ class BoardViewModel(
     fun updateDraftTitle(value: String) = _state.updateCopy { copy(draftTitle = value) }
     fun updateDraftPrompt(value: String) = _state.updateCopy { copy(draftPrompt = value) }
     fun updateDraftAgent(value: String) {
+        if (!agentEnabled(value, _state.value.grokEnabled)) return
         val holder = slot(activeId)
         val catalog = holder.modelCatalog
         val current = _state.value
@@ -386,7 +389,10 @@ class BoardViewModel(
             supportedThinkingEfforts(catalog, value, keptModel),
             preferred,
         )
-        _state.updateCopy { copy(draftAgent = value, draftModel = keptModel, draftThinkingEffort = nextEffort) }
+        _state.updateCopy {
+            if (value == "grok") copy(draftAgent = value, draftModel = "", draftThinkingEffort = "", draftAttachments = emptyList(), draftUseGitWorktree = false)
+            else copy(draftAgent = value, draftModel = keptModel, draftThinkingEffort = nextEffort)
+        }
     }
     fun updateDraftModel(value: String) {
         val clean = value.trim()
@@ -413,7 +419,7 @@ class BoardViewModel(
         _state.updateCopy { copy(draftThinkingEffort = clean) }
     }
     fun addDraftAttachments(items: List<OutgoingAttachment>) {
-        if (items.isEmpty()) return
+        if (items.isEmpty() || _state.value.draftAgent == "grok") return
         _state.updateCopy {
             val merged = (draftAttachments + items).take(10)
             copy(draftAttachments = merged)
@@ -473,7 +479,7 @@ class BoardViewModel(
     }
 
     fun addContinueAttachments(items: List<OutgoingAttachment>) {
-        if (items.isEmpty()) return
+        if (items.isEmpty() || activeTask()?.agent == "grok") return
         val holder = slot(activeId)
         holder.continueAttachments = (holder.continueAttachments + items).take(10)
         render()
@@ -656,9 +662,7 @@ class BoardViewModel(
                 draftUseGitWorktree = false, draftCwd = nextCwd, draftThinkingEffort = nextEffort)
         }
         push(Screen.Create(session.sessionId))
-        if (CAP_BOARD_SETTINGS in capabilities(session) && !holder.settingsLoaded) {
-            requestBoardSettings(session)
-        }
+        if (CAP_BOARD_SETTINGS in capabilities(session)) requestBoardSettings(session)
     }
 
     fun openWorkspaceCreate() {
@@ -669,7 +673,7 @@ class BoardViewModel(
 
     fun openContinue() {
         val task = activeTask() ?: return
-        if (!canContinueStatus(task.status)) return
+        if (!canContinueStatus(task.status) || !agentEnabled(task.agent, _state.value.grokEnabled)) return
         val holder = slot(activeId)
         holder.continueOpen = true
         if (!holder.continueEffortTouched || holder.continueThinkingEffort.isEmpty()) {
@@ -842,6 +846,14 @@ class BoardViewModel(
         render()
     }
 
+    fun updateGrokBot(enabled: Boolean? = null, slug: String? = null) {
+        val holder = slot(activeId)
+        val form = holder.boardForm ?: return
+        val bot = form.grokBot ?: return
+        holder.boardForm = form.copy(grokBot = bot.copy(enabled = enabled ?: bot.enabled, slug = slug ?: bot.slug))
+        render()
+    }
+
     fun saveBoardSettings() {
         val session = session(activeId) ?: return
         val prompts = slot(session.sessionId)?.quickPrompts ?: return
@@ -852,7 +864,9 @@ class BoardViewModel(
             return
         }
         val key = keys()
-        val form = slot(session.sessionId)?.boardForm
+        val holder = slot(session.sessionId)
+        val form = holder.boardForm?.let { it.copy(grokBot = it.grokBot.takeIf { value -> value != holder.loadedBoard?.grokBot }) }
+        if (form?.grokBot?.valid == false) return
         val envelope = if (form == null) settingsPutPromptsEnvelope(ids(), clock(), session.boardId, prompts, key)
             else settingsPutFormEnvelope(ids(), clock(), session.boardId, prompts, form, key)
         sendRaw(session, "cmd.settings.put", null, key, envelope)
@@ -1249,6 +1263,7 @@ class BoardViewModel(
             val invalidated = invalidateSnapshotForNewEpoch(
                 EpochSlot(holder.appliedGeneration, holder.view.needsResync, holder.view.sawSnapshot),
             )
+            holder.settingsLoaded = false
             holder.appliedGeneration = invalidated.appliedGeneration
             holder.view = holder.view.copy(needsResync = invalidated.needsResync)
             holder.eligibilityFresh = false
@@ -1396,6 +1411,7 @@ class BoardViewModel(
             java.util.logging.Logger.getLogger("AgentBoardLink").info(
                 "Board list: board=${info.boardId} online=${info.online} generation=${info.generation} applied=${holder.appliedGeneration} resync=${holder.view.needsResync}",
             )
+            if (info.generation != holder.proof?.listedGeneration) holder.settingsLoaded = false
             holder.proof = BoardProof(info.online, info.generation, now, epoch)
             holder.capabilities = info.capabilities
             holder.view = holder.view.copy(
@@ -1428,6 +1444,7 @@ class BoardViewModel(
         sessionsOn(credentialId).filter { it.boardId == presence.boardId }.forEach { session ->
             val holder = slot(session.sessionId)
             val generation = presence.generation ?: holder.proof?.listedGeneration
+            if (generation != holder.proof?.listedGeneration) holder.settingsLoaded = false
             holder.proof = BoardProof(presence.online, generation, now, epoch)
             if (generation != null) {
                 holder.view = holder.view.copy(
@@ -1667,22 +1684,23 @@ class BoardViewModel(
         val selected = draft.workspaces.find { it.id == draft.selectedWorkspaceId }
         val holder = slot(session.sessionId)
         val prompt = holder.continuePrompt
-        val contModel = holder.continueModel.takeIf { it.isNotBlank() }
-        val contEffort = holder.continueThinkingEffort.takeIf { it.isNotBlank() }
         val built = when (cmd) {
             "cmd.create" -> {
-                val chosenEffort = draft.draftThinkingEffort.takeIf { it.isNotBlank() }
+                if (!agentEnabled(draft.draftAgent, draft.grokEnabled)) return
+                val local = draft.draftAgent != "grok"
+                val cwd = if (local) draft.draftCwd else selected?.path ?: draft.draftCwd
+                val chosenEffort = draft.draftThinkingEffort.takeIf { local && it.isNotBlank() }
                 if (chosenEffort != null) {
                     holder.lastThinkingEffort = chosenEffort
                     holder.lastThinkingEffortByAgent[draft.draftAgent] = chosenEffort
                 }
                 validateCreate(
-                    requestId, ts, session.boardId, draft.draftTitle, draft.draftPrompt, draft.draftAgent, draft.draftCwd, key,
-                    useGitWorktree = draft.draftUseGitWorktree && freshWorktree(draft.draftCwd, draft.workspaces, currentPillNeedsResync()),
-                    workspaceId = workspaceIdForCreate(draft.draftCwd, selected?.id, selected?.path),
-                    model = draft.draftModel.takeIf { it.isNotBlank() },
+                    requestId, ts, session.boardId, draft.draftTitle, draft.draftPrompt, draft.draftAgent, cwd, key,
+                    useGitWorktree = local && draft.draftUseGitWorktree && freshWorktree(draft.draftCwd, draft.workspaces, currentPillNeedsResync()),
+                    workspaceId = workspaceIdForCreate(cwd, selected?.id, selected?.path),
+                    model = draft.draftModel.takeIf { local && it.isNotBlank() },
                     thinkingEffort = chosenEffort,
-                    attachments = draft.draftAttachments,
+                    attachments = if (local) draft.draftAttachments else emptyList(),
                 )
             }
             "cmd.workspace.create" -> validateWorkspaceCreate(requestId, ts, session.boardId, draft.draftWorkspaceName, draft.draftWorkspacePath, key)
@@ -1691,13 +1709,18 @@ class BoardViewModel(
             "cmd.archive" -> archiveWriteEnvelope(requestId, ts, session.boardId, taskId ?: return, key)
             else -> {
                 val targetId = taskId ?: return
+                val target = activeTask()?.takeIf { it.id == targetId } ?: return
+                if (!agentEnabled(target.agent, draft.grokEnabled)) return
+                val contModel = holder.continueModel.takeIf { target.agent != "grok" && it.isNotBlank() }
+                val contEffort = holder.continueThinkingEffort.takeIf { target.agent != "grok" && it.isNotBlank() }
                 if (contEffort != null) {
                     holder.taskThinkingEfforts[targetId] = contEffort
                     holder.lastThinkingEffort = contEffort
                     activeTask()?.agent?.let { holder.lastThinkingEffortByAgent[it] = contEffort }
                 }
-                val phone = validatePhoneContinue(requestId, ts, session.boardId, targetId, key, prompt, contModel, contEffort, holder.continueAttachments)
-                if (phone is Validated.Invalid) phone else validateContinue(requestId, ts, session.boardId, targetId, key, prompt, contModel, contEffort, holder.continueAttachments)
+                val attachments = if (target.agent == "grok") emptyList() else holder.continueAttachments
+                val phone = validatePhoneContinue(requestId, ts, session.boardId, targetId, key, prompt, contModel, contEffort, attachments)
+                if (phone is Validated.Invalid) phone else validateContinue(requestId, ts, session.boardId, targetId, key, prompt, contModel, contEffort, attachments)
             }
         }
         when (built) {
@@ -2080,6 +2103,7 @@ class BoardViewModel(
         holder.continueThinkingEffort = resolveContinueEffort(holder, target)
         push(Screen.Detail(session.sessionId, taskId))
         requestDetail(session, taskId)
+        if (target?.agent == "grok" && CAP_BOARD_SETTINGS in capabilities(session)) requestBoardSettings(session)
         render()
     }
 
@@ -2185,6 +2209,11 @@ class BoardViewModel(
             )
         }
         val taskId = (screen as? Screen.Detail)?.taskId
+        val grokEnabled = holder?.settingsLoaded == true && CAP_BOARD_SETTINGS in holder.capabilities && holder.loadedBoard?.grokBot?.available == true
+        if (!agentEnabled(_state.value.draftAgent, grokEnabled)) {
+            // An open bot draft needs an explicit choice, never an automatic local CLI fallback.
+            updateDraftAgent(if (screen is Screen.Create) "" else "cursor")
+        }
         _state.value = _state.value.copy(
             screen = screen,
             httpBase = _state.value.httpBase.ifBlank { disk.defaultHttpBase },
@@ -2223,6 +2252,7 @@ class BoardViewModel(
             modelCatalog = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.modelCatalog ?: AgentModelCatalog() else AgentModelCatalog(),
             settingsLoaded = holder?.settingsLoaded == true,
             boardForm = holder?.boardForm,
+            grokEnabled = grokEnabled,
             canPop = backStack.isNotEmpty(),
             sawSnapshot = saw,
             chip = chip,

@@ -74,6 +74,13 @@ test("agent and cwd are required before any local create", () => {
   if (!junk.ok) assert.equal(junk.code, "bad_request");
 });
 
+test("Grok tasks keep their agent for create and snapshot", () => {
+  const result = buildCreateBody({ agent: "grok", cwd: "/tmp/project", title: "Review", prompt: "Review this", idempotencyKey: "create-grok-01" });
+  assert.ok(result.ok);
+  assert.equal(result.body.kind, "grok");
+  assert.equal(mapBoardTask({ id: "task_01", title: "Review", kind: "grok", status: "stopped", updatedAt: 1 })?.agent, "grok");
+});
+
 test("archived is not a completion and blocked maps to paused", () => {
   assert.equal(mapStatus("blocked"), "paused");
   assert.equal(mapStatus("draft"), "queued");

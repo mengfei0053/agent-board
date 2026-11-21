@@ -3,6 +3,7 @@ package tech.mengfei.agentboard.protocol
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -43,7 +44,14 @@ data class AgentSettingsForm(
     val proxies: Map<String, String>,
 )
 
-data class BoardSettingsForm(val agents: Map<String, AgentSettingsForm>, val codexSandbox: Boolean)
+data class GrokBotSettings(val enabled: Boolean, val slug: String) {
+    val valid: Boolean get() = (!enabled && slug.isEmpty()) || SLUG.matches(slug)
+    val available: Boolean get() = enabled && valid
+
+    private companion object { val SLUG = Regex("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?") }
+}
+
+data class BoardSettingsForm(val agents: Map<String, AgentSettingsForm>, val codexSandbox: Boolean, val grokBot: GrokBotSettings? = null)
 
 /** Only use a complete document so saving a partial response cannot clear overrides. */
 fun readBoardSettingsForm(payload: JsonObject): BoardSettingsForm? {
@@ -63,7 +71,11 @@ fun readBoardSettingsForm(payload: JsonObject): BoardSettingsForm? {
         agents[key] = AgentSettingsForm(cli.text("override") ?: return null, cli.text("default") ?: return null,
             cli.text("resolved"), overrides)
     }
-    return BoardSettingsForm(agents, sandbox)
+    val grok = settings.obj("grokBot")?.let { obj ->
+        val enabled = (obj["enabled"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull ?: return@let null
+        GrokBotSettings(enabled, obj.text("slug") ?: return@let null)
+    }
+    return BoardSettingsForm(agents, sandbox, grok)
 }
 
 fun settingsPutFormEnvelope(
@@ -81,6 +93,10 @@ fun settingsPutFormEnvelope(
             }) }
         })
         put("codexSandbox", form.codexSandbox)
+        form.grokBot?.let { bot ->
+            require(bot.valid) { "Invalid Grok Bot slug" }
+            put("grokBot", buildJsonObject { put("enabled", bot.enabled); put("slug", bot.slug) })
+        }
     }))
 }
 
@@ -290,6 +306,7 @@ fun modelOptionsForAgent(catalog: AgentModelCatalog?, agent: String): List<Agent
 /** Supported thinking efforts for [agent] and optional [selectedModel], matching web board logic. */
 fun supportedThinkingEfforts(catalog: AgentModelCatalog?, agent: String, selectedModel: String = ""): List<String> {
     val key = agent.trim()
+    if (key == "grok") return emptyList()
     val list = catalog?.agentModels?.get(key).orEmpty()
     val trimmedModel = selectedModel.trim()
     if (trimmedModel.isNotEmpty()) {

@@ -373,6 +373,34 @@ class CreatePayloadTest {
         ) is Validated.Invalid)
     }
 
+    private fun create(
+        title: String,
+        prompt: String,
+    ) = validateCreate("id", 1, "thinkbook-main", title, prompt, "cursor", "/home/me", "android-req-7f3a")
+
+    @Test
+    fun blankTitleSendsBoardStylePreviewWithoutChangingPrompt() {
+        val prompt = "Review ![screen](/uploads/test.png)   " + "x".repeat(60)
+        val payload = (create("  ", prompt) as Validated.Ok).value.payload
+        assertEquals("Review " + "x".repeat(41), payload.text("title"))
+        assertEquals(prompt, payload.text("prompt"))
+
+        val imageOnly = "![screen](/uploads/test.png)"
+        assertEquals(imageOnly, (create("", imageOnly) as Validated.Ok).value.payload.text("title"))
+        val prefix = "x".repeat(47)
+        assertEquals(prefix, (create("", prefix + "🚀") as Validated.Ok).value.payload.text("title"))
+    }
+
+    @Test
+    fun optionalTitleKeepsExplicitTitleAndPromptLimits() {
+        val title = "x".repeat(200)
+        val prompt = "y".repeat(20_000)
+        assertEquals(title, (create(" $title ", prompt) as Validated.Ok).value.payload.text("title"))
+        assertTrue(create(title + "x", prompt) is Validated.Invalid)
+        assertTrue(create("", prompt + "y") is Validated.Invalid)
+        assertTrue(create("", " \t ") is Validated.Invalid)
+    }
+
     @Test
     fun createRejectsMissingCwdUnknownAgentAndShortKey() {
         assertTrue(validateCreate("id", 1, "thinkbook-main", "T", "prompt", "cursor", "", "android-req-7f3a") is Validated.Invalid)

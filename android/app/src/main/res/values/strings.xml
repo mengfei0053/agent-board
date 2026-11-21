@@ -111,7 +111,7 @@
     <string name="side_stopped">Stopped</string>
     <string name="side_unknown">Unknown</string>
     <string name="create_hint">The board needs an agent and a local working directory. A path that is not a workspace root still runs, and the board may file it under the default workspace.</string>
-    <string name="title">Title</string>
+    <string name="title">Title (optional)</string>
     <string name="worktree">Start in a git worktree</string>
     <string name="worktree_on">Off by default. This cwd matches a git workspace root in the current snapshot.</string>
     <string name="worktree_off">Off by default. It stays disabled until this cwd matches a git workspace root in a current snapshot, while the relay is connected and the task list is not stale.</string>
@@ -221,4 +221,9 @@
     <string name="git_dirty">Uncommitted changes</string>
     <string name="git_clean">Clean</string>
     <string name="git_repos">Repositories: %1$d</string>
+    <string name="enable_grok_bot">Enable Grok Bot tasks</string>
+    <string name="grok_bot_hint">Install @cursor/bdk on the board server, authenticate, and deploy the target agent first. This connects to that bot, not desktop Grok, and does not switch models.</string>
+    <string name="grok_hosted_task">The hosted bot cannot access the board’s local workspace, worktrees or attachments. Send instructions as text.</string>
+    <string name="grok_bot_slug">Deployed agent slug</string>
+    <string name="grok_slug_error">Use 1–63 lowercase letters, digits or hyphens. Start and end with a letter or digit.</string>
 </resources>

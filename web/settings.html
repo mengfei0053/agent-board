@@ -139,6 +139,15 @@
               </header>
 
               <div id="agent-panels" class="settings-agent-panels"></div>
+              <div id="grok-bot-setting" hidden>
+                <label class="settings-row settings-row-toggle">
+                  <span class="settings-label"><strong>启用 Grok Bot</strong><span class="muted settings-default">请先在服务端安装 <code>@cursor/bdk</code>、完成认证并部署目标 Agent。此选项仅连接已部署的 Bot，不连接桌面 Grok，也不切换任务模型。</span></span>
+                  <input type="checkbox" id="grok-bot-enabled" />
+                </label>
+                <label class="settings-row">目标 Agent slug
+                  <input type="text" id="grok-bot-slug" maxlength="63" placeholder="例如 review-bot" spellcheck="false" />
+                </label>
+              </div>
             </section>
 
             <section class="settings-card settings-quick-card" id="quick-prompts-section" aria-labelledby="quick-prompts-title">

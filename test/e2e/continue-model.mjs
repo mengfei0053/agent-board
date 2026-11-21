@@ -11,6 +11,7 @@ const first = makeTask({
 });
 const state = createState({ tasks: [
   first,
+  makeTask({ id: "bot-task", kind: "grok", status: "succeeded", sessionId: "bot-session" }),
   makeTask({ id: "no-session", status: "failed", model: "pi-original" }),
   makeTask({ id: "running-task", status: "running", sessionId: "running-session" }),
   makeTask({ id: "archived-task", status: "archived", sessionId: "archived-session" }),
@@ -27,6 +28,7 @@ state.agentModels.codex = [
 ];
 let failNext = false;
 let lastBody;
+let settingsPatch;
 const streams = new Set();
 const server = createMockServer(state, async (req, res, url) => {
   if (url.pathname === "/api/events") {
@@ -36,6 +38,12 @@ const server = createMockServer(state, async (req, res, url) => {
     })}\n\n`);
     streams.add(res);
     req.on("close", () => streams.delete(res));
+    return true;
+  }
+  if (url.pathname === "/api/settings" && req.method === "PUT") {
+    settingsPatch = await readBody(req);
+    if (settingsPatch.grokBot) state.settings.grokBot = settingsPatch.grokBot;
+    json(res, 200, state.settings);
     return true;
   }
   if (url.pathname.endsWith("/continue") && req.method === "POST") {
@@ -63,7 +71,14 @@ try {
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(base, { waitUntil: "networkidle2" });
+  const nav = { waitUntil: "domcontentloaded" };
+  // Board readiness is a rendered snapshot plus applied settings, not an idle SSE socket.
+  const loadBoard = async (reload = false) => {
+    await (reload ? page.reload(nav) : page.goto(base, nav));
+    await page.waitForSelector('.card[data-id="bot-task"]');
+    await page.waitForSelector('#create-quick-prompts [data-quick-id="qp_demo"]');
+  };
+  await loadBoard();
   const open = async (id) => {
     await page.click(`.card[data-id="${id}"]`);
     await page.waitForFunction((taskId) => document.getElementById("detail-task-id")?.textContent === taskId, {}, id);
@@ -74,7 +89,7 @@ try {
   assert.equal(await page.$eval("#continue-thinking-effort", (el) => el.value), "medium");
   assert.match(await page.$eval("#continue-model", (el) => el.placeholder), /sonnet/);
   await page.click("#continue-model");
-  await page.waitForSelector("#continue-model-dropdown:not(.hidden)");
+  await page.waitForSelector('#continue-model-dropdown:not(.hidden) [data-value="opus"]');
   const suggestions = await page.$$eval(
     "#continue-model-dropdown .model-option:not(.model-option-default)",
     (els) => els.map((el) => el.dataset.value),
@@ -154,6 +169,52 @@ try {
   assert.equal(state.tasks.get("archived-task").sessionId, "archived-session");
   assert.deepEqual(lastBody, { thinkingEffort: "medium" });
   assert.equal(state.tasks.get("archived-task").prompts[1].prompt, "请基于当前上下文继续完成任务");
+  await page.click("#detail-close");
+  const botOption = 'select[name="kind"] option[value="grok"]';
+  // A legacy board has no toggle or Grok actions, but historical tasks stay readable.
+  assert.equal(await page.$(botOption), null);
+  await open("bot-task");
+  assert.match(await page.$eval("#detail-sub", (el) => el.textContent), /Grok Bot/);
+  assert.equal(await page.$eval("#continue-row", (el) => el.hidden), true);
+  await page.goto(`${base}/settings`, nav);
+  await page.waitForFunction(() => document.querySelector("#settings-status")?.textContent.includes("已加载"));
+  assert.equal(await page.$eval("#grok-bot-setting", (el) => el.hidden), true);
+  state.settings.grokBot = { enabled: false, slug: "" };
+  await page.reload(nav);
+  await page.waitForSelector("#grok-bot-enabled", { visible: true });
+  await page.click("#grok-bot-enabled");
+  await page.click("#btn-save-settings");
+  assert.match(await page.$eval("#settings-status", (el) => el.textContent), /slug/);
+  assert.equal(settingsPatch, undefined);
+  await page.type("#grok-bot-slug", "review-bot");
+  await Promise.all([page.waitForResponse((r) => r.request().method() === "PUT"), page.click("#btn-save-settings")]);
+  assert.deepEqual(settingsPatch.grokBot, { enabled: true, slug: "review-bot" });
+  await loadBoard();
+  await page.click("#btn-new");
+  await page.type("#create-prompt", "Review ![photo](/uploads/local.png)");
+  await page.select('select[name="kind"]', "grok");
+  for (const selector of ["#create-model", "#create-thinking-effort", "#create-attach-btn", "#create-use-worktree", '.prompt-img-btn[data-for="create-prompt"]']) {
+    assert.equal(await page.$eval(selector, (el) => el.getClientRects().length), 0, selector);
+  }
+  const [creation] = await Promise.all([page.waitForRequest((r) => r.url().endsWith("/api/tasks") && r.method() === "POST"), page.click("#create-submit")]);
+  const createBody = JSON.parse(creation.postData());
+  assert.equal(createBody.kind, "grok");
+  assert.equal(createBody.prompt.trim(), "Review");
+  for (const field of ["attachments", "useGitWorktree", "model", "thinkingEffort", "sessionId"]) assert.ok(!(field in createBody), field);
+  await loadBoard();
+  await open("bot-task");
+  assert.equal(await page.$eval("#continue-btn", (el) => el.disabled), false);
+  assert.equal(await page.$eval("#continue-model", (el) => el.getClientRects().length), 0);
+  await page.type("#continue-prompt", "More");
+  await page.click("#continue-btn");
+  await page.waitForFunction(() => document.getElementById("detail-sub")?.textContent.includes("迭代 2"));
+  assert.deepEqual(lastBody, { prompt: "More" });
+  assert.equal(state.tasks.get("bot-task").sessionId, "bot-session");
+  state.settings.grokBot = { enabled: false, slug: "review-bot" };
+  await loadBoard(true);
+  assert.equal(await page.$(botOption), null);
+  await open("bot-task");
+  assert.equal(await page.$eval("#continue-btn", (el) => el.hidden), true);
   assert.deepEqual(errors, []);
   console.log("[e2e-continue-model] model selection, history scoping, SSE, retry and safety guards passed");
 } finally {

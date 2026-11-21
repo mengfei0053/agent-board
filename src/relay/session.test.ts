@@ -532,6 +532,25 @@ describe("connector session", () => {
     session.close();
   });
 
+  it("limits queued command bytes and releases the budget when work settles", async () => {
+    const facade = memoryFacade();
+    const gate = defer<ReturnType<typeof makeTask>>();
+    facade.createImpl = () => gate.promise;
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+    const size = RELAY_LIMITS.maxInboundFrameBytes;
+    session.handleCommand(createCmd(), size);
+    session.handleCommand(createCmd({ idempotencyKey: "second-key" }), size);
+    assert.equal(frames.at(-1)?.payload.code, "rate_limited");
+    assert.equal(session.queuedCommandCount(), 0);
+    gate.resolve(makeTask());
+    await waitFor(() => frames.some((f) => f.type === "ack"));
+    session.handleCommand(createCmd({ idempotencyKey: "third-key" }), size);
+    await waitFor(() => frames.some((f) => f.type === "ack" && f.payload.idempotencyKey === "third-key"));
+    session.close();
+  });
+
   it("does not call create for a bad cwd or a non-boolean worktree flag", async () => {
     const facade = memoryFacade();
     const { frames, send } = sentFrames();
@@ -824,6 +843,26 @@ describe("connector session", () => {
     assert.equal(clear?.payload.message, "clear is not allowed");
     assert.equal(JSON.stringify(frames).includes(secret), false);
     assert.equal(logs.join("\n").includes(secret), false);
+    session.close();
+  });
+
+  it("passes only the settings groups supplied by the phone to the board", async () => {
+    const facade = memoryFacade();
+    const grokBot = { enabled: true, slug: "review-bot" };
+    const writes: Record<string, unknown>[] = [];
+    facade.putSettings = async (body) => {
+      writes.push(body);
+      return { grokBot } as Awaited<ReturnType<MemoryFacade["putSettings"]>>;
+    };
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    await session.bootstrap();
+    for (const [ref, patch] of [["bot", { grokBot }], ["legacy", { codexSandbox: false }]] as const) {
+      session.handleCommand(frame("cmd.settings.put", { boardId: "thinkbook", idempotencyKey: `settings-${ref}`, ...patch }, ref));
+      await waitFor(() => frames.some((item) => item.payload.ref === ref));
+      assert.deepEqual(frames.find((item) => item.payload.ref === ref)?.payload.settings, { grokBot });
+    }
+    assert.deepEqual(writes, [{ grokBot }, { codexSandbox: false }]);
     session.close();
   });
 

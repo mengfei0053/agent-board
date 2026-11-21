@@ -122,6 +122,37 @@ test("timeout is stored for lookup and is not blindly retried", async () => {
   assert.equal(byRef(phonePeer, "slow-2")?.payload?.duplicate, true);
 });
 
+test("lookup reconciles a late board result without resending or reviving expired commands", async () => {
+  const fx = setup({ cmdTimeoutMs: 10, idempotencyTtlMs: 100 });
+  open.push(fx.hub);
+  const peer = fx.peer();
+  const board = registerBoard(fx.hub, peer);
+  const phonePeer = fx.peer();
+  const { conn } = helloPhone(fx.hub, fx.auth, phonePeer);
+  const target = { boardId: "thinkbook-main", taskId: "task_01" };
+  const lookup = (key: string) => {
+    const ref = `lookup-${key}`;
+    fx.hub.handlePhone(conn, frame("cmd.lookup", ref, { ...target, cmd: "cmd.continue", idempotencyKey: key }));
+    return byRef(phonePeer, ref)?.payload;
+  };
+  const keys = ["slow-success", "slow-failure", "slow-expired"];
+  for (const key of keys) fx.hub.handlePhone(conn, frame("cmd.continue", key, { ...target, idempotencyKey: key }));
+  await delay(30);
+  for (const key of keys) assert.equal(stageOf(phonePeer, key, "timeout"), "timeout");
+  const [ok, fail, expired] = peer.ofType("cmd.continue");
+  fx.hub.handleBoard(board, frame("ack", "late-ok", { ref: ok?.id, task: task("running") }));
+  const executed = lookup(keys[0]!);
+  assert.equal(executed?.stage, "executed");
+  assert.equal(executed?.code, undefined);
+  assert.equal(executed?.message, undefined);
+  fx.hub.handleBoard(board, frame("err", "late-err", { ref: fail?.id, code: "rejected", message: "busy" }));
+  assert.equal(lookup(keys[1]!)?.code, "rejected");
+  fx.clock.t += 101;
+  fx.hub.handleBoard(board, frame("ack", "too-late", { ref: expired?.id, task: task("running") }));
+  assert.equal(lookup(keys[2]!)?.stage, "unknown");
+  assert.equal(peer.ofType("cmd.continue").length, 3);
+});
+
 test("an offline board rejects the command without consuming the idempotency key", () => {
   const fx = setup();
   open.push(fx.hub);

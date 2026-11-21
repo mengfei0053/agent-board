@@ -5,11 +5,11 @@ import { MAX_MODEL_CHARS } from "./limits.js";
 import type { AgentKind } from "./types.js";
 
 export const MODEL_HISTORY_LIMIT = 20;
-const KINDS: AgentKind[] = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
+import { AGENT_KINDS as KINDS } from "./agentModels.js";
 type ModelHistory = Record<AgentKind, string[]>;
 
 export async function readModelHistory(): Promise<ModelHistory> {
-  const history: ModelHistory = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+  const history: ModelHistory = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [], grok: [] };
   const { rows } = await getPool().query<{ kind: AgentKind; model: string }>(`
     SELECT kind, model FROM (
       SELECT kind, model, last_used_at,

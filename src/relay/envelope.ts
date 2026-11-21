@@ -28,7 +28,7 @@ export function encodeFrame(message: Envelope): string {
 }
 
 export function parseEnvelope(text: string): Envelope | null {
-  if (Buffer.byteLength(text) > RELAY_LIMITS.maxFrameBytes) return null;
+  if (Buffer.byteLength(text) > RELAY_LIMITS.maxInboundFrameBytes) return null;
   let root: unknown;
   try {
     root = JSON.parse(text);

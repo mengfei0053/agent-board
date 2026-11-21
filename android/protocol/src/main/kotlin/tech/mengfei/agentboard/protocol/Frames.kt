@@ -17,7 +17,11 @@ data class OutgoingAttachment(
 private val visibleKey = Regex("^[\\x21-\\x7E]{8,80}$")
 private val boardIdPattern = Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-val AGENT_KINDS = listOf("pi", "claude", "cursor", "devin", "codex", "kimi")
+val AGENT_KINDS = listOf("pi", "claude", "cursor", "devin", "codex", "kimi", "grok")
+
+fun agentEnabled(kind: String?, grokEnabled: Boolean): Boolean = kind != "grok" || grokEnabled
+
+fun agentLabel(kind: String): String = if (kind == "grok") "Grok Bot" else kind
 
 fun newMessageId(): String = "m" + UUID.randomUUID().toString().replace("-", "")
 
@@ -56,6 +60,16 @@ sealed interface Validated<out T> {
     data class Invalid(val message: String) : Validated<Nothing>
 }
 
+// Match Board createDraft's prompt preview while keeping cmd.create compatible with older relays.
+private val promptImage = Regex("""!\[[^\]]*\]\([^)]+\)""")
+private val promptWhitespace = Regex("""[\s\p{Z}\uFEFF]+""")
+
+private fun defaultCreateTitle(prompt: String): String {
+    val plain = prompt.replace(promptImage, " ").replace(promptWhitespace, " ").trim()
+    val prefix = plain.ifEmpty { prompt }.take(48)
+    return if (prefix.last().isHighSurrogate()) prefix.dropLast(1) else prefix
+}
+
 fun validateCreate(
     id: String,
     ts: Long,
@@ -75,8 +89,8 @@ fun validateCreate(
         return Validated.Invalid("boardId must be 1-64 letters, digits, '.', '_' or '-'")
     }
     val cleanTitle = title.trim()
-    if (cleanTitle.isEmpty() || cleanTitle.length > 200) {
-        return Validated.Invalid("title is required, up to 200 characters")
+    if (cleanTitle.length > 200) {
+        return Validated.Invalid("title must be at most 200 characters")
     }
     val cleanPrompt = prompt.trim()
     if (cleanPrompt.isEmpty() || cleanPrompt.length > 20_000) {
@@ -107,7 +121,7 @@ fun validateCreate(
     return Validated.Ok(frame(id, ts, "cmd.create", buildJsonObject {
         put("boardId", boardId)
         put("idempotencyKey", idempotencyKey)
-        put("title", cleanTitle)
+        put("title", cleanTitle.ifEmpty { defaultCreateTitle(cleanPrompt) })
         put("prompt", cleanPrompt)
         put("agent", agent)
         put("cwd", cwd)

@@ -21,6 +21,7 @@ import {
   type CliCommandKey,
 } from "./cliPaths.js";
 import { applyCodexSandboxMemory, getCodexSandboxSettings, planCodexSandbox } from "./codexSandbox.js";
+import { applyGrokBotSettings, getGrokBotSettings, parseGrokBotSettings } from "./grokBot.js";
 import { hasPool, upsertMetaMany } from "./db.js";
 import { HttpError, httpStatusOf } from "./httpError.js";
 import { MAX_MODEL_CHARS } from "./limits.js";
@@ -47,6 +48,7 @@ export const DEFAULT_THINKING_EFFORTS_BY_KIND: Record<AgentKind, readonly string
   devin: CLAUDE_DEFAULT_EFFORTS,
   codex: CLAUDE_DEFAULT_EFFORTS,
   kimi: [],
+  grok: [],
 };
 
 const CANONICAL_EFFORTS = [
@@ -101,7 +103,7 @@ function sanitizeEffort(raw: unknown): string {
 }
 
 function sanitizeAgentModels(raw: Partial<Record<AgentKind, readonly AgentModelRecord[]>> | undefined): AgentModelsByKind {
-  const out: AgentModelsByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+  const out: AgentModelsByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [], grok: [] };
   if (!raw || typeof raw !== "object") return out;
   for (const kind of AGENT_KINDS) {
     const records = Array.isArray(raw[kind]) ? raw[kind] : [];
@@ -120,7 +122,7 @@ function sanitizeAgentModels(raw: Partial<Record<AgentKind, readonly AgentModelR
 }
 
 function buildThinkingEffortsByKind(agentModels: AgentModelsByKind): ThinkingEffortsByKind {
-  const out: ThinkingEffortsByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+  const out: ThinkingEffortsByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [], grok: [] };
   for (const kind of AGENT_KINDS) {
     const seen = new Set<string>();
     for (const item of agentModels[kind]) {
@@ -147,7 +149,7 @@ function buildThinkingEffortsByKind(agentModels: AgentModelsByKind): ThinkingEff
 }
 
 function sanitizeModelHistory(raw: Partial<Record<AgentKind, readonly string[]>> | undefined): ModelHistoryByKind {
-  const out: ModelHistoryByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+  const out: ModelHistoryByKind = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [], grok: [] };
   if (!raw || typeof raw !== "object") return out;
   for (const kind of AGENT_KINDS) {
     const list = Array.isArray(raw[kind]) ? raw[kind] : [];
@@ -203,6 +205,7 @@ export async function readSettingsDocument(): Promise<{
   processEnv: ReturnType<typeof getProcessEnvSettings>["processEnv"];
   quickPrompts: ReturnType<typeof getQuickPromptSettings>["quickPrompts"];
   codexSandbox: boolean;
+  grokBot: ReturnType<typeof getGrokBotSettings>;
   agentDefaults: AgentDefaultsByKind;
   agentModels: AgentModelsByKind;
   thinkingEfforts: ThinkingEffortsByKind;
@@ -218,6 +221,7 @@ export async function readSettingsDocument(): Promise<{
     ...getProcessEnvSettings(),
     ...getQuickPromptSettings(),
     ...getCodexSandboxSettings(),
+    grokBot: getGrokBotSettings(),
     ...getAgentDefaultsSettings(),
     ...catalog,
   };
@@ -258,6 +262,7 @@ async function writeSettingsBody(
         ["proxy_env", "{}"],
         ["process_env", "{}"],
         ["codex_sandbox", "true"],
+        ["grok_bot", JSON.stringify({ enabled: false, slug: "" })],
         ["agent_defaults", "{}"],
       ]);
     } catch {
@@ -267,6 +272,7 @@ async function writeSettingsBody(
     applyProxyEnvMemory({});
     applyProcessEnvMemory({});
     applyCodexSandboxMemory(true);
+    applyGrokBotSettings();
     applyAgentDefaultsMemory({});
     return readSettingsDocument();
   }
@@ -277,7 +283,8 @@ async function writeSettingsBody(
   const hasQuick = raw.quickPrompts != null;
   const hasCodexSandbox = raw.codexSandbox != null;
   const hasAgentDefaults = raw.agentDefaults != null;
-  if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox && !hasAgentDefaults) {
+  const grokBot = "grokBot" in raw ? parseGrokBotSettings(raw.grokBot) : undefined;
+  if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox && !hasAgentDefaults && !grokBot) {
     throw new HttpError(400, "cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, and/or agentDefaults required (or clear: true)");
   }
 
@@ -342,6 +349,7 @@ async function writeSettingsBody(
   }
 
   const entries: Array<readonly [string, string]> = [];
+  if (grokBot) entries.push(["grok_bot", JSON.stringify(grokBot)]);
   if (cliPlan) entries.push(["cli_paths", cliPlan.json]);
   if (proxyPlan) entries.push(["proxy_env", proxyPlan.json]);
   if (processPlan) entries.push(["process_env", processPlan.json]);
@@ -353,6 +361,7 @@ async function writeSettingsBody(
   } catch {
     throw new HttpError(500, "settings write failed");
   }
+  if (grokBot) applyGrokBotSettings(grokBot);
   if (cliPlan) applyCliPathMemory(cliPlan.next);
   if (proxyPlan) applyProxyEnvMemory(proxyPlan.next);
   if (processPlan) applyProcessEnvMemory(processPlan.next);

@@ -555,7 +555,10 @@ export class RelayHub {
   ): void {
     const key = this.commandByRelayId.get(ref);
     const record = key ? this.commands.get(key) : undefined;
-    if (!record || record.stage !== "accepted") {
+    // A timeout ends the wait, not execution. Reconcile a late reply from the
+    // original live socket for subsequent lookups, but never resurrect an expired key.
+    const late = record?.stage === "timeout" && record.expiresAt > this.now();
+    if (!record || (record.stage !== "accepted" && !late)) {
       this.log("warn", "orphan board response", { ref });
       return;
     }
@@ -614,6 +617,8 @@ export class RelayHub {
     record.stage = update.stage;
     record.expiresAt = this.now() + (this.opts.idempotencyTtlMs ?? 600_000);
     if (update.stage === "executed") {
+      delete record.errorCode;
+      delete record.errorMessage;
       if (update.archived) {
         record.archived = true;
         record.archivedTaskId = update.archivedTaskId;

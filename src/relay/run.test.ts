@@ -145,6 +145,31 @@ describe("embedded relay run", { concurrency: 1 }, () => {
     }
   });
 
+  it("accepts a mobile-sized attachment on create and continue without dropping the socket", async () => {
+    const relay = new MockRelay();
+    await relay.listen();
+    const facade = memoryFacade();
+    const dialer = startEmbeddedRelay({ config: enabledConfig(relay.url), facade, log: () => {} });
+    try {
+      await dialer.ready;
+      const ws = relay.clients[0]!;
+      const data = Buffer.alloc(370 * 1024).toString("base64");
+      const attachments = [{ originalName: "sample.png", mime: "image/png", data }];
+      relay.send(ws, "cmd.create", { boardId: "thinkbook", idempotencyKey: "image-create", title: "Image",
+        prompt: "Example", agent: "pi", cwd: "/tmp/repo", attachments }, "image-create");
+      await waitFor(() => relay.received.some((f) => f.type === "ack" && f.payload.ref === "image-create"));
+      relay.send(ws, "cmd.continue", { boardId: "thinkbook", taskId: facade.tasks[0]!.id,
+        idempotencyKey: "image-continue", attachments }, "image-continue");
+      await waitFor(() => relay.received.some((f) => f.type === "ack" && f.payload.ref === "image-continue"));
+      assert.equal(facade.creates, 1);
+      assert.deepEqual(facade.tasks[0]!.attachments?.map((a) => a.size), [data.length, data.length]);
+      assert.equal(relay.received.filter((f) => f.type === "board.register").length, 1);
+    } finally {
+      await dialer.close();
+      await relay.close();
+    }
+  });
+
   it("doubles reconnect delay until a cap and stops when closed during backoff", async () => {
     const delays: number[] = [];
     const dialer = startEmbeddedRelay({

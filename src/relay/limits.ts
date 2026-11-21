@@ -11,8 +11,12 @@ export const RELAY_LIMITS = {
    * and the socket is closed. Other inbound frames are ignored.
    */
   maxLiveCommands: 32,
-  /** Max inbound or outbound frame size in bytes. */
-  maxFrameBytes: 256 * 1024,
+  /** Relay server's WS maxPayload; create/continue may include base64 attachments. */
+  maxInboundFrameBytes: 16 * 1024 * 1024,
+  /** Keep the buffered command budget bounded even for multi-MiB attachments. */
+  maxQueuedBytes: 20 * 1024 * 1024,
+  /** Events and ACKs contain metadata, never inline files. */
+  maxOutboundFrameBytes: 256 * 1024,
   /** Close and reconnect when `ws.bufferedAmount` exceeds this. */
   maxOutboundBufferedBytes: 2 * 1024 * 1024,
   /** Board events queued during snapshot enrich or while the serial tail is busy. */

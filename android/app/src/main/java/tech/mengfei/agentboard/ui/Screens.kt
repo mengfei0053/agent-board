@@ -90,6 +90,8 @@ import tech.mengfei.agentboard.BoardViewModel
 import tech.mengfei.agentboard.Screen
 import tech.mengfei.agentboard.UiState
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
+import tech.mengfei.agentboard.protocol.agentEnabled
+import tech.mengfei.agentboard.protocol.agentLabel
 import tech.mengfei.agentboard.protocol.ARCHIVED_STATUS
 import tech.mengfei.agentboard.protocol.AgentModelCatalog
 import tech.mengfei.agentboard.protocol.OutgoingAttachment
@@ -251,8 +253,8 @@ private fun PageAppBar(state: UiState, model: BoardViewModel) {
         val enabled = when (state.screen) {
             Screen.AddBoard, Screen.Pair -> pairSubmitAllowed(state.pairCode, state.httpBase, state.secureStore, state.busy)
             Screen.WorkspaceSettings -> state.writesAllowed && state.workspaceForm != null && state.settingsBlocked == null
-            Screen.BoardSettings -> state.writesAllowed && state.settingsLoaded && state.settingsBlocked == null
-            is Screen.Create -> state.createMode != "busy"
+            Screen.BoardSettings -> state.writesAllowed && state.settingsLoaded && state.settingsBlocked == null && state.boardForm?.grokBot?.valid != false
+            is Screen.Create -> state.createMode != "busy" && state.draftAgent.isNotEmpty()
             else -> true
         }
         if (action != null) TextButton(action.second, Modifier.align(Alignment.CenterEnd), enabled = enabled) { Text(action.first) }
@@ -553,7 +555,7 @@ internal fun TaskRow(task: RelayTask, english: Boolean, onClick: () -> Unit) {
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatusBadge(task.status, english)
-                Text(listOfNotNull(task.agent, task.iteration?.takeIf { it > 1 }?.let { stringResource(R.string.iteration_line, it) }).joinToString(" · "),
+                Text(listOfNotNull(task.agent?.let(::agentLabel), task.iteration?.takeIf { it > 1 }?.let { stringResource(R.string.iteration_line, it) }).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -578,12 +580,11 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
                 val board = state.sessions.find { it.sessionId == state.activeSessionId }
                 board?.let { MetaPill(it.displayName) }
                 MetaPill(workspaceDisplayName(task.workspaceId, state.workspaces, english))
-                Text(listOfNotNull(task.agent, task.model, task.thinkingEffort).joinToString(" · "), modifier = Modifier.align(Alignment.CenterVertically),
+                Text(listOfNotNull(task.agent?.let(::agentLabel), task.model, task.thinkingEffort).joinToString(" · "), modifier = Modifier.align(Alignment.CenterVertically),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Banner(state.commandNote)
-        Banner(state.formError)
+        CommandBanners(state)
         if (task.status == ARCHIVED_STATUS) {
             Text(stringResource(R.string.archive_readonly), style = MaterialTheme.typography.bodySmall,
                 color = statusColor(ARCHIVED_STATUS), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
@@ -666,7 +667,7 @@ private fun LogFullscreen(title: String, logs: List<tech.mengfei.agentboard.prot
 
 @Composable
 private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask) {
-    val canContinue = canContinueStatus(task.status)
+    val canContinue = canContinueStatus(task.status) && agentEnabled(task.agent, state.grokEnabled)
     // Make sure quick prompts / model settings are loaded as soon as the composer is on screen.
     LaunchedEffect(task.id, canContinue) { if (canContinue && !state.continueOpen) model.openContinue() }
     // The composer is always visible for a continuable task: the web board has the same footer input.
@@ -690,7 +691,7 @@ private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask
         QuickFill(state) { model.updateContinuePrompt(it) }
         MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
             stringResource(R.string.describe_task), minLines = 3)
-        AttachmentPickerSection(
+        if (task.agent != "grok") AttachmentPickerSection(
             attachments = state.continueAttachments,
             onAdd = model::addContinueAttachments,
             onRemove = model::removeContinueAttachment,
@@ -796,7 +797,7 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         MetaLine(stringResource(R.string.started), epochLabel(task.startedAt))
         MetaLine(stringResource(R.string.ended), epochLabel(task.endedAt))
         TotalDurationLine(task, english)
-        MetaLine("Agent", task.agent ?: "—")
+        MetaLine("Agent", task.agent?.let(::agentLabel) ?: "—")
         MetaLine(stringResource(R.string.model), task.model ?: "—")
         MetaLine(stringResource(R.string.thinking_effort), task.thinkingEffort ?: "—")
         MetaLine("PID", task.pid?.toString() ?: "—")
@@ -873,8 +874,7 @@ private fun sideJobStatus(status: String): String = when (status) {
 private fun CreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     var agentOpen by remember { mutableStateOf(false) }
     ScrollColumn(padding) {
-        Banner(state.commandNote)
-        Banner(state.formError)
+        CommandBanners(state)
         SectionCard {
             MakeField(state.draftTitle, model::updateDraftTitle, stringResource(R.string.title))
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -884,12 +884,12 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                         shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, OutlineVariant)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
                             horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(state.draftAgent, style = MaterialTheme.typography.bodyMedium)
+                            Text(agentLabel(state.draftAgent).ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
                             BoardGlyph(BoardIcon.Chevron, Modifier.size(18.dp))
                         }
                     }
                     DropdownMenu(expanded = agentOpen, onDismissRequest = { agentOpen = false }, containerColor = SurfaceHighest) {
-                        AGENT_KINDS.forEach { agent -> DropdownMenuItem(text = { Text(agent) },
+                        AGENT_KINDS.filter { agentEnabled(it, state.grokEnabled) }.forEach { agent -> DropdownMenuItem(text = { Text(agentLabel(agent)) },
                             onClick = { agentOpen = false; model.updateDraftAgent(agent) }) }
                     }
                 }
@@ -905,12 +905,12 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                 onSelectEffort = model::updateDraftThinkingEffort,
             )
             MakeField(state.draftPrompt, model::updateDraftPrompt, "Prompt", stringResource(R.string.describe_task), minLines = 6)
-            AttachmentPickerSection(
+            if (state.draftAgent != "grok") AttachmentPickerSection(
                 attachments = state.draftAttachments,
                 onAdd = model::addDraftAttachments,
                 onRemove = model::removeDraftAttachment,
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (state.draftAgent != "grok") Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(stringResource(R.string.worktree), style = MaterialTheme.typography.labelLarge)
                     Text(stringResource(if (state.worktreeEnabled) R.string.worktree_on else R.string.worktree_off),
@@ -927,7 +927,7 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
             state.workspaces.find { it.id == state.selectedWorkspaceId }?.let {
                 Text(it.name, style = MaterialTheme.typography.labelLarge)
             }
-            MakeField(state.draftCwd, model::updateDraftCwd, stringResource(R.string.cwd), "/home/me/src/app")
+            if (state.draftAgent != "grok") MakeField(state.draftCwd, model::updateDraftCwd, stringResource(R.string.cwd), "/home/me/src/app")
         }
         if (state.createMode == "lookup") TextButton(model::startDifferentCreate) { Text(stringResource(R.string.new_command)) }
     }
@@ -944,6 +944,10 @@ private fun ModelAndThinkingFields(
     onSelectModel: (String) -> Unit,
     onSelectEffort: (String) -> Unit,
 ) {
+    if (agent == "grok") {
+        Text(stringResource(R.string.grok_hosted_task), style = MaterialTheme.typography.bodySmall)
+        return
+    }
     var modelDialogOpen by remember { mutableStateOf(false) }
     var effortOpen by remember { mutableStateOf(false) }
     val efforts = remember(catalog, agent, effectiveModelForEfforts) {
@@ -1307,8 +1311,7 @@ private fun QuickFill(state: UiState, onFill: (String) -> Unit) {
 @Composable
 private fun WorkspaceCreateScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     ScrollColumn(padding) {
-        Banner(state.commandNote)
-        Banner(state.formError)
+        CommandBanners(state)
         SectionCard(stringResource(R.string.basic_info), stringResource(R.string.workspace_create_hint)) {
             MakeField(state.draftWorkspaceName, model::updateDraftWorkspaceName, stringResource(R.string.name))
             MakeField(state.draftWorkspacePath, model::updateDraftWorkspacePath, stringResource(R.string.path), "/home/me/src/app")
@@ -1403,6 +1406,16 @@ private fun BoardSettingsScreen(state: UiState, model: BoardViewModel, padding: 
             }
         }
         state.boardForm?.let { form ->
+            form.grokBot?.let { bot ->
+                SectionCard("Grok Bot", stringResource(R.string.grok_bot_hint)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.enable_grok_bot), modifier = Modifier.weight(1f))
+                        Switch(bot.enabled, { model.updateGrokBot(enabled = it) })
+                    }
+                    MakeField(bot.slug, { model.updateGrokBot(slug = it) }, stringResource(R.string.grok_bot_slug), "review-bot")
+                    if (!bot.valid) Text(stringResource(R.string.grok_slug_error), color = MaterialTheme.colorScheme.error)
+                }
+            }
             tech.mengfei.agentboard.protocol.BOARD_AGENT_KEYS.forEach { key ->
                 val agent = form.agents.getValue(key)
                 SectionCard("Agent · " + if (key == "agent") "Cursor" else key.replaceFirstChar { it.uppercase() },
@@ -1440,6 +1453,14 @@ private fun ScrollColumn(padding: PaddingValues, content: @Composable ColumnScop
         verticalArrangement = Arrangement.spacedBy(12.dp),
         content = content,
     )
+}
+
+internal fun commandBannerTexts(commandNote: String?, formError: String?) =
+    listOfNotNull(commandNote, formError).distinct()
+
+@Composable
+private fun CommandBanners(state: UiState) {
+    commandBannerTexts(state.commandNote, state.formError).forEach { Banner(it) }
 }
 
 @Composable

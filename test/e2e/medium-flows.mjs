@@ -67,7 +67,7 @@ async function main() {
 
   try {
     // —— E5 global settings ——
-    await page.goto(`${base}/settings`, { waitUntil: "networkidle2" });
+    await page.goto(`${base}/settings`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#settings-form");
     await page.waitForFunction(
       () => document.getElementById("settings-status")?.textContent?.includes("已加载"),
@@ -133,7 +133,7 @@ async function main() {
     assert.ok(state.settings.quickPrompts.some((q) => q.label === "复盘" && q.content.includes("复盘")));
 
     // reload and verify
-    await page.reload({ waitUntil: "networkidle2" });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       () => document.getElementById("settings-status")?.textContent?.includes("已加载"),
     );

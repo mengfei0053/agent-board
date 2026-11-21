@@ -70,7 +70,7 @@ private val EXACT = mapOf(
     "The archive changed. The list restarted from the first page." to "归档有变化，已从第一页重新加载。上一页不能当作完整列表。",
     "Archive is not available on this relay." to "当前中继还不支持归档列表。",
     "This board is offline. The relay will not queue a command." to "看板不在线，中继不会排队。",
-    "title is required, up to 200 characters" to "请填写标题，最多 200 字。",
+    "title must be at most 200 characters" to "标题最多 200 字。",
     "prompt is required, up to 20000 characters" to "请填写提示词，最多 20000 字。",
     "cwd is required and must be a local path" to "请填写本机工作目录。",
     "name is required, up to 200 characters" to "请填写名称，最多 200 字。",

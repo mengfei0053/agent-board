@@ -1,5 +1,6 @@
 import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask, sortLaneTasks } from "./boardTaskMerge.js";
+import { grokBotAvailable } from "./grokBot.js";
 import { cliKeyForKind, resumeCommandView } from "./resumeCommand.js";
 import { renderGitStatus } from "./git-status-view.js";
 import { formatRoundDuration, formatTaskDuration } from "./roundTime.js";
@@ -140,7 +141,10 @@ const createModelClear = document.getElementById("create-model-clear");
 const createThinkingEffortSelect = document.getElementById("create-thinking-effort");
 const createKindSelect = form?.elements?.namedItem?.("kind") || form?.querySelector?.('select[name="kind"]');
 
-const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex", "kimi"];
+const SUPPORTED_AGENT_KINDS = ["pi", "claude", "cursor", "devin", "codex", "kimi", "grok"];
+let grokBotEnabled = false;
+const agentEnabled = (kind) => kind !== "grok" || grokBotEnabled;
+const agentLabel = (kind) => kind === "grok" ? "Grok Bot" : kind;
 const EFFORT_CANONICAL_ORDER = [
   "none",
   "off",
@@ -187,7 +191,7 @@ function normalizeModelItem(raw) {
 }
 
 function normalizeAgentModelsPayload(rawModels) {
-  const next = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [] };
+  const next = { pi: [], claude: [], cursor: [], devin: [], codex: [], kimi: [], grok: [] };
   if (!rawModels || typeof rawModels !== "object") return next;
   for (const kind of SUPPORTED_AGENT_KINDS) {
     const list = Array.isArray(rawModels[kind]) ? rawModels[kind] : [];
@@ -256,6 +260,7 @@ function createModelOptionEl(item, isSelected, isActive) {
 
 function getSupportedEffortsForSelection(kind, modelName) {
   const k = String(kind || "").trim();
+  if (k === "grok") return [];
   const list = getAgentModelsForKind(k);
   const trimmedModel = String(modelName || "").trim();
   if (trimmedModel) {
@@ -604,7 +609,13 @@ function syncCreateThinkingEffort(preferredEffort = createPreferredEffort || cre
 
 function applyCreateAgentDefaults() {
   const kind = createKindSelect?.value || "pi";
-  const def = getAgentDefaultForKind(kind);
+  const isBot = kind === "grok";
+  createModelInput.closest("label").hidden = isBot;
+  createThinkingEffortSelect.closest("label").hidden = isBot;
+  form.querySelector(".attach-field").hidden = isBot;
+  form.querySelector(".prompt-toolbar").hidden = isBot;
+  document.getElementById("create-prompt").placeholder = isBot ? "用文字描述任务；托管 Bot 无法读取看板本地文件。" : "要 Agent 做的事（可粘贴或插入图片）";
+  const def = isBot ? {} : getAgentDefaultForKind(kind);
   createDefaultsPristine = true;
   createPreferredEffort = def.thinkingEffort || "";
   createModelPicker.setValue(def.model);
@@ -826,10 +837,13 @@ function setPromptStatus(forId, msg, isError = false) {
 
 async function handlePromptImageFile(forId, file) {
   const ta = document.getElementById(forId);
-  if (!ta || !file) return;
+  const acceptsImages = () => (forId === "create-prompt" ? createKindSelect.value : tasks.get(selectedId)?.kind) !== "grok";
+  if (!ta || !file || !acceptsImages()) return;
+  const taskId = selectedId;
   setPromptStatus(forId, "上传中…");
   try {
     const saved = await uploadImageFile(file);
+    if (!acceptsImages() || (forId === "continue-prompt" && selectedId !== taskId)) return;
     const alt = (file.name || "图片").replace(/\.[^.]+$/, "").slice(0, 40) || "图片";
     insertAtCursor(ta, `![${alt}](${saved.url})`);
     setPromptStatus(forId, "已插入图片");
@@ -1136,7 +1150,7 @@ function makeCard(t) {
   footer.className = "card-footer";
   const kind = document.createElement("span");
   kind.className = "kind-pill";
-  kind.textContent = t.kind || "";
+  kind.textContent = agentLabel(t.kind) || "";
   const iteration = document.createElement("span");
   iteration.className = "iter-pill";
   iteration.title = "迭代次数";
@@ -1296,6 +1310,7 @@ function bindLaneDropTargets() {
 }
 
 async function moveToLane(id, lane) {
+  if (lane === "todo" && !agentEnabled(tasks.get(id)?.kind)) return;
   const res = await fetch(`/api/tasks/${id}/move`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1666,11 +1681,29 @@ function normalizeAgentDefaultsPayload(raw) {
   return out;
 }
 
+function setGrokAvailability(enabled) {
+  if (grokBotEnabled === enabled) return;
+  grokBotEnabled = enabled;
+  if (enabled) createKindSelect.add(new Option("Grok Bot", "grok"));
+  else {
+    const wasSelected = createKindSelect.value === "grok";
+    createKindSelect.querySelector('option[value="grok"]')?.remove();
+    if (wasSelected) {
+      // Never silently submit an open bot draft to the first local CLI.
+      if (!createModal.classList.contains("hidden")) createKindSelect.selectedIndex = -1;
+      createKindSelect.dispatchEvent(new Event("change"));
+    }
+  }
+}
+
+let settingsLoadSeq = 0;
 async function loadQuickPrompts(opts = {}) {
+  const seq = ++settingsLoadSeq;
   try {
     const res = await fetch("/api/settings");
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = res.ok ? await res.json() : {};
+    if (seq !== settingsLoadSeq) return;
+    setGrokAvailability(grokBotAvailable(data.grokBot));
     quickPrompts = Array.isArray(data.quickPrompts) ? data.quickPrompts : [];
     cliPathSettings = data.cliPaths && typeof data.cliPaths === "object" ? data.cliPaths : {};
     agentDefaultsByKind = normalizeAgentDefaultsPayload(data.agentDefaults);
@@ -1683,7 +1716,10 @@ async function loadQuickPrompts(opts = {}) {
       if (open) paintDetail(open);
     }
   } catch {
-    /* ignore */
+    if (seq !== settingsLoadSeq) return;
+    setGrokAvailability(false);
+    const open = tasks.get(selectedId);
+    if (open) paintDetail(open);
   }
 }
 
@@ -1771,7 +1807,8 @@ async function uploadAttachmentFile(file) {
 
 async function handleCreateAttachmentFiles(fileList) {
   const files = [...(fileList || [])];
-  if (!files.length) return;
+  if (!files.length || createKindSelect.value === "grok") return;
+  const batch = pendingAttachments;
   setAttachStatus(`上传中（${files.length}）…`);
   try {
     for (const file of files) {
@@ -1779,6 +1816,7 @@ async function handleCreateAttachmentFiles(fileList) {
         throw new Error("附件过多（上限 20 个）");
       }
       const saved = await uploadAttachmentFile(file);
+      if (batch !== pendingAttachments) return;
       pendingAttachments.push({
         name: saved.name,
         originalName: saved.originalName || file.name || saved.name,
@@ -1867,7 +1905,7 @@ async function refreshCreateWorktreeEligibility() {
   const wsId = selectedWorkspaceId;
   hideCreateWorktree();
   if (createUseWorktreeLabel) createUseWorktreeLabel.dataset.elig = "pending";
-  if (!wsId || createModal.classList.contains("hidden")) {
+  if (!wsId || createModal.classList.contains("hidden") || createKindSelect.value === "grok") {
     if (seq === worktreeEligSeq && createUseWorktreeLabel) createUseWorktreeLabel.dataset.elig = "no";
     return;
   }
@@ -2037,7 +2075,7 @@ async function openDetail(id) {
 }
 
 function canContinue(task) {
-  return !["draft", "queued", "running"].includes(task.status);
+  return agentEnabled(task.kind) && !["draft", "queued", "running"].includes(task.status);
 }
 
 function metaItem(k, v, wide = false, opts = {}) {
@@ -2395,7 +2433,7 @@ function paintDetail(task) {
   if (editingTitleTaskId && editingTitleTaskId !== task.id) {
     cancelDetailTitleEdit();
   }
-  detailSub.textContent = `${task.id} · ${task.kind} · ${statusText} · 迭代 ${iter}`;
+  detailSub.textContent = `${task.id} · ${agentLabel(task.kind)} · ${statusText} · 迭代 ${iter}`;
   const taskIdEl = document.getElementById("detail-task-id");
   if (taskIdEl) taskIdEl.textContent = task.id || "";
 
@@ -2411,7 +2449,7 @@ function paintDetail(task) {
     metaItem("开始时间", startLabel),
     metaItem("结束时间", endLabel),
     metaItem("最后回复", replyLabel),
-    metaItem("Agent", task.kind),
+    metaItem("Agent", agentLabel(task.kind)),
     metaItem("模型", task.model || "—"),
     metaItem("思考强度", task.thinkingEffort || "—"),
     metaItem("PID", task.pid != null ? String(task.pid) : "—"),
@@ -2432,7 +2470,7 @@ function paintDetail(task) {
     logCount.textContent = selectedLogCount ? `（${selectedLogCount} 行）` : "";
   }
 
-  startBtn.hidden = task.status !== "draft";
+  startBtn.hidden = task.status !== "draft" || !agentEnabled(task.kind);
   stopBtn.hidden = !["queued", "running", "blocked"].includes(task.status);
   deleteBtn.hidden = isUndeletable(task);
   if (archiveBtn) {
@@ -2440,15 +2478,20 @@ function paintDetail(task) {
   }
 
   const showContinue = canContinue(task);
-  continueRow.hidden = task.status === "draft";
+  continueRow.hidden = task.status === "draft" || !agentEnabled(task.kind);
   const submitting = continuingTaskId === task.id;
   const queued = followupsOf(task.id);
-  continueBtn.hidden = task.status === "draft";
+  continueBtn.hidden = continueRow.hidden;
   continueBtn.disabled = !showContinue || submitting;
   continueBtn.textContent = queued.length ? `继续任务（待办 ${queued.length}/${MAX_FOLLOWUP_QUEUE}）` : "继续任务";
-  continueModel.disabled = !canContinue(task) || !task.sessionId || submitting;
+  const isBot = task.kind === "grok";
+  continueModel.closest(".continue-model-grid").hidden = isBot;
+  continueModelHint.hidden = isBot;
+  continueRow.querySelector(".prompt-toolbar").hidden = isBot;
+  continuePrompt.placeholder = isBot ? "用文字补充续跑说明；托管 Bot 无法读取看板本地文件。" : "可选：补充续跑说明；留空则按原任务继续（可粘贴图片）。运行中按回车添加下一轮待办";
+  continueModel.disabled = isBot || !canContinue(task) || !task.sessionId || submitting;
   if (continueThinkingEffort) {
-    continueThinkingEffort.disabled = !canContinue(task) || submitting;
+    continueThinkingEffort.disabled = isBot || !canContinue(task) || submitting;
   }
   if (continueModel.disabled) continueModelPicker.closeDropdown();
   renderFollowupQueue(task.id);
@@ -2457,7 +2500,7 @@ function paintDetail(task) {
     ? "缺少原会话，不能在保留上下文的情况下切换模型。"
     : !canContinue(task)
       ? "请先停止任务，再选择下一轮模型。"
-      : `仅切换 ${task.kind} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
+      : `仅切换 ${agentLabel(task.kind)} 内兼容的模型，保留原会话历史；不更换执行器、不新建会话。上下文窗口和自动压缩仍受 CLI 限制。`;
   continueModelPicker.syncWithKind();
   syncContinueThinkingEffort(continueThinkingEffort?.value || task.thinkingEffort || "");
   continueHint.textContent = task.status === "draft"
@@ -2540,6 +2583,12 @@ document.getElementById("btn-new").onclick = () => openCreate("draft");
 document.getElementById("btn-new-todo").onclick = () => openCreate("todo");
 if (createKindSelect) {
   createKindSelect.addEventListener("change", () => {
+    if (createKindSelect.value === "grok") {
+      clearPendingAttachments();
+      const prompt = document.getElementById("create-prompt");
+      prompt.value = prompt.value.replace(UPLOAD_IMG_RE, "");
+    }
+    void refreshCreateWorktreeEligibility();
     applyCreateAgentDefaults();
   });
 }
@@ -2618,6 +2667,9 @@ document.addEventListener("click", (e) => {
   fillPromptFromQuick(target, item.content);
 });
 void loadQuickPrompts({ applyCreateDefaults: true });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) void loadQuickPrompts();
+});
 
 detailMetaGrid?.addEventListener("click", async (e) => {
   const btn = e.target?.closest?.("[data-copy-cmd]");
@@ -2679,8 +2731,14 @@ async function submitCreateTask() {
     return;
   }
   const fd = new FormData(form);
+  if (!fd.get("kind") || !agentEnabled(fd.get("kind"))) {
+    formError.hidden = false;
+    formError.textContent = "请选择可用的 Agent";
+    return;
+  }
+  const local = fd.get("kind") !== "grok";
   const worktreeOn = Boolean(
-    createUseWorktreeLabel &&
+    local && createUseWorktreeLabel &&
     !createUseWorktreeLabel.hidden &&
     createUseWorktree &&
     createUseWorktree.checked
@@ -2691,11 +2749,11 @@ async function submitCreateTask() {
     kind: fd.get("kind"),
     title: fd.get("title") || undefined,
     workspaceId: selectedWorkspaceId,
-    model: selectedCreateModel || undefined,
-    thinkingEffort: selectedThinkingEffort,
+    model: local ? selectedCreateModel || undefined : undefined,
+    thinkingEffort: local ? selectedThinkingEffort : undefined,
     prompt: fd.get("prompt"),
     start: createMode === "todo",
-    attachments: pendingAttachments.length ? pendingAttachments : undefined,
+    attachments: local && pendingAttachments.length ? pendingAttachments : undefined,
     ...(worktreeOn ? { useGitWorktree: true } : {}),
   };
   const res = await fetch("/api/tasks", {
@@ -2831,7 +2889,7 @@ async function postSteer(id, body) {
 }
 
 async function sendFollowupToSession(taskId, index) {
-  if (!taskId || sendingFollowup?.taskId === taskId) return;
+  if (!taskId || !agentEnabled(tasks.get(taskId)?.kind) || sendingFollowup?.taskId === taskId) return;
   const items = followupsOf(taskId);
   const prompt = items[index];
   if (!prompt) return;
@@ -2904,7 +2962,7 @@ async function handleContinueAction() {
   if (!selectedId) return;
   const id = selectedId;
   const task = tasks.get(id);
-  if (!task || task.status === "draft") return;
+  if (!task || task.status === "draft" || !agentEnabled(task.kind)) return;
   const typed = continuePrompt.value.trim();
   if (taskIsActive(task) || continuingTaskId === id) {
     const res = queueFollowup(id, typed);
