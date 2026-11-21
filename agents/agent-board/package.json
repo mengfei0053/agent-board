@@ -1,0 +1,9 @@
+{
+  "name": "agent-board-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@grok/agent-sdk": "0.7.2"
+  }
+}
