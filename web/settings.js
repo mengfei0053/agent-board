@@ -1,4 +1,4 @@
-import { validBotSlug } from "./grokBot.js";
+import { teamIdHint, validBotSlug, validTeamId } from "./grokBot.js";
 import "./grokBotSettings.js";
 
 const tabsEl = document.getElementById("agent-tabs");
@@ -210,6 +210,7 @@ let lastCodexSandbox = true;
 const grokBotSetting = document.getElementById("grok-bot-setting");
 const grokBotEnabled = document.getElementById("grok-bot-enabled");
 const grokBotSlug = document.getElementById("grok-bot-slug");
+const grokBotTeamId = document.getElementById("grok-bot-team-id");
 /** @type {Record<string, { model: string, thinkingEffort: string }>} */
 let lastAgentDefaults = {};
 /** @type {Record<string, { model: string, thinkingEfforts: string[] }[]>} */
@@ -734,6 +735,7 @@ function renderAll(data) {
   lastCodexSandbox = data.codexSandbox !== false;
   grokBotSetting.hidden = typeof data.grokBot?.enabled !== "boolean" || typeof data.grokBot.slug !== "string";
   grokBotSlug.defaultValue = grokBotSlug.value = grokBotSetting.hidden ? "" : data.grokBot.slug;
+  grokBotTeamId.defaultValue = grokBotTeamId.value = data.grokBot?.teamId ?? "";
   grokBotEnabled.checked = data.grokBot?.enabled === true;
   grokBotEnabled.defaultChecked = grokBotEnabled.checked;
   applyAgentDefaultsFromData(data);
@@ -803,7 +805,12 @@ function collectPayload() {
     const enabled = grokBotEnabled.checked;
     const slug = grokBotSlug.value.trim();
     if ((enabled || slug) && !validBotSlug(slug)) throw new Error("目标 Agent slug 需为 1–63 位小写字母、数字或短横线，首尾不能是短横线。");
-    if (enabled !== grokBotEnabled.defaultChecked || slug !== grokBotSlug.defaultValue) payload.grokBot = { enabled, slug };
+    const teamId = grokBotTeamId.value;
+    const teamChanged = teamId !== grokBotTeamId.defaultValue;
+    if (teamChanged && !validTeamId(teamId)) throw new Error(teamIdHint);
+    if (enabled !== grokBotEnabled.defaultChecked || slug !== grokBotSlug.defaultValue || teamChanged) {
+      payload.grokBot = { enabled, slug, ...(teamChanged && { teamId }) };
+    }
   }
   return payload;
 }
@@ -1043,13 +1050,13 @@ form.addEventListener("submit", async (e) => {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setStatus(data.error || `保存失败：HTTP ${res.status}`, false);
+      setStatus(`保存失败（HTTP ${res.status}），请检查设置及看板服务状态后重试。`, false);
       return;
     }
     renderAll(data);
     setStatus("已保存，对新任务生效。", true);
-  } catch (err) {
-    setStatus(`保存失败：${err}`, false);
+  } catch {
+    setStatus("保存失败，请检查与看板的网络连接后重试。", false);
   }
 });
 

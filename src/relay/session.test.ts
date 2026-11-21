@@ -922,21 +922,24 @@ describe("connector session", () => {
     session.close();
   });
 
-  it("passes only the settings groups supplied by the phone to the board", async () => {
+  it("keeps Web-only bot settings out of phone ACKs and forwards only supplied groups", async () => {
     const facade = memoryFacade();
     const grokBot = { enabled: true, slug: "review-bot" };
+    const settings = { cliPaths: {}, proxyEnv: {}, quickPrompts: [], codexSandbox: false, grokBot };
+    const boardSettings = { ...settings, grokBot: Object.freeze({ ...grokBot, teamId: "web-team" }) };
+    facade.getSettings = async () => boardSettings as unknown as Awaited<ReturnType<MemoryFacade["getSettings"]>>;
     const writes: Record<string, unknown>[] = [];
     facade.putSettings = async (body) => {
       writes.push(body);
-      return { grokBot } as Awaited<ReturnType<MemoryFacade["putSettings"]>>;
+      return facade.getSettings();
     };
     const { frames, send } = sentFrames();
     const session = openSession(facade, send, new CreateIdempotency());
     await session.bootstrap();
-    for (const [ref, patch] of [["bot", { grokBot }], ["legacy", { codexSandbox: false }]] as const) {
-      session.handleCommand(frame("cmd.settings.put", { boardId: "thinkbook", idempotencyKey: `settings-${ref}`, ...patch }, ref));
+    for (const [ref, type, patch] of [["get", "cmd.settings.get", {}], ["bot", "cmd.settings.put", { grokBot }], ["legacy", "cmd.settings.put", { codexSandbox: false }]] as const) {
+      session.handleCommand(frame(type, { boardId: "thinkbook", idempotencyKey: `settings-${ref}`, ...patch }, ref));
       await waitFor(() => frames.some((item) => item.payload.ref === ref));
-      assert.deepEqual(frames.find((item) => item.payload.ref === ref)?.payload.settings, { grokBot });
+      assert.deepEqual(frames.find((item) => item.payload.ref === ref)?.payload.settings, settings);
     }
     assert.deepEqual(writes, [{ grokBot }, { codexSandbox: false }]);
     session.close();

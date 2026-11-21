@@ -3,20 +3,29 @@ import { HttpError } from "./httpError.js";
 import type { AgentKind } from "./types.js";
 
 /** Non-secret routing only; BDK credentials never go into board settings. */
-export type GrokBotSettings = { enabled: boolean; slug: string };
+export type GrokBotSettings = { enabled: boolean; slug: string; teamId?: string };
 const defaults: GrokBotSettings = { enabled: false, slug: "" };
 let settings = defaults;
 
-export function parseGrokBotSettings(value: unknown): GrokBotSettings {
+export function parseGrokTeamId(value: unknown): string | undefined {
+  if (value === "") return undefined; // Clear the override and use account discovery.
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,15}$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new HttpError(400, "Grok Team ID must be a positive safe integer");
+  }
+  return value;
+}
+
+export function parseGrokBotSettings(value: unknown, previousTeamId?: string): GrokBotSettings {
   if (!value || typeof value !== "object" || !("enabled" in value) || typeof value.enabled !== "boolean" ||
-      !("slug" in value) || typeof value.slug !== "string" || Object.keys(value).length !== 2) {
+      !("slug" in value) || typeof value.slug !== "string" || Object.keys(value).some(k => !["slug", "enabled", "teamId"].includes(k))) {
     throw new HttpError(400, "grokBot requires a boolean enabled field and a slug");
   }
   const slug = value.slug.trim();
   if ((slug || value.enabled) && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
     throw new HttpError(400, "invalid Grok Bot slug");
   }
-  return { enabled: value.enabled, slug };
+  const teamId = "teamId" in value ? parseGrokTeamId(value.teamId) : previousTeamId;
+  return { enabled: value.enabled, slug, ...(teamId ? { teamId } : {}) };
 }
 
 export async function loadGrokBot(): Promise<void> {

@@ -9,6 +9,7 @@ import type { Runner } from "./types.js";
 
 const sessionPattern = /^ses_[a-f0-9]{24}$/;
 const remoteWarning = "Remote work may still be running; check the deployment before retrying.";
+const bindingError = "Cannot continue: restore the original Grok team (including automatic selection) and deployment slug, or start a new session. No message sent.";
 class RunError extends Error {}
 
 // No workspace cwd, inherited NODE_OPTIONS, endpoint overrides, board DB/API secrets,
@@ -20,6 +21,13 @@ export function cliEnv(): NodeJS.ProcessEnv {
   for (const key of ["HOME", "USERPROFILE", "SystemRoot", "XDG_CONFIG_HOME", "AGENT_SERVE_CONFIG_DIR",
     "CURSOR_API_KEY", "CURSOR_API_KEY_FILE", "CURSOR_SERVICE_ACCOUNT_KEY"]) {
     if (process.env[key]) env[key] = process.env[key];
+  }
+  // Network routing is an operator decision, never taken from a task or Web settings.
+  if (process.env.NODE_USE_ENV_PROXY === "1") {
+    env.NODE_USE_ENV_PROXY = "1";
+    for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy"]) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
   }
   return env;
 }
@@ -66,12 +74,28 @@ function readCli([bin, ...prefix]: [string, ...string[]], args: string[], env: N
       if (size > 8 * 1024 * 1024) return reject(new RunError("BDK response exceeds the observation limit."));
       if (code !== 0) {
         const reason = code === 5 ? "authentication/permission denied" : code === 3 ? "delivery pending" : `exit ${code ?? "signal/timeout"}`;
-        return reject(new RunError(`BDK ${args.slice(0, 2).join(" ")} failed (${reason}).`));
+        // Exit 1 is ambiguous (including no default team); never inspect or forward auth diagnostics.
+        const hint = args[0] === "session" && [1, 4, 5].includes(code ?? -1)
+          ? " Check the board account's Cursor login and deployment access; verify the slug and set the numeric Team ID in Grok Bot settings if there is no default team." : "";
+        return reject(new RunError(`BDK ${args.slice(0, 2).join(" ")} failed (${reason}).${hint}`));
       }
       try { resolve(object(JSON.parse(Buffer.concat(chunks).toString("utf8")))); }
       catch { reject(new RunError("Invalid BDK JSON response.")); }
     });
   });
+}
+
+function hostedDeployment() {
+  const { enabled, slug, teamId } = getGrokBotSettings();
+  if (!enabled || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(slug)) throw new RunError("No enabled Grok deployment configured.");
+  // BDK 0.7.2 uses parseInt(team, 10); never let prefixes, aliases or rounded IDs route a wake.
+  if (teamId !== undefined && (typeof teamId !== "string" || !/^[1-9]\d{0,15}$/.test(teamId) || !Number.isSafeInteger(Number(teamId)))) {
+    throw new RunError("Set a positive decimal Team ID in Grok Bot settings, or clear it for automatic selection. No message sent.");
+  }
+  return {
+    binding: teamId === undefined ? `grok-prod:${slug}` : `grok-prod:${teamId}:${slug}`,
+    args: ["--prod", "--slug", slug, ...(teamId === undefined ? [] : ["--team", teamId])],
+  };
 }
 
 // Platform deliveryId and the SDK send's deliveryId are not interchangeable.
@@ -101,15 +125,12 @@ export const grokRunner: Runner = {
     const observing = AbortSignal.any([signal, deadline]);
     let submitting = false;
     const run = async () => {
-      const { enabled, slug } = getGrokBotSettings();
-      if (!enabled || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(slug)) throw new RunError("No enabled Grok deployment configured.");
+      const deployment = hostedDeployment();
       const followup = opts?.continuePrompt !== undefined;
       let resume: string | undefined;
       if (followup) {
-        const [prefix, boundSlug, id, extra] = (task.sessionId ?? "").split(":");
-        if (prefix !== "grok-prod" || boundSlug !== slug || !sessionPattern.test(id ?? "") || extra !== undefined) {
-          throw new RunError("Cannot continue: missing session or Grok deployment binding changed. No message sent.");
-        }
+        const id = task.sessionId?.split(":").at(-1);
+        if (!id || !sessionPattern.test(id) || task.sessionId !== `${deployment.binding}:${id}`) throw new RunError(bindingError);
         resume = id;
       }
       if (task.model || task.thinkingEffort || task.attachments?.length || opts?.workspaceMcp?.trim()) {
@@ -125,16 +146,18 @@ export const grokRunner: Runner = {
       if (version.name !== "@grok/agent-sdk" || version.version !== "0.7.2") throw new RunError("Expected @grok/agent-sdk@0.7.2.");
       observing.throwIfAborted();
       hooks.onStatus({ status: "running", startedAt: new Date().toISOString(), lastEvent: "grok_submitting", summary: "Hosted Grok: stopping the board does not cancel remote work." });
+      // The version probe yielded: recheck a follow-up's routing before the single write.
+      if (resume && hostedDeployment().binding !== deployment.binding) throw new RunError(bindingError);
       submitting = true;
-      const ack = await cli("session", "create", "--prod", "--slug", slug, ...(resume ? ["--session", resume] : []), `--message=${wake}`, "--wait", "--json");
+      const ack = await cli("session", "create", ...deployment.args, ...(resume ? ["--session", resume] : []), `--message=${wake}`, "--wait", "--json");
       const id = ack.sessionId;
       if (typeof id !== "string" || !sessionPattern.test(id) || (resume && resume !== id) || typeof ack.deliveryId !== "string" || !ack.deliveryId) {
         throw new RunError("BDK did not confirm the expected hosted session.");
       }
       observing.throwIfAborted();
-      hooks.onStatus({ sessionId: `grok-prod:${slug}:${id}`, lastEvent: "grok_observing" });
+      hooks.onStatus({ sessionId: `${deployment.binding}:${id}`, lastEvent: "grok_observing" });
       for (;;) {
-        const snapshot = await cli("session", "get", id, "--prod", "--slug", slug, "--view", "events", "--json");
+        const snapshot = await cli("session", "get", id, ...deployment.args, "--view", "events", "--json");
         observing.throwIfAborted();
         const output = completedReply(snapshot, id, wake);
         if (output !== undefined) {

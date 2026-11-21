@@ -1,4 +1,4 @@
-import { validBotSlug } from "./grokBot.js";
+import { teamIdHint, validBotSlug, validTeamId } from "./grokBot.js";
 
 const login = document.querySelector("#grok-login");
 const check = document.querySelector("#grok-login-check");
@@ -8,6 +8,7 @@ const refresh = document.querySelector("#grok-refresh-deployments");
 const choices = document.querySelector("#grok-deployments");
 const deploymentsStatus = document.querySelector("#grok-deployments-status");
 const slug = document.querySelector("#grok-bot-slug");
+const teamId = document.querySelector("#grok-bot-team-id");
 
 async function request(resource, method = "GET") {
   const post = method === "POST";
@@ -23,6 +24,8 @@ async function request(resource, method = "GET") {
 function errorText(error) {
   if (error.cause === 403) return "仅允许本机直连操作，请勿通过反向代理访问。";
   if (error.cause === 404) return "当前看板不支持此接口，请升级看板。";
+  if (error.cause === 502) return "Cursor 服务请求失败，请检查服务器网络或代理、Cursor 登录状态、Team ID 和团队访问权限。";
+  if (error instanceof TypeError) return "网络请求失败，请检查与看板的连接后重试。";
   return "请求失败，请稍后重试。";
 }
 
@@ -91,13 +94,25 @@ login.addEventListener("click", () => {
 });
 check.addEventListener("click", () => loadLogin("GET", Date.now() + 5 * 60_000));
 
+teamId.addEventListener("input", () => {
+  choices.hidden = true;
+  choices.replaceChildren();
+  deploymentsStatus.textContent = "请刷新部署以读取当前团队的 Agent。";
+});
 refresh.addEventListener("click", async () => {
   refresh.disabled = true;
   choices.hidden = true;
   choices.replaceChildren();
   deploymentsStatus.textContent = "正在读取已部署的 Agent…";
+  const requestedTeamId = teamId.value;
   try {
-    const { slugs } = await request("deployments");
+    if (!validTeamId(requestedTeamId)) {
+      deploymentsStatus.textContent = teamIdHint;
+      return;
+    }
+    const query = requestedTeamId === teamId.defaultValue ? "" : `?teamId=${encodeURIComponent(requestedTeamId)}`;
+    const { slugs } = await request(`deployments${query}`);
+    if (requestedTeamId !== teamId.value) return;
     if (!Array.isArray(slugs)) throw new Error("Unexpected deployments");
     const valid = [...new Set(slugs.filter(validBotSlug))];
     choices.add(new Option("选择部署以填入 slug", ""));
@@ -105,7 +120,7 @@ refresh.addEventListener("click", async () => {
     choices.hidden = valid.length === 0;
     deploymentsStatus.textContent = valid.length ? "选择后将填入 slug，保存设置后生效。" : "没有可选部署，可手动填写 slug。";
   } catch (error) {
-    deploymentsStatus.textContent = `${errorText(error)} 仍可手动填写 slug。`;
+    if (requestedTeamId === teamId.value) deploymentsStatus.textContent = `${errorText(error)} 仍可手动填写 slug。`;
   } finally {
     refresh.disabled = false;
   }

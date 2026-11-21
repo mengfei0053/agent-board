@@ -150,6 +150,10 @@
                   <a id="grok-login-link" target="_blank" rel="noopener noreferrer" hidden>前往 Cursor 授权</a>
                 </div>
                 <p id="grok-login-status" class="settings-block-desc" role="status">尚未查询登录状态。已有账号可直接刷新部署。</p>
+                <label class="settings-row">
+                  <span class="settings-label"><strong>Cursor Team ID（可选）</strong><span class="muted settings-default">留空自动选择团队。修改后可直接刷新部署，无需先保存。</span></span>
+                  <input type="text" id="grok-bot-team-id" inputmode="numeric" placeholder="自动选择" spellcheck="false" />
+                </label>
                 <div class="relay-actions">
                   <button type="button" class="secondary" id="grok-refresh-deployments">刷新部署</button>
                   <select id="grok-deployments" aria-label="选择已部署的 Agent" hidden></select>

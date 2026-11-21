@@ -80,7 +80,7 @@ function start(): GrokWebAuthStatus {
 }
 
 const exec = promisify(execFile);
-async function listDeployments(): Promise<string[]> {
+async function listDeployments(teamId?: string): Promise<string[]> {
   try {
     const [bin, ...prefix] = resolveBdkCommand();
     const env = cliEnv();
@@ -90,6 +90,7 @@ async function listDeployments(): Promise<string[]> {
     const signal = AbortSignal.timeout(30_000);
     for (let page = 0; page < 10; page++) {
       const args = [...prefix, "deployment", "list", "--json", "--fields", "slug"];
+      if (teamId) args.push("--team", teamId);
       if (token) args.push(`--page-token=${token}`);
       const { stdout } = await exec(bin, args, { cwd, env, signal, timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024, windowsHide: true });
       const data = JSON.parse(stdout);
@@ -106,10 +107,15 @@ async function listDeployments(): Promise<string[]> {
   throw new Error("Cannot list BDK deployments.");
 }
 
-let listing: Promise<string[]> | undefined;
+const listings = new Map<string | undefined, Promise<string[]>>();
 export const grokWebAuth = {
   start, status,
-  deployments(): Promise<string[]> {
-    return listing ??= listDeployments().finally(() => { listing = undefined; });
+  deployments(teamId?: string): Promise<string[]> {
+    const existing = listings.get(teamId);
+    if (existing) return existing;
+    if (listings.size >= 4) return Promise.reject(new Error("Too many pending deployment lists."));
+    const pending = listDeployments(teamId).finally(() => listings.delete(teamId));
+    listings.set(teamId, pending);
+    return pending;
   },
 };

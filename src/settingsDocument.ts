@@ -283,7 +283,7 @@ async function writeSettingsBody(
   const hasQuick = raw.quickPrompts != null;
   const hasCodexSandbox = raw.codexSandbox != null;
   const hasAgentDefaults = raw.agentDefaults != null;
-  const grokBot = "grokBot" in raw ? parseGrokBotSettings(raw.grokBot) : undefined;
+  const grokBot = "grokBot" in raw ? parseGrokBotSettings(raw.grokBot, getGrokBotSettings().teamId) : undefined;
   if (!hasCli && !hasProxy && !hasProcessEnv && !hasQuick && !hasCodexSandbox && !hasAgentDefaults && !grokBot) {
     throw new HttpError(400, "cliPaths, proxyEnv, processEnv, quickPrompts, codexSandbox, and/or agentDefaults required (or clear: true)");
   }

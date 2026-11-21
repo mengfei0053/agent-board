@@ -351,7 +351,7 @@ export class ConnectorSession {
       this.fail(ref, "bad_request", "idempotencyKey is required");
       return;
     }
-    const settings = await this.api.getSettings();
+    const settings = phoneSettings(await this.api.getSettings());
     this.send(executed(ref, this.boardId, key, { settings }));
   }
 
@@ -376,7 +376,7 @@ export class ConnectorSession {
       if (field === "boardId" || field === "idempotencyKey") continue;
       body[field] = value;
     }
-    const settings = await this.api.putSettings(body);
+    const settings = phoneSettings(await this.api.putSettings(body));
     this.rememberSettings(key, settings);
     this.send(executed(ref, this.boardId, key, { settings }));
   }
@@ -577,6 +577,14 @@ function readContinuePrompt(
 
 function cryptoRandom(): string {
   return globalThis.crypto.randomUUID();
+}
+
+// Older relays reject the entire settings ACK if grokBot has a third field.
+function phoneSettings(settings: unknown): Record<string, unknown> {
+  if (!isRecord(settings)) throw new Error("expected a board settings document");
+  if (!isRecord(settings.grokBot)) return settings;
+  const { enabled, slug } = settings.grokBot;
+  return { ...settings, grokBot: { enabled, slug } };
 }
 
 function executed(ref: string, boardId: string, key: string, extra: Record<string, unknown>): Envelope {

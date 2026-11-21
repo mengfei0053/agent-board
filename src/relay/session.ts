@@ -538,7 +538,7 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError(parsed.code, parsed.message));
       return;
     }
-    const settings = await this.opts.facade.getSettings();
+    const settings = phoneSettings(await this.opts.facade.getSettings());
     if (this.closed) return;
     this.opts.send("ack", {
       ref: message.id,
@@ -560,7 +560,7 @@ export class ConnectorSession {
       this.fail(message, new RelayCommandError(parsed.code, parsed.message));
       return;
     }
-    const settings = await this.settingsPuts.run(parsed.key, () => this.opts.facade.putSettings(parsed.body));
+    const settings = await this.settingsPuts.run(parsed.key, async () => phoneSettings(await this.opts.facade.putSettings(parsed.body)));
     if (this.closed) return;
     this.opts.send("ack", {
       ref: message.id,
@@ -632,6 +632,13 @@ export class ConnectorSession {
     if (this.closed) return;
     this.opts.send(frame.type, frame.payload);
   }
+}
+
+// Older relays reject the entire settings ACK if grokBot has a third field.
+function phoneSettings(settings: SettingsDocument): SettingsDocument {
+  if (!settings.grokBot) return settings;
+  const { enabled, slug } = settings.grokBot;
+  return { ...settings, grokBot: { enabled, slug } };
 }
 
 function isLiveCommand(type: string): boolean {

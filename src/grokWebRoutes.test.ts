@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, type HttpBindings } from "@hono/node-server";
 import { once } from "node:events";
+import { applyGrokBotSettings } from "./grokBot.js";
 import { grokWebRoutes } from "./grokWebRoutes.js";
 
 const base = "http://127.0.0.1:8791";
@@ -60,6 +61,17 @@ test("missing peer, remote, proxied and non-same-origin requests cannot invoke S
   assert.equal((await app.request(base + "/login", { method: "POST", headers: noOrigin }, peer("::1"))).status, 403);
   assert.equal((await app.request(base + "/login", { method: "POST", headers: localHeaders, body: '{"key":"not-accepted"}' }, peer("::1"))).status, 400);
   assert.equal(calls, 0);
+});
+
+test("uses the saved team unless the local operator previews an explicit team or auto discovery", async t => {
+  applyGrokBotSettings({ enabled: true, slug: "review", teamId: "123" });
+  t.after(() => applyGrokBotSettings());
+  const calls: (string | undefined)[] = [];
+  const app = grokWebRoutes({ start: () => state, status: () => state, deployments: async id => { calls.push(id); return []; } });
+  const request = (query: string) => app.request(base + "/deployments" + query, { headers: localHeaders }, peer("::1"));
+  for (const query of ["", "?teamId=456", "?teamId="]) assert.equal((await request(query)).status, 200);
+  assert.equal((await request("?teamId=NaN")).status, 400);
+  assert.deepEqual(calls, ["123", "456", undefined]);
 });
 
 test("deployment command failures are not returned as CLI output", async () => {

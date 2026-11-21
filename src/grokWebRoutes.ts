@@ -1,5 +1,6 @@
 import type { HttpBindings } from "@hono/node-server";
 import { Hono } from "hono";
+import { getGrokBotSettings, parseGrokTeamId } from "./grokBot.js";
 import { grokWebAuth } from "./grokWebAuth.js";
 
 const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -37,7 +38,11 @@ export function grokWebRoutes(auth = grokWebAuth) {
     catch { return c.json({ error: "无法启动 Cursor 登录。" }, 503); }
   });
   routes.get("/deployments", async c => {
-    try { return c.json({ slugs: await auth.deployments() }); }
+    const input = c.req.query("teamId");
+    let teamId: string | undefined;
+    try { teamId = input === undefined ? getGrokBotSettings().teamId : parseGrokTeamId(input); }
+    catch { return c.json({ error: "Team ID 必须是有效的十进制正整数。" }, 400); }
+    try { return c.json({ slugs: await auth.deployments(teamId) }); }
     catch { return c.json({ error: "无法读取部署，请确认服务器的 Cursor 登录状态和团队权限。" }, 502); }
   });
   return routes;

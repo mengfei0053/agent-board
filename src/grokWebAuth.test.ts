@@ -143,6 +143,17 @@ describe("Grok Web auth (offline BDK)", () => {
     assert.equal((await calls()).trim().split("\n").length, 2);
   });
 
+  it("passes each requested team to all pages without sharing results between teams", async () => {
+    await Promise.all([auth.deployments("123"), auth.deployments("456"), auth.deployments("123")]);
+    const argv = (await calls()).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.equal(argv.length, 4);
+    for (const id of ["123", "456"]) {
+      const team = argv.filter(a => a.includes("--team") && a[a.indexOf("--team") + 1] === id);
+      assert.equal(team.length, 2);
+      assert.equal(team.filter(a => a.includes("--page-token=page2")).length, 1);
+    }
+  });
+
   it("returns only a fixed list error for malformed output, bad exit, loops, overflows and spawn failure", async () => {
     for (const value of ["bad-json", "shape", "exit1", "repeat", "huge", "missing"]) {
       await mode(value);

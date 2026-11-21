@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import WebSocket from "ws";
+import { parseMessage } from "../../relay/src/protocol.js";
 import { startServer, type StartedServer } from "../../relay/src/server.js";
 import { BoardClient } from "../src/board.js";
 import { ConnectorSession } from "../src/session.js";
@@ -9,17 +10,21 @@ import { startMockBoard, type MockBoard } from "./mock-board.js";
 
 type Env = { v: number; id: string; type: string; ts: number; payload?: Record<string, unknown> };
 
-test("standalone settings forwards bot routing without adding it to legacy patches", async () => {
+test("standalone settings ACKs keep the phone bot shape and pass relay validation", async () => {
   const bot = { enabled: true, slug: "review-bot" };
+  const settings = { cliPaths: {}, proxyEnv: {}, quickPrompts: [], codexSandbox: false, grokBot: bot };
+  const boardSettings = { ...settings, grokBot: Object.freeze({ ...bot, teamId: "web-team" }) };
   const api = new BoardClient("http://127.0.0.1", 1_000);
   const writes: Record<string, unknown>[] = [];
-  api.getSettings = async () => ({ grokBot: bot });
-  api.putSettings = async (body) => { writes.push(body); return { grokBot: bot }; };
+  api.getSettings = async () => boardSettings;
+  api.putSettings = async (body) => { writes.push(body); return boardSettings; };
   const frames: Env[] = [];
   const session = new ConnectorSession("board", api, (message) => frames.push(message), 1);
   for (const [id, type, patch] of [["get", "cmd.settings.get", {}], ["toggle", "cmd.settings.put", { grokBot: bot }], ["legacy", "cmd.settings.put", { codexSandbox: false }]] as const) {
     await session.onMessage({ v: 1, ts: 1, type, id, payload: { boardId: "board", idempotencyKey: `settings-${id}`, ...patch } });
-    assert.deepEqual(frames.at(-1)?.payload?.settings, { grokBot: bot });
+    const ack = frames.at(-1);
+    assert.equal(parseMessage(ack).ok, true);
+    assert.deepEqual(ack?.payload?.settings, settings);
   }
   assert.deepEqual(writes, [{ grokBot: bot }, { codexSandbox: false }]);
 });

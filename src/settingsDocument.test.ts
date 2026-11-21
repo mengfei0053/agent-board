@@ -46,6 +46,21 @@ describe("settings document", () => {
     assert.equal((await writeSettingsDocument({ clear: true }, { allowClear: true })).grokBot.enabled, false);
   });
 
+  it("persists the team, preserves it for legacy writers, and clears only on explicit reset", async () => {
+    let persisted: string | undefined;
+    setSettingsMetaUpsertForTests(async entries => { persisted = entries.find(([k]) => k === "grok_bot")?.[1]; });
+    const base = { enabled: true, slug: "review" };
+    const save = (extra: Record<string, unknown>) => writeSettingsDocument({ grokBot: { ...base, ...extra } }, { allowClear: false });
+    for (const teamId of [null, 7, "0", "01", "1e2", "-9", "9007199254740992", "--prod"]) {
+      await assert.rejects(save({ teamId }), /Team ID/);
+    }
+    assert.equal((await save({ teamId: "321" })).grokBot.teamId, "321");
+    assert.equal((await save({})).grokBot.teamId, "321");
+    assert.deepEqual(JSON.parse(persisted!), { ...base, teamId: "321" });
+    assert.deepEqual((await save({ teamId: "" })).grokBot, base);
+    assert.deepEqual(JSON.parse(persisted!), base);
+  });
+
   it("redacts a new proxy credential and keeps a *** placeholder", async () => {
     const logs = captureConsole();
     setSettingsMetaUpsertForTests(async () => undefined);

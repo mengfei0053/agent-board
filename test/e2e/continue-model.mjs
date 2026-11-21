@@ -39,9 +39,12 @@ let slugs = ["team-agent", "<bad>", "team-agent"];
 const server = createMockServer(state, async (req, res, url) => {
   if (["/api/settings/grok/login", "/api/settings/grok/deployments"].includes(url.pathname)) {
     const resource = url.pathname.split("/").pop();
-    grokRequests.push(`${req.method} ${resource}`);
+    grokRequests.push(`${req.method} ${resource}${url.search}`);
     if (req.headers["x-board-local"] !== "1") json(res, 403, {});
-    else if (resource === "deployments" && req.method === "GET") json(res, deploymentsHttp, { slugs });
+    else if (resource === "deployments" && req.method === "GET") {
+      if (deploymentsHttp === 0) res.destroy(); // Simulate loss of connection to the board.
+      else json(res, deploymentsHttp, deploymentsHttp === 200 ? { slugs } : { error: mockLink });
+    }
     else if (resource === "login" && req.method === "GET") json(res, loginHttp, loginResult);
     else if (resource === "login" && req.method === "POST") {
       const body = [];
@@ -62,7 +65,7 @@ const server = createMockServer(state, async (req, res, url) => {
   }
   if (url.pathname === "/api/settings" && req.method === "PUT") {
     settingsPatch = await readBody(req);
-    if (settingsPatch.grokBot) state.settings.grokBot = settingsPatch.grokBot;
+    if (settingsPatch.grokBot) Object.assign(state.settings.grokBot, settingsPatch.grokBot);
     json(res, 200, state.settings);
     return true;
   }
@@ -206,10 +209,24 @@ try {
   assert.deepEqual(grokRequests, [], "settings load must not contact Cursor APIs");
   await page.evaluate(() => { window.open = () => { throw new Error("unexpected automatic popup"); }; });
 
-  // Already-authorized accounts can list deployments without starting/checking login.
+  const teamInput = "#grok-bot-team-id";
+  const setTeam = value => page.$eval(teamInput, (el, value) => {
+    el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+  await setTeam("042");
+  await page.click("#grok-refresh-deployments");
+  await waitText("grok-deployments-status", "不可有前导零");
+  await page.click("#btn-save-settings");
+  await waitText("settings-status", "不可有前导零");
+  assert.deepEqual(grokRequests, []);
+  assert.equal(settingsPatch, undefined);
+
+  // Use an unsaved team without a slug or any login request.
+  await setTeam("42");
   await page.click("#grok-refresh-deployments");
   await page.waitForSelector("#grok-deployments:not([hidden])");
-  assert.deepEqual(grokRequests, ["GET deployments"]);
+  assert.deepEqual(grokRequests, ["GET deployments?teamId=42"]);
   assert.deepEqual(await page.$$eval("#grok-deployments option", els => els.map(el => el.value)), ["", "team-agent"]);
   await page.click("#grok-login-check");
   await waitText("grok-login-status", "没有进行中");
@@ -245,6 +262,12 @@ try {
   loginHttp = 403;
   await page.click("#grok-login");
   await waitText("grok-login-status", "本机直连");
+  for (const [status, hint] of [[502, "团队访问权限"], [0, "网络请求失败"]]) {
+    deploymentsHttp = status;
+    await page.click("#grok-refresh-deployments");
+    await waitText("grok-deployments-status", hint);
+    assert.ok(!(await page.$eval("#grok-deployments-status", el => el.textContent)).includes(mockLink));
+  }
   deploymentsHttp = 404;
   await page.click("#grok-refresh-deployments");
   await waitText("grok-deployments-status", "升级看板");
@@ -256,9 +279,37 @@ try {
   await page.click("#btn-save-settings");
   assert.match(await page.$eval("#settings-status", (el) => el.textContent), /slug/);
   assert.equal(settingsPatch, undefined);
+  const saveSettings = async () => {
+    await Promise.all([page.waitForResponse(r => r.request().method() === "PUT"), page.click("#btn-save-settings")]);
+    await waitText("settings-status", "已保存");
+  };
+  await setTeam(""); // Back to the initial value: legacy boards get the original payload.
   await page.type("#grok-bot-slug", "review-bot");
-  await Promise.all([page.waitForResponse((r) => r.request().method() === "PUT"), page.click("#btn-save-settings")]);
+  await saveSettings();
   assert.deepEqual(settingsPatch.grokBot, { enabled: true, slug: "review-bot" });
+  await setTeam("42");
+  await saveSettings();
+  assert.deepEqual(settingsPatch.grokBot, { enabled: true, slug: "review-bot", teamId: "42" });
+  await page.reload(nav);
+  await waitText("settings-status", "已加载");
+  assert.equal(await page.$eval(teamInput, el => el.value), "42");
+  await saveSettings();
+  assert.equal(settingsPatch.grokBot, undefined);
+  await page.type("#grok-bot-slug", "-v2");
+  await saveSettings();
+  assert.deepEqual(settingsPatch.grokBot, { enabled: true, slug: "review-bot-v2" });
+  assert.equal(state.settings.grokBot.teamId, "42");
+  deploymentsHttp = 200;
+  await page.click("#grok-refresh-deployments");
+  await page.waitForSelector("#grok-deployments:not([hidden])");
+  assert.equal(grokRequests.at(-1), "GET deployments");
+  await setTeam("");
+  await page.click("#grok-refresh-deployments");
+  await page.waitForSelector("#grok-deployments:not([hidden])");
+  assert.equal(grokRequests.at(-1), "GET deployments?teamId=");
+  assert.equal(state.settings.grokBot.teamId, "42");
+  await saveSettings();
+  assert.deepEqual(settingsPatch.grokBot, { enabled: true, slug: "review-bot-v2", teamId: "" });
   await loadBoard();
   await page.click("#btn-new");
   await page.type("#create-prompt", "Review ![photo](/uploads/local.png)");
