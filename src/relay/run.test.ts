@@ -39,6 +39,7 @@ describe("embedded relay run", { concurrency: 1 }, () => {
         "archive.write",
         "workspace.settings",
         "board.settings",
+        "task.steer",
       ]);
     } finally {
       await dialer.close();

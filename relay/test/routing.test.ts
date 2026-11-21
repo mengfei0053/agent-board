@@ -30,6 +30,35 @@ test("bad board and device tokens are rejected and board.list hides other boards
   assert.equal(codeOf(phonePeer.ofType("err").at(-1)), "unauthorized");
 });
 
+test("steer requires board support and a text-only prompt; replay and lookup do not redeliver", () => {
+  const fx = setup();
+  open.push(fx.hub);
+  const old = fx.peer();
+  registerBoard(fx.hub, old);
+  const client = fx.peer();
+  const phone = helloPhone(fx.hub, fx.auth, client).conn;
+  const body = { boardId: "thinkbook-main", taskId: "task_01", idempotencyKey: "steer-prompt-01", prompt: "check this\nfirst" };
+  fx.hub.handlePhone(phone, frame("cmd.steer", "unsupported", body));
+  assert.equal(codeOf(byRef(client, "unsupported")), "unsupported");
+  assert.equal(old.ofType("cmd.steer").length, 0);
+  const peer = fx.peer();
+  const board = fx.hub.attachBoard(peer.send, peer.close);
+  fx.hub.handleBoard(board, frame("board.register", "register-new", { boardId: body.boardId, token: "board-token-value", capabilities: ["task.steer"] }));
+  for (const invalid of [{ prompt: " " }, { prompt: "x".repeat(20_001) }, { model: "other" }, { attachments: [] }]) {
+    fx.hub.handlePhone(phone, frame("cmd.steer", "invalid", { ...body, ...invalid }));
+    assert.equal(codeOf(byRef(client, "invalid")), "bad_request");
+  }
+  fx.hub.handlePhone(phone, frame("cmd.steer", "send", body));
+  const [delivered] = peer.ofType("cmd.steer");
+  assert.deepEqual(delivered.payload, body);
+  fx.hub.handleBoard(board, frame("ack", "done", { ref: delivered.id, stage: "executed", task: task("running") }));
+  fx.hub.handlePhone(phone, frame("cmd.steer", "repeat", body));
+  fx.hub.handlePhone(phone, frame("cmd.lookup", "lookup", { boardId: body.boardId, idempotencyKey: body.idempotencyKey, cmd: "cmd.steer" }));
+  assert.equal(byRef(client, "repeat")?.payload?.duplicate, true);
+  assert.equal(byRef(client, "lookup")?.payload?.stage, "executed");
+  assert.equal(peer.ofType("cmd.steer").length, 1);
+});
+
 test("commands ack accepted then executed and a repeat does not create again", () => {
   const fx = setup();
   open.push(fx.hub);

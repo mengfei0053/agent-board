@@ -188,6 +188,23 @@ private fun isPromptText(value: String): Boolean = value.none {
 }
 
 /** Phone continue carries a non-blank prompt or at least one attachment. */
+const val CAP_TASK_STEER = "task.steer"
+
+fun validateSteer(
+    id: String,
+    ts: Long,
+    boardId: String,
+    taskId: String,
+    idempotencyKey: String,
+    prompt: String,
+): Validated<Envelope> {
+    val text = prompt.trim()
+    if (text.isEmpty() || text.length > 20_000 || !isPromptText(text)) {
+        return Validated.Invalid("prompt is required, up to 20000 characters")
+    }
+    return validateTaskCommand("cmd.steer", id, ts, boardId, taskId, idempotencyKey, null, text)
+}
+
 fun validatePhoneContinue(
     id: String,
     ts: Long,

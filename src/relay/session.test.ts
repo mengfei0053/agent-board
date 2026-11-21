@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BoardEvent } from "../types.js";
 import { frame, type Envelope } from "./envelope.js";
-import { CreateIdempotency } from "./idempotency.js";
+import { CreateIdempotency, SuccessCache } from "./idempotency.js";
 import { RELAY_LIMITS } from "./limits.js";
-import { ConnectorSession, type RelaySender } from "./session.js";
+import { ConnectorSession, type RelaySender, type SteerReceipt } from "./session.js";
 import { defer, makeTask, makeWorkspace, memoryFacade, waitFor, type MemoryFacade } from "./harness.js";
 
 function sentFrames(): { frames: Array<{ type: string; payload: Record<string, unknown>; id?: string }>; send: RelaySender } {
@@ -411,6 +411,82 @@ describe("connector session", () => {
     const err = frames.find((frame) => frame.type === "err");
     assert.equal(err?.payload.code, "forbidden");
     assert.equal(facade.creates, 1);
+    session.close();
+  });
+
+  it("replays steer across generations without injecting twice", async () => {
+    const prompt = "x".repeat(20_000);
+    const payload = { boardId: "thinkbook", taskId: "t1", prompt, idempotencyKey: "steer-key-1" };
+    const gate = defer<ReturnType<typeof makeTask>>();
+    const facade = memoryFacade();
+    let calls = 0;
+    facade.steer = async (...args) => {
+      calls++;
+      assert.deepEqual(args, ["t1", prompt]);
+      return gate.promise;
+    };
+    const steers = new SuccessCache<SteerReceipt>();
+    const opts = { boardId: "thinkbook", facade, steers, idempotency: new CreateIdempotency(), onFatal() {}, onOverflow() {} };
+    const first = sentFrames();
+    const old = new ConnectorSession({ ...opts, generation: 1, send: first.send });
+    old.handleCommand(frame("cmd.steer", payload));
+    await waitFor(() => calls === 1);
+    old.close();
+    const { frames, send } = sentFrames();
+    const next = new ConnectorSession({ ...opts, generation: 2, send });
+    next.handleCommand(frame("cmd.steer", payload, "joined"));
+    gate.resolve(makeTask({ title: "steered" }));
+    await waitFor(() => frames.length === 1);
+    next.handleCommand(frame("cmd.steer", payload, "replay"));
+    await waitFor(() => frames.length === 2);
+    assert.equal(calls, 1);
+    assert.equal(first.frames.length, 0);
+    for (const [i, ref] of ["joined", "replay"].entries()) {
+      const { type, payload: receipt } = frames[i]!;
+      assert.equal(type, "ack");
+      assert.equal(receipt.ref, ref);
+      assert.equal(receipt.stage, "executed");
+      assert.equal(receipt.idempotencyKey, payload.idempotencyKey);
+      assert.equal((receipt.task as { title: string }).title, "steered");
+    }
+    next.close();
+  });
+
+  it("rejects malformed or non-text steer commands before dispatch", async () => {
+    const facade = memoryFacade();
+    let calls = 0;
+    facade.steer = async () => { calls++; return makeTask(); };
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    const base = { boardId: "thinkbook", taskId: "t1", idempotencyKey: "steer-key", prompt: "hi" };
+    for (const patch of [
+      { prompt: 1 }, { prompt: " \n " }, { prompt: "x".repeat(20_001) }, { prompt: undefined },
+      { idempotencyKey: "short" }, { taskId: "" }, { model: "new" }, { attachments: [] },
+      { thinkingEffort: "high" }, { boardId: "other" },
+    ]) {
+      const ref = `invalid-${frames.length}`;
+      session.handleCommand(frame("cmd.steer", { ...base, ...patch }, ref));
+      await waitFor(() => frames.at(-1)?.payload.ref === ref);
+      assert.equal(frames.at(-1)?.payload.code, "boardId" in patch ? "forbidden" : "bad_request");
+    }
+    assert.equal(calls, 0);
+    session.close();
+  });
+
+  it("replays an ambiguous steer failure without sending the text again", async () => {
+    const facade = memoryFacade();
+    let calls = 0;
+    facade.steer = async () => { calls++; throw new Error("storage failed after injection"); };
+    const { frames, send } = sentFrames();
+    const session = openSession(facade, send, new CreateIdempotency());
+    for (const ref of ["first", "again"]) {
+      session.handleCommand(frame("cmd.steer", {
+        boardId: "thinkbook", taskId: "t1", prompt: "check logs", idempotencyKey: "ambiguous",
+      }, ref));
+      await waitFor(() => frames.at(-1)?.payload.ref === ref);
+      assert.equal(frames.at(-1)?.payload.code, "board_http");
+    }
+    assert.equal(calls, 1);
     session.close();
   });
 

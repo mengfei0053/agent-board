@@ -2,8 +2,8 @@ import { WebSocket } from "ws";
 import type { EnabledRelayConfig } from "./config.js";
 import { loadRelayDialerConfig } from "./config.js";
 import { createBoardFacade, type BoardFacade } from "./facade.js";
-import { ConnectorSession } from "./session.js";
-import { CreateIdempotency, WorkspaceIdempotency } from "./idempotency.js";
+import { ConnectorSession, type SteerReceipt } from "./session.js";
+import { CreateIdempotency, SuccessCache, WorkspaceIdempotency } from "./idempotency.js";
 import {
   encodeFrame,
   frame,
@@ -151,6 +151,7 @@ async function runOnce(opts: {
   facade: BoardFacade;
   idempotency: CreateIdempotency;
   workspaceIdempotency: WorkspaceIdempotency;
+  steers: SuccessCache<SteerReceipt>;
   signal: AbortSignal;
   log: RelayLog;
   onSocket: (ws: WebSocket | null) => void;
@@ -257,6 +258,7 @@ async function runOnce(opts: {
       facade: opts.facade,
       idempotency: opts.idempotency,
       workspaceIdempotency: opts.workspaceIdempotency,
+      steers: opts.steers,
       log: opts.log,
       onOverflow: () => safeClose(ws),
       onFatal: () => safeClose(ws),
@@ -328,6 +330,7 @@ export function startEmbeddedRelay(opts: {
   const abort = new AbortController();
   const idempotency = new CreateIdempotency();
   const workspaceIdempotency = new WorkspaceIdempotency();
+  const steers = new SuccessCache<SteerReceipt>();
   let currentWs: WebSocket | null = null;
   let currentSession: ConnectorSession | null = null;
   let readySettled = false;
@@ -376,6 +379,7 @@ export function startEmbeddedRelay(opts: {
           facade: opts.facade,
           idempotency,
           workspaceIdempotency,
+          steers,
           signal: abort.signal,
           log,
           onSocket: (ws) => {

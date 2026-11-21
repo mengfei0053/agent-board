@@ -87,7 +87,16 @@
     <string name="reply_pending">回复生成中…</string>
     <string name="no_round_reply">本轮暂无回复</string>
     <string name="reply_truncated">回复已截断</string>
-    <string name="archive_readonly">归档任务不能停止；可以继续任务。</string>
+    <string name="archive_readonly">归档任务 · 只读</string>
+    <string name="detail_more">更多</string>
+    <string name="detail_options">输入选项</string>
+    <string name="detail_queue_prompt">输入本手机待办（仅文本）</string>
+    <string name="detail_queue_add">加入待办</string>
+    <string name="detail_queue_button">待办 (%1$d)</string>
+    <string name="detail_queue_count">本手机待办（%1$d/5）</string>
+    <string name="detail_queue_empty">本手机还没有这项任务的待办。</string>
+    <string name="detail_queue_send">发送到当前会话</string>
+    <string name="detail_view_logs">全屏查看日志</string>
     <string name="stop">停止</string>
     <string name="continue_task">继续任务</string>
     <string name="continue_prompt_label">补充续跑说明</string>

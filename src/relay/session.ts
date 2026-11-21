@@ -15,6 +15,8 @@ import type { PhoneWorkspaceCard } from "./workspaceCard.js";
 
 const VISIBLE_KEY = /^[\x21-\x7E]{8,80}$/;
 
+export type SteerReceipt = { task: MappedTask } | { error: RelayCommandError };
+
 type SessionJob = {
   command: boolean;
   run: () => Promise<void>;
@@ -46,6 +48,7 @@ export class ConnectorSession {
   private drainingJobs = false;
   private readonly jobs: SessionJob[] = [];
   private readonly workspaceOps: WorkspaceIdempotency;
+  private readonly steers: SuccessCache<SteerReceipt>;
   private readonly workspaceUpdates = new SuccessCache<PhoneWorkspaceCard>();
   private readonly settingsPuts = new SuccessCache<SettingsDocument>();
   private readonly archives = new SuccessCache<{ taskId: string }>();
@@ -62,12 +65,14 @@ export class ConnectorSession {
       idempotency: CreateIdempotency;
       /** Shared across generations. Defaults to a session-local cache. */
       workspaceIdempotency?: WorkspaceIdempotency;
+      steers?: SuccessCache<SteerReceipt>;
       send: RelaySender;
       onOverflow: () => void;
       onFatal: (err: unknown) => void;
       log?: LogFn;
     },
   ) {
+    this.steers = opts.steers ?? new SuccessCache<SteerReceipt>();
     this.workspaceOps = opts.workspaceIdempotency ?? new WorkspaceIdempotency();
     this.cursor = new RelayCursor(opts.generation);
     this.unsub = opts.facade.subscribe((ev) => this.onBus(ev));
@@ -271,6 +276,10 @@ export class ConnectorSession {
         await this.applyWorkspaceDelete(message);
         return;
       }
+      if (message.type === "cmd.steer") {
+        await this.applySteer(message);
+        return;
+      }
       if (message.type === "cmd.stop" || message.type === "cmd.continue") {
         await this.applyTaskCommand(message);
         return;
@@ -357,6 +366,39 @@ export class ConnectorSession {
       boardId: this.opts.boardId,
       idempotencyKey: parsed.key,
       task: wireMappedTask(mapped, "full"),
+    }, message.id);
+  }
+
+  private async applySteer(message: Envelope): Promise<void> {
+    const parsed = parseTaskCommand(message.payload, this.opts.boardId);
+    if (!parsed.ok) throw new RelayCommandError(parsed.code, parsed.message);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(parsed.taskId)) {
+      throw new RelayCommandError("bad_request", "taskId is invalid");
+    }
+    if (Object.keys(message.payload).some(k => !["boardId", "taskId", "idempotencyKey", "prompt"].includes(k))) {
+      throw new RelayCommandError("bad_request", "steer only accepts task text");
+    }
+    const { prompt } = message.payload;
+    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 20_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(prompt)) {
+      throw new RelayCommandError("bad_request", "steer requires 1-20000 characters of text");
+    }
+    const receipt = await this.steers.run(parsed.key, async () => {
+      try {
+        const task = mapBoardTask(await this.opts.facade.steer(parsed.taskId, prompt));
+        if (!task) throw new RelayCommandError("board_http", "board request failed");
+        return { task };
+      } catch (err) {
+        // The runner may already have received the text before persistence failed.
+        return { error: relayErrorFrom(err) };
+      }
+    });
+    if ("error" in receipt) throw receipt.error;
+    if (!this.closed) this.opts.send("ack", {
+      ref: message.id,
+      stage: "executed",
+      boardId: this.opts.boardId,
+      idempotencyKey: parsed.key,
+      task: wireMappedTask(receipt.task, "full"),
     }, message.id);
   }
 
@@ -595,6 +637,7 @@ export class ConnectorSession {
 function isLiveCommand(type: string): boolean {
   return type === "cmd.create"
     || type === "cmd.continue"
+    || type === "cmd.steer"
     || type === "cmd.stop"
     || type === "cmd.detail"
     || type === "cmd.archive.list"

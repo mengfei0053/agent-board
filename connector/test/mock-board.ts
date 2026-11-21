@@ -100,12 +100,19 @@ export async function startMockBoard(): Promise<MockBoard> {
     }
     const stop = /^\/api\/tasks\/([^/]+)\/stop$/.exec(url.pathname);
     const cont = /^\/api\/tasks\/([^/]+)\/continue$/.exec(url.pathname);
+    const steer = /^\/api\/tasks\/([^/]+)\/steer$/.exec(url.pathname);
     const one = /^\/api\/tasks\/([^/]+)$/.exec(url.pathname);
-    const id = decodeURIComponent((stop ?? cont ?? one)?.[1] ?? "");
+    const id = decodeURIComponent((stop ?? cont ?? steer ?? one)?.[1] ?? "");
     const task = tasks.get(id);
     if (!task) {
       json(res, 404, { error: "not found" });
       return;
+    }
+    if (req.method === "POST" && steer) {
+      if (task.status === "archived") return json(res, 409, { code: "archived_readonly" });
+      if (task.status === "draft") return json(res, 409, { error: "cannot steer" });
+      task.updatedAt++;
+      return json(res, 200, { task });
     }
     if (req.method === "POST" && stop) task.status = "stopped";
     if (req.method === "POST" && cont) task.status = "running";

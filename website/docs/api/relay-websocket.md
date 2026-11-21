@@ -62,7 +62,7 @@ description: Relay v1 WebSocket 信封、认证、任务与设置命令、事件
     "boardId": "thinkbook-main",
     "token": "YOUR_BOARD_TOKEN",
     "label": "ThinkBook",
-    "capabilities": ["archive.list","archive.write","workspace.settings","board.settings"]
+    "capabilities": ["archive.list","archive.write","workspace.settings","board.settings","task.steer"]
   }
 }
 ```
@@ -136,6 +136,7 @@ lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup
 | --- | --- | --- |
 | `cmd.create` | 必填 title（1–200）、prompt（1–20,000）；可选 agent、cwd、workspaceId、useGitWorktree | `task` |
 | `cmd.continue` | 必填 taskId；可选 prompt（最多 20,000，允许换行） | `task` |
+| `cmd.steer` | 必填 taskId、非空文本 prompt（最多 20,000，允许换行）；不接收附件或模型选项 | `task` |
 | `cmd.stop` | 必填 taskId；可选 reason（1–500） | `task` |
 | `cmd.detail` | 必填 taskId | `task`，完整详情，含 `detail:"full"` |
 | `cmd.archive.list` | 可选 limit（1–50，默认20）、cursor、workspaceId | `archive:{tasks,nextCursor?,restarted?}` |
@@ -160,10 +161,13 @@ lookup 的 cmd 必须是本页列出的转发命令类型，不能是 cmd.lookup
 - cmd.create 创建并启动任务，不转发本机 HTTP 的 start。内置看板连接支持 cmd.create / cmd.continue 的内联 attachments；独立 HTTP connector 不上传附件，返回 unsupported 而不启动任务。
 - cmd.continue 未传有效追加指令时使用默认继续指令。归档任务只读；要恢复归档任务请使用本机 Web 的 move 接口。
 
+手机确认加入待办只是本地操作，每个任务最多五条，不会立即打断任务。「发送至当前会话」需要看板声明 `task.steer`，运行中的 Pi 可以接收追加指令；没有可用的运行中输入通道时保留待办。升级顺序为中继 → 看板内置连接器或独立 connector → App，旧中继会拒绝带有未知 capability 的注册。
+
 ### 归档与能力门控
 
 | 命令 | 必须由看板声明的 capability |
 | --- | --- |
+| `cmd.steer` | `task.steer` |
 | `cmd.archive.list` | `archive.list` |
 | `cmd.archive` | `archive.write` |
 | `cmd.workspace.get` / `cmd.workspace.update` | `workspace.settings` |

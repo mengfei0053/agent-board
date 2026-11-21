@@ -24,6 +24,51 @@ test("standalone settings forwards bot routing without adding it to legacy patch
   assert.deepEqual(writes, [{ grokBot: bot }, { codexSandbox: false }]);
 });
 
+test("standalone steer validates text and replays the original HTTP result across generations", async () => {
+  const board = await startMockBoard();
+  try {
+    board.seed({ id: "t1", status: "running", title: "test", updatedAt: 100 });
+    const api = new BoardClient(board.url, 2_000);
+    const frames: Env[] = [];
+    const session = (gen: number) => new ConnectorSession("board", api, msg => frames.push(msg), gen);
+    const first = session(1);
+    const second = session(2);
+    const base = { boardId: "board", taskId: "t1", idempotencyKey: "steer-key", prompt: "x".repeat(20_000) };
+    const send = (s: ConnectorSession, id: string, patch: Record<string, unknown> = {}) => s.onMessage({
+      v: 1, type: "cmd.steer", ts: 1, id, payload: { ...base, ...patch },
+    });
+    for (const patch of [
+      { prompt: "  " }, { prompt: 1 }, { prompt: undefined }, { prompt: base.prompt + " " },
+      { attachments: [] }, { model: "new" }, { thinkingEffort: "high" },
+      { idempotencyKey: "short" }, { taskId: "" }, { boardId: "another" },
+    ]) {
+      await send(first, "invalid", patch);
+      assert.equal(frames.at(-1)?.payload?.code, "boardId" in patch ? "forbidden" : "bad_request");
+    }
+    assert.equal(board.requests.length, 0);
+    await Promise.all([send(first, "first"), send(second, "joined")]);
+    await send(second, "replay");
+    for (const ref of ["first", "joined", "replay"]) {
+      const ack = frames.find(f => f.payload?.ref === ref);
+      assert.equal(ack?.payload?.stage, "executed");
+      assert.equal(ack?.payload?.idempotencyKey, base.idempotencyKey);
+      assert.deepEqual(ack?.payload?.task, { id: "t1", title: "test", status: "running", updatedAt: 101 });
+    }
+    assert.deepEqual(board.requests, [{ method: "POST", path: "/api/tasks/t1/steer", body: { prompt: base.prompt } }]);
+    for (const [taskId, code] of [["absent", "task_not_found"], ["archived", "archived_readonly"], ["draft", "unsupported"]]) {
+      if (taskId !== "absent") board.seed({ id: taskId, status: taskId, title: "test", updatedAt: 100 });
+      for (const ref of ["failed", "replayed-failure"]) {
+        await send(second, ref, { taskId, idempotencyKey: `key-${taskId}` });
+        assert.equal(frames.at(-1)?.payload?.code, code);
+      }
+    }
+    assert.equal(board.requests.length, 4);
+    assert.ok(board.requests.every(r => r.path.endsWith("/steer")));
+  } finally {
+    await board.close();
+  }
+});
+
 test("connector maps commands and emits one completion", { timeout: 20_000 }, async () => {
   const adminToken = "admin-connector-token";
   const boardToken = "board-connector-token";
@@ -111,6 +156,15 @@ test("connector maps commands and emits one completion", { timeout: 20_000 }, as
     assert.equal(continues.length, 2);
     assert.equal(isRecord(continues[0]?.body) ? continues[0].body.prompt : "present", undefined);
     assert.equal(isRecord(continues[1]?.body) ? continues[1].body.prompt : undefined, "keep this exact prompt");
+
+    const steered = await client.request("cmd.steer", {
+      boardId: "thinkbook-main", taskId, prompt: "change direction", idempotencyKey: "steer-connector-1",
+    });
+    assert.equal(steered.payload?.stage, "executed");
+    assert.equal((steered.payload?.task as { id: string }).id, taskId);
+    assert.deepEqual(board.requests.filter(r => r.path.endsWith("/steer")), [
+      { method: "POST", path: `/api/tasks/${taskId}/steer`, body: { prompt: "change direction" } },
+    ]);
 
     board.emit("task_log", { type: "task_log", taskId, line: "building", at: Date.now() });
     const log = await client.wait((message) => message.type === "evt.log" && message.payload?.taskId === taskId);

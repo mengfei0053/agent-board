@@ -35,6 +35,9 @@ import tech.mengfei.agentboard.protocol.BoardProof
 import tech.mengfei.agentboard.protocol.BoardReducer
 import tech.mengfei.agentboard.protocol.BoardView
 import tech.mengfei.agentboard.protocol.CAP_ARCHIVE_WRITE
+import tech.mengfei.agentboard.protocol.AGENT_KINDS
+import tech.mengfei.agentboard.protocol.CAP_TASK_STEER
+import tech.mengfei.agentboard.protocol.TERMINAL_STATUSES
 import tech.mengfei.agentboard.protocol.CAP_BOARD_SETTINGS
 import tech.mengfei.agentboard.protocol.CAP_WORKSPACE_SETTINGS
 import tech.mengfei.agentboard.protocol.CODE_CONSUMED_SAVE
@@ -198,6 +201,7 @@ import tech.mengfei.agentboard.protocol.validateCreate
 import tech.mengfei.agentboard.protocol.validateDetail
 import tech.mengfei.agentboard.protocol.validateDisplayName
 import tech.mengfei.agentboard.protocol.validatePhoneContinue
+import tech.mengfei.agentboard.protocol.validateSteer
 import tech.mengfei.agentboard.protocol.validateStop
 import tech.mengfei.agentboard.protocol.validateWorkspaceCreate
 import tech.mengfei.agentboard.protocol.validateWorkspaceDelete
@@ -237,6 +241,11 @@ data class SessionRow(
     val expiresAt: Long?,
     val active: Boolean,
 )
+
+private const val MAX_FOLLOWUPS = 5
+private val followupActiveStatuses = setOf("queued", "running", "paused", "blocked")
+
+data class TaskFollowup(val id: String, val prompt: String, val needsLookup: Boolean = false)
 
 data class UiState(
     val screen: Screen = Screen.Pair,
@@ -286,6 +295,10 @@ data class UiState(
     val continueThinkingEffort: String = "",
     val continueAttachments: List<OutgoingAttachment> = emptyList(),
     val continueOpen: Boolean = false,
+    val followups: List<TaskFollowup> = emptyList(),
+    val canQueueFollowup: Boolean = false,
+    val canSteerFollowup: Boolean = false,
+    val followupBusy: Boolean = false,
     val quickPrompts: List<QuickPromptChip> = emptyList(),
     val modelCatalog: AgentModelCatalog = AgentModelCatalog(),
     val settingsLoaded: Boolean = false,
@@ -740,10 +753,62 @@ class BoardViewModel(
         submit("cmd.stop", session, _state.value.selectedTaskId)
     }
 
+    /** Local to this ViewModel, like the Web page's in-memory queue. */
+    fun queueFollowup(prompt: String): Boolean {
+        val session = session(activeId) ?: return false
+        val task = followupDetail(session) ?: return false
+        val holder = slot(session.sessionId)
+        if (task.status !in followupActiveStatuses || !followupAgentEnabled(holder, task) || !writesOk(session)) return false
+        val queue = holder.followups[task.id].orEmpty()
+        val clean = prompt.trim()
+        val error = when {
+            holder.continueAttachments.isNotEmpty() -> zh("待办仅支持文本", "Queued prompts are text only.")
+            queue.size >= MAX_FOLLOWUPS -> zh("待办最多 5 条", "Queue limit: 5 prompts.")
+            else -> (validatePhoneContinue(ids(), clock(), session.boardId, task.id, keys(), clean) as? Validated.Invalid)?.message?.let(::say)
+        }
+        if (error != null) {
+            formError = error
+            render()
+            return false
+        }
+        if (queue.isEmpty()) holder.view.seq?.let { holder.autoAfterSeq[task.id] = it }
+        holder.followups[task.id] = queue + TaskFollowup(newLocalId("q"), clean)
+        formError = null
+        render()
+        return true
+    }
+
+    fun removeFollowup(id: String) {
+        val session = session(activeId) ?: return
+        val task = followupDetail(session) ?: return
+        val holder = slot(session.sessionId)
+        if (holder.inflight?.followupId == id) return
+        holder.removeFollowup(task.id, id)
+        render()
+    }
+
+    fun sendFollowup(id: String) {
+        val session = session(activeId) ?: return
+        val task = followupDetail(session) ?: return
+        val item = slot(session.sessionId).followups[task.id]?.find { it.id == id } ?: return
+        submitFollowup(session, task, item, if (task.status in TERMINAL_STATUSES) "cmd.continue" else "cmd.steer", automatic = false)
+    }
+
     fun submitContinue() {
         val session = session(activeId) ?: return
-        val task = activeTask() ?: return
+        val task = followupDetail(session) ?: return
         val holder = slot(session.sessionId)
+        if (settled(session, "cmd.continue", task.id)?.retry == Retry.LookupOnly) {
+            submit("cmd.continue", session, task.id)
+            return
+        }
+        if (task.status !in TERMINAL_STATUSES || holder.followupHolds.values.any { it.taskId == task.id }) return
+        if (holder.continuePrompt.isBlank() && holder.continueAttachments.isEmpty()) {
+            holder.followups[task.id]?.firstOrNull()?.let {
+                submitFollowup(session, task, it, "cmd.continue", automatic = false)
+                return
+            }
+        }
         val plan = planPhoneContinue(
             task.status,
             holder.continuePrompt,
@@ -1208,6 +1273,10 @@ class BoardViewModel(
     private fun show(next: Screen) {
         val leavingPair = (screen == Screen.AddBoard || screen == Screen.Pair) && next != screen
         if (leavingPair) invalidatePendingPair(PairDeparture.LeftAdd)
+        if (next is Screen.Detail && next != screen) {
+            slot(next.sessionId).continuePrompt = ""
+            slot(next.sessionId).continueOpen = false
+        }
         screen = next
     }
 
@@ -1465,12 +1534,14 @@ class BoardViewModel(
 
     private fun onEvent(sessionId: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         val holder = slot(sessionId)
-        when (val outcome = holder.reducer.apply(holder.view, message)) {
+        val before = holder.view
+        when (val outcome = holder.reducer.apply(before, message)) {
             is ApplyOutcome.Resync -> {
                 if (!holder.view.needsResync) {
                     java.util.logging.Logger.getLogger("AgentBoardLink").info("Event gap: board=${holder.view.boardId} reason=${outcome.reason}")
                 }
                 holder.view = outcome.view
+                holder.autoAfterSeq.clear()
                 holder.eligibilityFresh = false
                 banner = if (englishUi) "Missed events (${outcome.reason}). Refreshing from a snapshot." else "漏收了事件（${outcome.reason}）。正在用快照刷新。"
                 armResync(sessionId)
@@ -1478,6 +1549,9 @@ class BoardViewModel(
             }
             is ApplyOutcome.Applied -> {
                 if (message.type == "evt.snapshot") {
+                    // A subscription replays a cached snapshot followed by historical task events.
+                    // Never use such a replay to initiate a write. Keep the queue for manual use.
+                    holder.autoAfterSeq.clear()
                     java.util.logging.Logger.getLogger("AgentBoardLink").info(
                         "Snapshot: board=${holder.view.boardId} generation=${outcome.view.generation} seq=${outcome.view.seq} resync=${outcome.view.needsResync}",
                     )
@@ -1500,6 +1574,9 @@ class BoardViewModel(
                     activeTask()?.let { t ->
                         holder.continueThinkingEffort = resolveContinueEffort(holder, t)
                     }
+                }
+                if (message.type == "evt.task" && holder.autoAfterSeq.isNotEmpty()) {
+                    drainFinishedFollowup(sessionId, before, holder)
                 }
                 outcome.notice?.let { notice ->
                     val name = session(sessionId)?.displayName
@@ -1661,7 +1738,71 @@ class BoardViewModel(
                 render()
             }
             CommandAction.SendLookup -> beginLookup(sessionId, current)
-            CommandAction.Settle -> releaseInflight(sessionId, Recovery.Clear(interpreted.summary, interpreted))
+            CommandAction.Settle -> releaseInflight(sessionId, Recovery.Clear(interpreted.summary, interpreted), message)
+        }
+    }
+
+    /** A live active -> terminal task event, not a snapshot, lookup, done notification or UI render. */
+    private fun drainFinishedFollowup(sessionId: String, before: BoardView, holder: Slot) {
+        val session = session(sessionId) ?: return
+        val view = holder.view
+        val seq = view.seq ?: return
+        if (!holder.eligibilityFresh || before.needsResync || view.needsResync || before.generation != view.generation ||
+            view.generation != holder.appliedGeneration || seq <= (before.seq ?: return)) return
+        val task = view.tasks.firstOrNull { t ->
+            t.status in TERMINAL_STATUSES && seq > (holder.autoAfterSeq[t.id] ?: Long.MAX_VALUE) &&
+                before.tasks.any { it.id == t.id && it.status in followupActiveStatuses }
+        } ?: return
+        val item = holder.followups[task.id]?.firstOrNull() ?: return
+        holder.autoAfterSeq[task.id] = seq
+        submitFollowup(session, task, item, "cmd.continue", automatic = true)
+    }
+
+    private fun followupDetail(session: PhoneSession): RelayTask? {
+        val detail = screen as? Screen.Detail ?: return null
+        val holder = slot(session.sessionId)
+        if (detail.sessionId != session.sessionId || holder.detailArchived) return null
+        return holder.view.tasks.find { it.id == detail.taskId }
+    }
+
+    private fun followupAgentEnabled(holder: Slot, task: RelayTask): Boolean =
+        task.agent in AGENT_KINDS && agentEnabled(task.agent, holder.settingsLoaded &&
+            CAP_BOARD_SETTINGS in holder.capabilities && holder.loadedBoard?.grokBot?.available == true)
+
+    private fun canSteer(holder: Slot, task: RelayTask): Boolean =
+        CAP_TASK_STEER in holder.capabilities && task.status == "running" && task.agent == "pi"
+
+    private fun submitFollowup(session: PhoneSession, task: RelayTask, item: TaskFollowup, cmd: String, automatic: Boolean) {
+        val holder = slot(session.sessionId)
+        if (holder.inflight != null || !pillFor(session).writesAllowed) return
+        val hold = holder.followupHolds[item.id]
+        if (hold != null) {
+            // Even if the task has since finished, only check the original command.
+            if (!automatic) beginLookup(session.sessionId, hold.copy(polls = 0))
+            return
+        }
+        if (!followupAgentEnabled(holder, task) || holder.followupHolds.values.any { it.taskId == task.id }) return
+        if (settled(session, "cmd.continue", task.id)?.retry == Retry.LookupOnly) return
+        val key = keys()
+        val message = when (cmd) {
+            "cmd.steer" -> {
+                if (!canSteer(holder, task)) return
+                validateSteer(ids(), clock(), session.boardId, task.id, key, item.prompt)
+            }
+            "cmd.continue" -> {
+                if (task.status !in TERMINAL_STATUSES) return
+                validatePhoneContinue(ids(), clock(), session.boardId, task.id, key, item.prompt,
+                    model = holder.continueModel.takeIf { !automatic && task.agent != "grok" && it.isNotBlank() },
+                    thinkingEffort = holder.continueThinkingEffort.takeIf { !automatic && task.agent != "grok" && it.isNotBlank() })
+            }
+            else -> return
+        }
+        when (message) {
+            is Validated.Ok -> sendRaw(session, cmd, task.id, key, message.value, item.id)
+            is Validated.Invalid -> {
+                if (session.sessionId == activeId) formError = say(message.message)
+                render()
+            }
         }
     }
 
@@ -1732,21 +1873,22 @@ class BoardViewModel(
         }
     }
 
-    private fun sendRaw(session: PhoneSession, cmd: String, taskId: String?, key: String, message: tech.mengfei.agentboard.protocol.Envelope) {
+    private fun sendRaw(session: PhoneSession, cmd: String, taskId: String?, key: String, message: tech.mengfei.agentboard.protocol.Envelope, followupId: String? = null) {
         val live = lives[session.credentialId] ?: return
         val record = RefRecord(message.id, session.sessionId, session.credentialId, session.boardId, cmd, taskId, live.epoch)
         refs[message.id] = record
-        if (!relay.send(session.credentialId, encodeEnvelope(message))) {
-            refs.remove(message.id)
-            if (session.sessionId == activeId) commandNote = say("Not connected to the relay.")
-            render()
-            return
-        }
         val holder = slot(session.sessionId)
         val action = actionKey(session.sessionId, cmd, taskId)
-        holder.inflight = Inflight(action, cmd, session, taskId, key, message.id)
-        holder.settled.remove(action)
+        holder.inflight = Inflight(action, cmd, session, taskId, key, message.id, followupId = followupId,
+            sentView = if (followupId != null) holder.view else null)
         if (session.sessionId == activeId) commandNote = if (englishUi) "Sending $cmd." else "正在发送 $cmd。"
+        if (!relay.send(session.credentialId, encodeEnvelope(message))) {
+            holder.inflight = null
+            refs.remove(message.id)
+            if (session.sessionId == activeId) commandNote = say("Not connected to the relay.")
+        } else if (followupId == null && holder.inflight?.requestId == message.id) {
+            holder.settled.remove(action)
+        }
         render()
     }
 
@@ -1773,12 +1915,12 @@ class BoardViewModel(
         val envelope = lookupEnvelope(lookupId, clock(), session.boardId, command.idempotencyKey, command.cmd)
         val live = lives[session.credentialId] ?: return
         refs[lookupId] = RefRecord(lookupId, sessionId, session.credentialId, session.boardId, command.cmd, current.taskId, live.epoch)
+        slot(sessionId).inflight = current.copy(lookupId = lookupId, polls = command.polls)
+        if (sessionId == activeId) commandNote = say("Checking the stored result. This command will not be sent again.")
         if (!relay.send(session.credentialId, encodeEnvelope(envelope))) {
             releaseInflight(sessionId, lookupSendFailed())
             return
         }
-        slot(sessionId).inflight = current.copy(lookupId = lookupId, polls = command.polls)
-        if (sessionId == activeId) commandNote = say("Checking the stored result. This command will not be sent again.")
         render()
     }
 
@@ -1790,11 +1932,11 @@ class BoardViewModel(
                 viewModelScope.launch {
                     delay(1_000)
                     val latest = slot(sessionId).inflight ?: return@launch
-                    if (latest.polls == step.command.polls) beginLookup(sessionId, latest)
+                    if (latest.key == current.key && latest.lookupId == current.lookupId && latest.polls == step.command.polls) beginLookup(sessionId, latest)
                 }
             }
             is Recovery.Lookup -> beginLookup(sessionId, current)
-            is Recovery.Clear -> releaseInflight(sessionId, step)
+            is Recovery.Clear -> releaseInflight(sessionId, step, message)
         }
     }
 
@@ -1810,11 +1952,33 @@ class BoardViewModel(
         }
     }
 
-    private fun releaseInflight(sessionId: String, step: Recovery.Clear) {
+    private fun releaseInflight(sessionId: String, step: Recovery.Clear, reply: tech.mengfei.agentboard.protocol.Envelope? = null) {
         val holder = slot(sessionId)
         val current = holder.inflight
         holder.inflight = null
         val interpreted = step.interpretation
+        if (current?.followupId != null && current.taskId != null) {
+            val id = current.followupId
+            val taskId = current.taskId
+            val executed = reply?.type == "ack" && reply.text("stage") == "executed" && interpreted?.task?.id == taskId
+            val knownRejection = interpreted?.retry == Retry.ReuseSameKey ||
+                (reply?.type == "ack" && reply.text("stage") == "failed" && reply.text("code") in setOf("unsupported", "bad_request", "forbidden", "task_not_found"))
+            when {
+                executed -> {
+                    holder.removeFollowup(taskId, id)
+                    if (current.lookupId == null && current.sentView === holder.view) {
+                        interpreted?.task?.let { holder.view = holder.view.withLocalTask(rememberTaskThinkingEffort(holder, it)) }
+                    }
+                }
+                knownRejection -> holder.followupHolds.remove(id)
+                else -> holder.followupHolds[id] = current.copy(sentView = null)
+            }
+            if (!executed && current.cmd == "cmd.continue") holder.autoAfterSeq.remove(taskId)
+            if (sessionId == activeId) commandNote = if (!executed && !knownRejection && interpreted?.retry == Retry.None)
+                zh("无法确认待办已发送；请检查结果。", "Could not confirm delivery; check the stored result.") else say(step.summary)
+            render()
+            return
+        }
         if (current != null && interpreted != null) holder.settled[current.action] = Settled(interpreted, current.key)
         if (sessionId == activeId) commandNote = say(step.summary)
         val rawTask = interpreted?.task
@@ -1841,7 +2005,7 @@ class BoardViewModel(
         if (sessionId == activeId && current?.cmd == "cmd.create" && interpreted?.retry == Retry.None && interpreted.settled) {
             _state.updateCopy { copy(draftTitle = "", draftPrompt = "", draftAttachments = emptyList()) }
         }
-        if (current?.cmd == "cmd.continue") {
+        if (current?.cmd == "cmd.continue" && screen == Screen.Detail(sessionId, current.taskId.orEmpty())) {
             val kept = if (interpreted?.retry == Retry.None && interpreted.settled) "" else holder.continuePrompt
             if (sessionId == activeId) holder.continuePrompt = kept
             if (kept.isEmpty()) {
@@ -2209,6 +2373,9 @@ class BoardViewModel(
             )
         }
         val taskId = (screen as? Screen.Detail)?.taskId
+        val detail = session?.let(::followupDetail)
+        val queue = holder?.followups?.get(detail?.id).orEmpty()
+        val writable = pill?.writesAllowed == true
         val grokEnabled = holder?.settingsLoaded == true && CAP_BOARD_SETTINGS in holder.capabilities && holder.loadedBoard?.grokBot?.available == true
         if (!agentEnabled(_state.value.draftAgent, grokEnabled)) {
             // An open bot draft needs an explicit choice, never an automatic local CLI fallback.
@@ -2248,6 +2415,12 @@ class BoardViewModel(
             continueThinkingEffort = holder?.continueThinkingEffort.orEmpty(),
             continueAttachments = holder?.continueAttachments.orEmpty(),
             continueOpen = holder?.continueOpen == true,
+            followups = queue.map { it.copy(needsLookup = holder?.followupHolds?.containsKey(it.id) == true) },
+            canQueueFollowup = writable && holder != null && detail != null && detail.status in followupActiveStatuses && followupAgentEnabled(holder, detail),
+            canSteerFollowup = writable && holder != null && detail != null && holder.inflight == null &&
+                (canSteer(holder, detail) || (detail.status in TERMINAL_STATUSES && followupAgentEnabled(holder, detail))) &&
+                holder.followupHolds.values.none { it.taskId == detail.id },
+            followupBusy = holder?.inflight != null,
             quickPrompts = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.quickPrompts.orEmpty() else emptyList(),
             modelCatalog = if (session != null && CAP_BOARD_SETTINGS in capabilities(session)) holder?.modelCatalog ?: AgentModelCatalog() else AgentModelCatalog(),
             settingsLoaded = holder?.settingsLoaded == true,
@@ -2448,6 +2621,20 @@ class BoardViewModel(
         var archiveError: String? = null
         var archiveDetail: RelayTask? = null
         var detailArchived = false
+        val followups = mutableMapOf<String, List<TaskFollowup>>()
+        // An uncertain result reserves the original key, task and command (even across a status change).
+        val followupHolds = mutableMapOf<String, Inflight>()
+        val autoAfterSeq = mutableMapOf<String, Long>()
+
+        fun removeFollowup(taskId: String, id: String) {
+            followupHolds.remove(id)
+            val remaining = followups[taskId].orEmpty().filterNot { it.id == id }
+            if (remaining.isEmpty()) {
+                followups.remove(taskId)
+                autoAfterSeq.remove(taskId)
+            } else followups[taskId] = remaining
+        }
+
         var continuePrompt: String = ""
         var continueModel: String = ""
         var continueThinkingEffort: String = ""
@@ -2482,6 +2669,8 @@ class BoardViewModel(
         val requestId: String,
         val lookupId: String? = null,
         val polls: Int = 0,
+        val followupId: String? = null,
+        val sentView: BoardView? = null,
     )
     private data class Settled(val interpretation: CommandInterpretation, val key: String)
 }

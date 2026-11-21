@@ -9,6 +9,7 @@ export const BOARD_CAPABILITIES = [
   "archive.write",
   "workspace.settings",
   "board.settings",
+  "task.steer",
 ] as const;
 
 export type BoardCapability = (typeof BOARD_CAPABILITIES)[number];

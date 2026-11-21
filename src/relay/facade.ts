@@ -9,6 +9,7 @@ import {
   boardSnapshot,
   continueTask,
   createAndStart,
+  steerTask,
   stopTask,
   workspaceSnapshot,
 } from "../manager.js";
@@ -53,6 +54,7 @@ export type BoardFacade = {
   gitEligibility(path: string): Promise<{ ok: boolean }>;
   create(input: FacadeCreateInput): Promise<Task>;
   stop(id: string): Promise<Task>;
+  steer(id: string, prompt: string): Promise<Task>;
   /** Raw task for `cmd.detail`. Not the clipped list snapshot. */
   task(id: string): Task | undefined;
   continue(
@@ -100,6 +102,7 @@ export type BoardFacadeDeps = {
   gitEligibility?: (path: string) => Promise<{ ok: boolean }>;
   createAndStart?: (input: CreateTaskInput) => Promise<Task>;
   stopTask?: (id: string) => Promise<Task>;
+  steerTask?: (id: string, prompt: string) => Promise<Task>;
   task?: (id: string) => Task | undefined;
   continueTask?: (
     id: string,
@@ -137,6 +140,7 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
   });
   const start = deps.createAndStart ?? createAndStart;
   const stop = deps.stopTask ?? stopTask;
+  const steer = deps.steerTask ?? steerTask;
   const cont = deps.continueTask ?? continueTask;
   const saveFiles = deps.saveAttachments ?? saveInlineAttachments;
   const listen = deps.subscribe ?? subscribe;
@@ -182,6 +186,16 @@ export function createBoardFacade(deps: BoardFacadeDeps = {}): BoardFacade {
       try {
         return await stop(id);
       } catch (err) {
+        throw relayErrorFrom(err);
+      }
+    },
+    steer: async (id, prompt) => {
+      try {
+        return await steer(id, prompt);
+      } catch (err) {
+        if (err instanceof HttpError && err.statusCode === 409) {
+          throw new RelayCommandError("unsupported", "task cannot accept steer in its current state");
+        }
         throw relayErrorFrom(err);
       }
     },

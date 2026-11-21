@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { HttpError } from "../httpError.js";
+import { ArchivedReadonlyError } from "../taskErrors.js";
 import { MAX_PROMPT_CHARS, MAX_TITLE_CHARS } from "../limits.js";
 import type { CreateTaskInput } from "../types.js";
 import { RelayCommandError } from "./errors.js";
@@ -185,6 +187,31 @@ describe("board facade create gates", () => {
     await facade.deleteWorkspace("ws_test");
     assert.equal(events.at(-1), "workspace_delete");
   });
+});
+
+it("delegates steer to the manager without a status precheck or continue fallback", async () => {
+  const updated = makeTask({ title: "after steer" });
+  const failures = [
+    [new HttpError(409, "cannot steer"), "unsupported"],
+    [new Error("not found"), "task_not_found"],
+    [new ArchivedReadonlyError(), "archived_readonly"],
+    [new Error("private board detail"), "board_http"],
+  ] as const;
+  let error: Error | undefined;
+  const facade = createBoardFacade({
+    task: () => assert.fail("manager owns the task lock"),
+    continueTask: async () => assert.fail("never fall back to continue in the adapter"),
+    steerTask: async (...args) => {
+      assert.deepEqual(args, [updated.id, "follow up"]);
+      if (error) throw error;
+      return updated;
+    },
+  });
+  assert.equal(await facade.steer(updated.id, "follow up"), updated);
+  for (const [failure, code] of failures) {
+    error = failure;
+    assert.equal(await rejectCode(facade.steer(updated.id, "follow up")), code);
+  }
 });
 
 async function rejectCode(p: Promise<unknown>): Promise<string> {

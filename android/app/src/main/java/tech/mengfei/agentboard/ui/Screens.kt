@@ -26,7 +26,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -42,6 +42,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
@@ -106,10 +107,8 @@ import tech.mengfei.agentboard.protocol.pairSubmitAllowed
 import tech.mengfei.agentboard.protocol.pickDefaultThinkingEffort
 import tech.mengfei.agentboard.protocol.supportedThinkingEfforts
 import tech.mengfei.agentboard.protocol.trimOuter
-import tech.mengfei.agentboard.protocol.canContinueStatus
 import tech.mengfei.agentboard.protocol.formatDurationMs
 import tech.mengfei.agentboard.protocol.taskTotalDurationMs
-import tech.mengfei.agentboard.protocol.canStopStatus
 import tech.mengfei.agentboard.protocol.continueHint
 import tech.mengfei.agentboard.protocol.deriveWsUrl
 import tech.mengfei.agentboard.protocol.detailError
@@ -563,16 +562,32 @@ internal fun TaskRow(task: RelayTask, english: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
 private fun DetailScreen(state: UiState, model: BoardViewModel, padding: PaddingValues) {
     val task = if (state.detailArchived) state.archiveDetail ?: state.archiveTasks.find { it.id == state.selectedTaskId }
         else state.tasks.find { it.id == state.selectedTaskId }
-    val english = englishNow()
-    ScrollColumn(padding) {
-        if (task == null) {
-            Text(stringResource(R.string.task_missing))
-            return@ScrollColumn
+    if (task == null) {
+        ScrollColumn(padding) { Text(stringResource(R.string.task_missing)) }
+        return
+    }
+    androidx.compose.runtime.key(state.activeSessionId, task.id) {
+        var logFullscreen by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+            DetailContent(state, task, Modifier.weight(1f))
+            HorizontalDivider()
+            DetailFooter(state, model, task, onShowLogs = { logFullscreen = true }) { onFilled ->
+                DetailInputOptions(state, model, task, onFilled)
+            }
         }
+        if (logFullscreen) LogFullscreen(task.title, state.logs) { logFullscreen = false }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DetailContent(state: UiState, task: RelayTask, modifier: Modifier) {
+    val english = englishNow()
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.padding(horizontal = 4.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(task.title, style = MaterialTheme.typography.titleLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -585,25 +600,19 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
             }
         }
         CommandBanners(state)
-        if (task.status == ARCHIVED_STATUS) {
+        if (state.detailArchived || task.status == ARCHIVED_STATUS) {
             Text(stringResource(R.string.archive_readonly), style = MaterialTheme.typography.bodySmall,
                 color = statusColor(ARCHIVED_STATUS), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                     .background(statusColor(ARCHIVED_STATUS).copy(alpha = .14f)).padding(horizontal = 12.dp, vertical = 8.dp))
-        } else {
-            DetailActions(state, model, task)
         }
         ConversationCard(task, english)
         TaskInfoCard(state, task, english)
-        var logFullscreen by remember(task.id) { mutableStateOf(false) }
         SectionCard(stringResource(R.string.raw_logs)) {
             if (state.logs.isEmpty()) {
                 Text(stringResource(R.string.no_logs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.log_lines, state.logs.size), modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton({ logFullscreen = true }) { Text(stringResource(R.string.log_fullscreen)) }
-                }
+                Text(stringResource(R.string.log_lines, state.logs.size), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                 SelectionContainer {
                     Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(10.dp))
                         .background(SurfaceDim).border(1.dp, OutlineVariant, RoundedCornerShape(10.dp))
@@ -616,7 +625,6 @@ private fun DetailScreen(state: UiState, model: BoardViewModel, padding: Padding
                 }
             }
         }
-        if (logFullscreen) LogFullscreen(task.title, state.logs) { logFullscreen = false }
     }
 }
 
@@ -666,50 +674,29 @@ private fun LogFullscreen(title: String, logs: List<tech.mengfei.agentboard.prot
 }
 
 @Composable
-private fun DetailActions(state: UiState, model: BoardViewModel, task: RelayTask) {
-    val canContinue = canContinueStatus(task.status) && agentEnabled(task.agent, state.grokEnabled)
-    // Make sure quick prompts / model settings are loaded as soon as the composer is on screen.
-    LaunchedEffect(task.id, canContinue) { if (canContinue && !state.continueOpen) model.openContinue() }
-    // The composer is always visible for a continuable task: the web board has the same footer input.
-    if (canContinue) SectionCard(stringResource(R.string.continue_task)) {
-        Text(continueHint(task, englishNow()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        val keepLabel = if (!task.model.isNullOrBlank()) {
-            "${stringResource(R.string.keep_current_model)} (${task.model})"
-        } else {
-            stringResource(R.string.keep_current_model)
-        }
-        ModelAndThinkingFields(
-            catalog = state.modelCatalog,
-            agent = task.agent ?: "pi",
-            selectedModel = state.continueModel,
-            effectiveModelForEfforts = state.continueModel.ifBlank { task.model.orEmpty() },
-            selectedEffort = state.continueThinkingEffort.ifBlank { task.thinkingEffort.orEmpty() },
-            emptyModelLabel = keepLabel,
-            onSelectModel = model::updateContinueModel,
-            onSelectEffort = model::updateContinueThinkingEffort,
-        )
-        QuickFill(state) { model.updateContinuePrompt(it) }
-        MakeField(state.continuePrompt, model::updateContinuePrompt, stringResource(R.string.continue_prompt_label),
-            stringResource(R.string.describe_task), minLines = 3)
-        if (task.agent != "grok") AttachmentPickerSection(
-            attachments = state.continueAttachments,
-            onAdd = model::addContinueAttachments,
-            onRemove = model::removeContinueAttachment,
-        )
-        MakeAction(actionLabel(state.continueMode, stringResource(R.string.continue_task)), model::submitContinue,
-            Modifier.fillMaxWidth(), primary = true,
-            enabled = (state.continuePrompt.trim().isNotEmpty() || state.continueAttachments.isNotEmpty()) && state.continueMode != "busy" && state.writesAllowed)
-        if (state.continueResend) TextButton(model::resendContinue) { Text(stringResource(R.string.resend_continue)) }
+private fun DetailInputOptions(state: UiState, model: BoardViewModel, task: RelayTask, onFilled: () -> Unit) {
+    Text(continueHint(task, englishNow()), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val keepLabel = if (!task.model.isNullOrBlank()) {
+        "${stringResource(R.string.keep_current_model)} (${task.model})"
+    } else {
+        stringResource(R.string.keep_current_model)
     }
-    SectionCard(stringResource(R.string.task_actions)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            MakeAction(actionLabel(state.stopMode, stringResource(R.string.stop)), model::submitStop, Modifier.weight(1f),
-                danger = true, enabled = (canStopStatus(task.status) || state.stopMode != "send") && state.stopMode != "busy" && state.writesAllowed)
-            if (state.archiveWrite) MakeAction(stringResource(R.string.archive_task), model::submitArchive, Modifier.weight(1f),
-                enabled = state.writesAllowed && task.status in listOf("succeeded", "failed", "stopped"))
-        }
-        if (state.stopResend) TextButton(model::resendStop) { Text(stringResource(R.string.resend_stop)) }
-    }
+    ModelAndThinkingFields(
+        catalog = state.modelCatalog,
+        agent = task.agent ?: "pi",
+        selectedModel = state.continueModel,
+        effectiveModelForEfforts = state.continueModel.ifBlank { task.model.orEmpty() },
+        selectedEffort = state.continueThinkingEffort.ifBlank { task.thinkingEffort.orEmpty() },
+        emptyModelLabel = keepLabel,
+        onSelectModel = model::updateContinueModel,
+        onSelectEffort = model::updateContinueThinkingEffort,
+    )
+    QuickFill(state) { model.updateContinuePrompt(it); onFilled() }
+    if (task.agent != "grok") AttachmentPickerSection(
+        attachments = state.continueAttachments,
+        onAdd = model::addContinueAttachments,
+        onRemove = model::removeContinueAttachment,
+    )
 }
 
 @Composable
@@ -777,20 +764,8 @@ private fun ConversationCard(task: RelayTask, english: Boolean) {
 
 @Composable
 private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember(task.id) { mutableStateOf(false) }
     SectionCard(stringResource(R.string.detail_info)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
-            Text(stringResource(R.string.task_id), modifier = Modifier.width(88.dp), style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Row(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable {
-                clipboard.setText(AnnotatedString(task.id)); copied = true
-            }, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(task.id, modifier = Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
-                BoardGlyph(BoardIcon.Copy, Modifier.size(14.dp), MaterialTheme.colorScheme.primary)
-                Text(stringResource(if (copied) R.string.copied else R.string.copy_task_id), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            }
-        }
+        MetaLine(stringResource(R.string.task_id), task.id)
         state.sessions.find { it.sessionId == state.activeSessionId }?.let { MetaLine(stringResource(R.string.board_settings), it.displayName) }
         MetaLine(stringResource(R.string.status), statusLabel(task.status, english))
         MetaLine(stringResource(R.string.iteration), (task.iteration ?: 1).toString())
@@ -804,7 +779,6 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
         MetaLine(stringResource(R.string.exit_code), task.exitCode?.toString() ?: "—")
         MetaLine(stringResource(R.string.session), task.sessionId ?: "—")
         MetaLine(stringResource(R.string.resume_label), resumeCommandLabel(task, english))
-        task.resumeCommand?.let { command -> TextButton({ clipboard.setText(AnnotatedString(command)) }) { Text(stringResource(R.string.copy_resume)) } }
         MetaLine(stringResource(R.string.workspace), workspaceDisplayName(task.workspaceId, state.workspaces, english))
         MetaLine(stringResource(R.string.cwd), task.cwd ?: "—")
         task.worktreeBranch?.takeIf { it.isNotBlank() }?.let { MetaLine(stringResource(R.string.git_branch), it) }
@@ -822,11 +796,11 @@ private fun TaskInfoCard(state: UiState, task: RelayTask, english: Boolean) {
 @Composable
 private fun TotalDurationLine(task: RelayTask, english: Boolean) {
     val active = task.status == "queued" || task.status == "running" || task.status == "paused"
-    val now by produceState(System.currentTimeMillis(), task.id, active) {
-        value = System.currentTimeMillis()
+    var now by remember(task.id, active) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(task.id, active) {
         while (active) {
             delay(1000)
-            value = System.currentTimeMillis()
+            now = System.currentTimeMillis()
         }
     }
     val total = taskTotalDurationMs(task, now)
@@ -1485,7 +1459,7 @@ private fun connectionLabel(connection: String): String = when (connection) {
 }
 
 @Composable
-private fun actionLabel(mode: String, send: String): String = when (mode) {
+internal fun actionLabel(mode: String, send: String): String = when (mode) {
     "busy" -> stringResource(R.string.waiting)
     "lookup" -> stringResource(R.string.check_stored)
     "reuse" -> stringResource(R.string.send_again, send)

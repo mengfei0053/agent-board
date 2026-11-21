@@ -481,15 +481,179 @@ class BoardConnectionTest {
         } finally { owner.clear() }
     }
 
-    private fun harness(): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
+    @Test
+    fun queuedPromptsAreBoundedAndScopedBySessionAndTask() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness(secondBoard = true)
+        try {
+            relay.authenticate()
+            relay.snapshot("board-b", 1)
+            relay.task("task_1", "running", 2)
+            relay.task("task_1", "running", 2, board = "board-b")
+            model.openTask("task_1")
+            assertFalse(model.queueFollowup("  "))
+            repeat(5) { assertTrue(model.queueFollowup(" p$it ")) }
+            assertFalse(model.queueFollowup("overflow"))
+            val fromA = model.state.value.followups
+            assertEquals("p0", fromA.first().prompt)
+            relay.task("task_2", "running", 3)
+            model.openTask("task_2")
+            assertTrue(model.state.value.followups.isEmpty())
+            model.sendFollowup(fromA[1].id)
+            model.activateSession("s2")
+            model.openTask("task_1")
+            assertTrue(model.state.value.followups.isEmpty())
+            assertTrue(model.queueFollowup("board B"))
+            model.removeFollowup(fromA.first().id)
+            model.sendFollowup(fromA[1].id)
+            assertFalse(relay.sent.any { it.type == "cmd.steer" })
+            model.activateSession("s1")
+            model.openTask("task_1")
+            model.removeFollowup(fromA.first().id)
+            assertEquals(fromA.drop(1), model.state.value.followups)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun steerIsSingleFlightAndUnknownOnlyLooksUpEvenAfterTaskEnds() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.offerSteer = true
+            relay.authenticate()
+            relay.task("task_1", "running", 2)
+            model.openTask("task_1")
+            assertTrue(model.state.value.canSteerFollowup)
+            model.queueFollowup("one")
+            model.queueFollowup("two")
+            val second = model.state.value.followups.last()
+            model.sendFollowup(second.id)
+            model.removeFollowup(second.id)
+            model.sendFollowup(second.id)
+            val cmd = relay.sent.single { it.type == "cmd.steer" }
+            assertEquals(second.prompt, cmd.text("prompt"))
+            relay.stage(cmd.id, "accepted")
+            assertEquals(2, model.state.value.followups.size)
+            relay.stage(cmd.id, "timeout")
+            val firstLookup = relay.sent.single { it.type == "cmd.lookup" }
+            relay.stage(firstLookup.id, "unknown")
+            assertTrue(model.state.value.followups.last().needsLookup)
+            relay.task("task_1", "succeeded", 3)
+            model.sendFollowup(second.id)
+            val check = relay.sent.last { it.type == "cmd.lookup" }
+            assertEquals(cmd.text("idempotencyKey"), check.text("idempotencyKey"))
+            assertEquals("cmd.steer", check.text("cmd"))
+            relay.replyCreated(check.id, "task_1")
+            assertEquals(listOf("one"), model.state.value.followups.map { it.prompt })
+            assertFalse(relay.sent.any { it.type == "cmd.continue" })
+            assertEquals(1, relay.sent.count { it.type == "cmd.steer" })
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun manualTerminalSendChoosesTheTappedItemWithoutSteerCapability() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.authenticate()
+            relay.task("task_1", "running", 2)
+            model.openTask("task_1")
+            model.addContinueAttachments(listOf(tech.mengfei.agentboard.protocol.OutgoingAttachment("note.txt", dataBase64 = "QQ==")))
+            assertFalse(model.queueFollowup("not without my file"))
+            assertEquals(1, model.state.value.continueAttachments.size)
+            model.removeContinueAttachment(0)
+            model.queueFollowup("first")
+            model.queueFollowup("second")
+            assertFalse(model.state.value.canSteerFollowup)
+            model.sendFollowup(model.state.value.followups.last().id)
+            assertFalse(relay.sent.any { it.type == "cmd.steer" })
+            relay.snapshot("board-a", 1) // No automatic writes after a replay.
+            relay.task("task_1", "failed", 4)
+            assertTrue(model.state.value.canSteerFollowup)
+            model.sendFollowup(model.state.value.followups.last().id)
+            val cmd = relay.sent.single { it.type == "cmd.continue" }
+            assertEquals("second", cmd.text("prompt"))
+            relay.replyCreated(cmd.id, "task_1")
+            assertEquals(listOf("first"), model.state.value.followups.map { it.prompt })
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun boardRejectionRetainsSteerForNextRunButOfflineCompletionDoesNotSend() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.offerSteer = true
+            relay.authenticate()
+            relay.task("task_1", "running", 2)
+            model.openTask("task_1")
+            model.queueFollowup("retained")
+            model.sendFollowup(model.state.value.followups.single().id)
+            val cmd = relay.sent.single { it.type == "cmd.steer" }
+            relay.stage(cmd.id, "failed", "bad_request")
+            val lookup = relay.sent.single { it.type == "cmd.lookup" }
+            relay.stage(lookup.id, "failed", "bad_request")
+            assertFalse(model.state.value.followups.single().needsLookup)
+            relay.listener.onMessage("""{"v":1,"id":"offline","type":"evt.board","ts":4,"payload":{"boardId":"board-a","online":false,"generation":1}}""")
+            assertFalse(model.state.value.canSteerFollowup)
+            model.sendFollowup(model.state.value.followups.single().id)
+            relay.task("task_1", "succeeded", 3)
+            assertFalse(relay.sent.any { it.type == "cmd.continue" })
+            assertEquals(1, relay.sent.count { it.type == "cmd.steer" })
+            assertEquals("retained", model.state.value.followups.single().prompt)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun autoDrainUsesLiveTerminalEdgeNotSelectionSnapshotOrPausedState() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val (model, relay, owner) = harness()
+        try {
+            relay.authenticate()
+            relay.task("task_1", "running", 2, agent = "codex")
+            model.openTask("task_1")
+            model.queueFollowup("first")
+            model.queueFollowup("second")
+            assertFalse(model.state.value.canSteerFollowup)
+            model.sendFollowup(model.state.value.followups.first().id)
+            assertFalse(relay.sent.any { it.type == "cmd.steer" })
+            relay.task("task_1", "paused", 3, agent = "codex")
+            assertTrue(model.state.value.canQueueFollowup)
+            assertFalse(relay.sent.any { it.type == "cmd.continue" })
+            relay.task("task_2", "running", 4)
+            model.openTask("task_2")
+            model.updateContinuePrompt("a different task's draft")
+            relay.task("task_1", "succeeded", 5, agent = "codex")
+            val cmd = relay.sent.single { it.type == "cmd.continue" }
+            assertEquals("first", cmd.text("prompt"))
+            assertEquals("task_1", cmd.text("taskId"))
+            assertNull(cmd.text("thinkingEffort"))
+            relay.stage(cmd.id, "accepted")
+            relay.task("task_1", "succeeded", 6, agent = "codex")
+            relay.replyCreated(cmd.id, "task_1")
+            assertEquals("a different task's draft", model.state.value.continuePrompt)
+            model.openTask("task_1")
+            assertEquals(listOf("second"), model.state.value.followups.map { it.prompt })
+            relay.snapshot("board-a", 1)
+            relay.task("task_1", "running", 2, agent = "codex")
+            relay.task("task_1", "succeeded", 5, agent = "codex")
+            assertEquals(1, relay.sent.count { it.type == "cmd.continue" })
+            model.submitContinue()
+            val manual = relay.sent.last { it.type == "cmd.continue" }
+            assertEquals("second", manual.text("prompt"))
+            // A malformed/mismatched execution is not confirmation of this prompt.
+            relay.replyCreated(manual.id, "task_2")
+            assertTrue(model.state.value.followups.single().needsLookup)
+        } finally { owner.clear() }
+    }
+
+    private fun harness(secondBoard: Boolean = false): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
         val store = SessionStore(MemoryPrefs(), MemoryPrefs())
         store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", Long.MAX_VALUE,
-            "https://relay.example", "wss://relay.example/v1/ws", listOf("board-a"))))
+            "https://relay.example", "wss://relay.example/v1/ws", if (secondBoard) listOf("board-a", "board-b") else listOf("board-a"))))
+        val sessions = listOfNotNull(PhoneSession("s1", "c1", "board-a", "Office", 1),
+            if (secondBoard) PhoneSession("s2", "c1", "board-b", "Cabin", 2) else null)
         store.apply(DiskOp.PutCatalog(CatalogDocument(catalogVersion = 1,
-            migrationState = MigrationState.COMMITTED, order = listOf("s1"),
-            sessions = listOf(PhoneSession("s1", "c1", "board-a", "Office", 1)),
+            migrationState = MigrationState.COMMITTED, order = sessions.map { it.sessionId },
+            sessions = sessions,
             activeSessionId = "s1", migrationCredentialId = null)))
         val relay = ConnectionRelay()
+        if (secondBoard) relay.listedBoards += ListedBoard("board-b", true, 1)
         val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)),
             clock = { 1_000L + main.scheduler.currentTime })
         val owner = androidx.lifecycle.ViewModelStore()
@@ -505,6 +669,7 @@ private class ConnectionRelay : RelayApi {
     val sent = mutableListOf<tech.mengfei.agentboard.protocol.Envelope>()
     var opens = 0
     var replyToLists = true
+    var offerSteer = false
     var listedBoards = listOf(ListedBoard("board-a", online = true, generation = 1))
     override suspend fun request(method: String, url: String, body: String?) = HttpResult(200, "{}")
     override fun openSocket(credentialId: String, url: String, listener: SocketListener) {
@@ -516,7 +681,7 @@ private class ConnectionRelay : RelayApi {
         sent += message
         if (message.type == "board.list" && replyToLists) {
             val boards = listedBoards.joinToString(",") { board ->
-                """{"boardId":"${board.boardId}","online":${board.online},"generation":${board.generation},"capabilities":["board.settings","workspace.settings"]}"""
+                """{"boardId":"${board.boardId}","online":${board.online},"generation":${board.generation},"capabilities":["board.settings","workspace.settings"${if (offerSteer) ",\"task.steer\"" else ""}]}"""
             }
             listener.onMessage("""{"v":1,"id":"list-ack","type":"ack","ts":1,"payload":{"ref":"${message.id}","stage":"executed","boards":[$boards]}}""")
         }
@@ -527,6 +692,12 @@ private class ConnectionRelay : RelayApi {
         val hello = sent.last { it.type == "client.hello" }
         listener.onMessage("""{"v":1,"id":"hello-ack","type":"ack","ts":1,"payload":{"ref":"${hello.id}","stage":"executed"}}""")
         listener.onMessage("""{"v":1,"id":"snapshot","type":"evt.snapshot","ts":1,"payload":{"boardId":"board-a","generation":1,"seq":1,"tasks":[],"workspaces":[]}}""")
+    }
+    fun task(id: String, status: String, seq: Long, agent: String = "pi", board: String = "board-a") {
+        listener.onMessage("""{"v":1,"id":"e-$seq","type":"evt.task","ts":2,"payload":{"boardId":"$board","generation":1,"seq":$seq,"task":{"id":"$id","title":"Work","status":"$status","agent":"$agent","updatedAt":$seq}}}""")
+    }
+    fun stage(ref: String, stage: String, code: String = "") {
+        listener.onMessage("""{"v":1,"id":"r-$ref","type":"ack","ts":2,"payload":{"ref":"$ref","stage":"$stage","code":"$code"}}""")
     }
     fun gap() {
         listener.onMessage("""{"v":1,"id":"gap","type":"evt.gap","ts":2,"payload":{"boardId":"board-a","generation":1,"expectedSeq":3,"reason":"seq_gap"}}""")

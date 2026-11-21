@@ -20,6 +20,10 @@ export class BoardHttpError extends Error {
 
 export class BoardClient {
   readonly base: URL;
+  // One client per board dialer, shared across WS generations. Keep even an
+  // ambiguous timeout: the POST may have injected text before the reply was lost.
+  private readonly steers = new Map<string, Promise<MappedTask>>();
+  private readonly settledSteers: string[] = [];
 
   constructor(
     baseUrl: string,
@@ -41,6 +45,18 @@ export class BoardClient {
   continueTask(id: string, prompt?: string): Promise<MappedTask> {
     const body = prompt ? { prompt } : {};
     return this.send(`/api/tasks/${encodeURIComponent(id)}/continue`, { method: "POST", body });
+  }
+
+  steerTask(id: string, prompt: string, key: string): Promise<MappedTask> {
+    const existing = this.steers.get(key);
+    if (existing) return existing;
+    const result = this.send(`/api/tasks/${encodeURIComponent(id)}/steer`, { method: "POST", body: { prompt } })
+      .finally(() => {
+        this.settledSteers.push(key);
+        if (this.settledSteers.length > 500) this.steers.delete(this.settledSteers.shift()!);
+      });
+    this.steers.set(key, result);
+    return result;
   }
 
   async listWorkspaces(): Promise<WorkspaceStub[]> {

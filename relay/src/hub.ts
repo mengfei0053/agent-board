@@ -4,6 +4,7 @@ import type { LogFields } from "./log.js";
 import {
   ARCHIVE_CAPABILITY,
   ARCHIVE_WRITE_CAPABILITY,
+  TASK_STEER_CAPABILITY,
   BOARD_SETTINGS_CAPABILITY,
   WORKSPACE_SETTINGS_CAPABILITY,
   makeAck,
@@ -65,6 +66,7 @@ const PHONE_KINDS = new Set([
   "sub.tasks",
   "sub.logs",
   "cmd.create",
+  "cmd.steer",
   "cmd.continue",
   "cmd.stop",
   "cmd.workspace.create",
@@ -185,6 +187,7 @@ export class RelayHub {
         this.lookup(conn, parsed);
         return;
       case "cmd.create":
+      case "cmd.steer":
       case "cmd.continue":
       case "cmd.stop":
       case "cmd.workspace.create":
@@ -913,6 +916,7 @@ type ForwardedCommand = Extract<
   {
     kind:
       | "cmd.create"
+      | "cmd.steer"
       | "cmd.continue"
       | "cmd.stop"
       | "cmd.workspace.create"
@@ -929,6 +933,8 @@ type ForwardedCommand = Extract<
 
 function capabilityFor(kind: ForwardedCommand["kind"]): string | undefined {
   switch (kind) {
+    case "cmd.steer":
+      return TASK_STEER_CAPABILITY;
     case "cmd.archive.list":
       return ARCHIVE_CAPABILITY;
     case "cmd.archive":

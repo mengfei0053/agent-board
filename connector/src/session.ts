@@ -75,6 +75,7 @@ export class ConnectorSession {
     if (
       message.type !== "cmd.create"
       && message.type !== "cmd.continue"
+      && message.type !== "cmd.steer"
       && message.type !== "cmd.stop"
       && message.type !== "cmd.archive.list"
       && message.type !== "cmd.archive"
@@ -99,6 +100,7 @@ export class ConnectorSession {
     try {
       if (message.type === "cmd.create") await this.create(message.id, payload);
       else if (message.type === "cmd.continue") await this.continueTask(message.id, payload);
+      else if (message.type === "cmd.steer") await this.steerTask(message.id, payload);
       else if (message.type === "cmd.stop") await this.stopTask(message.id, payload);
       else if (message.type === "cmd.archive.list") await this.archiveList(message.id, payload);
       else if (message.type === "cmd.archive") await this.archive(message.id, payload);
@@ -109,7 +111,7 @@ export class ConnectorSession {
       else await this.detail(message.id, payload);
     } catch (error) {
       if (error instanceof BoardHttpError) {
-        const mapped = mapBoardFailure(error);
+        const mapped = mapBoardFailure(error, message.type);
         this.fail(message.id, mapped.code, mapped.message);
         return;
       }
@@ -150,6 +152,26 @@ export class ConnectorSession {
     this.known.set(task.id, task);
     this.emitAll(this.cursor.observe(task));
     this.ack(ref, task);
+  }
+
+  private async steerTask(ref: string, payload: Record<string, unknown>): Promise<void> {
+    const { boardId, taskId, idempotencyKey, prompt } = payload;
+    if (boardId !== this.boardId) return this.fail(ref, "forbidden", "boardId does not match this board");
+    if (typeof taskId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(taskId)) {
+      return this.fail(ref, "bad_request", "taskId is invalid");
+    }
+    if (typeof idempotencyKey !== "string" || !/^[\x21-\x7e]{8,80}$/.test(idempotencyKey)) {
+      return this.fail(ref, "bad_request", "idempotencyKey must be 8-80 visible ASCII characters");
+    }
+    if (Object.keys(payload).some(k => !["boardId", "taskId", "idempotencyKey", "prompt"].includes(k))) {
+      return this.fail(ref, "bad_request", "steer only accepts task text");
+    }
+    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 20_000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(prompt)) {
+      return this.fail(ref, "bad_request", "steer requires 1-20000 characters of text");
+    }
+    const task = await this.api.steerTask(taskId, prompt, idempotencyKey);
+    // The board SSE carries the live update. A cached receipt must not roll it back.
+    this.send(executed(ref, boardId, idempotencyKey, { task: taskPayload(task) }));
   }
 
   private async stopTask(ref: string, payload: Record<string, unknown>): Promise<void> {
@@ -567,8 +589,13 @@ function executed(ref: string, boardId: string, key: string, extra: Record<strin
   };
 }
 
-function mapBoardFailure(error: BoardHttpError): { code: string; message: string } {
+function mapBoardFailure(error: BoardHttpError, command: string): { code: string; message: string } {
   if (error.code === "archived_readonly") return { code: error.code, message: error.detail || "archived tasks are read-only" };
+  if (command === "cmd.steer") {
+    if (error.status === 409) return { code: "unsupported", message: "task cannot accept steer in its current state" };
+    if (error.status === 400 || error.status === 413) return { code: "bad_request", message: "invalid steer request" };
+    if (error.status === 403) return { code: "forbidden", message: "forbidden" };
+  }
   if (error.detail === "task is still running" || error.detail === "draft cannot be archived" || error.detail === "clear is not allowed") {
     return { code: "bad_request", message: error.detail };
   }

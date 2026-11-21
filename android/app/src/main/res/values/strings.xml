@@ -87,7 +87,16 @@
     <string name="reply_pending">Reply in progress…</string>
     <string name="no_round_reply">No reply for this round</string>
     <string name="reply_truncated">Reply was truncated</string>
-    <string name="archive_readonly">Archived tasks cannot be stopped; continue is available.</string>
+    <string name="archive_readonly">Archived task · read only</string>
+    <string name="detail_more">More</string>
+    <string name="detail_options">Prompt options</string>
+    <string name="detail_queue_prompt">Text to queue on this phone</string>
+    <string name="detail_queue_add">Add to queue</string>
+    <string name="detail_queue_button">Queue (%1$d)</string>
+    <string name="detail_queue_count">Phone queue (%1$d/5)</string>
+    <string name="detail_queue_empty">No prompts queued on this phone.</string>
+    <string name="detail_queue_send">Send to current session</string>
+    <string name="detail_view_logs">View full-screen logs</string>
     <string name="stop">Stop</string>
     <string name="continue_task">Continue</string>
     <string name="continue_prompt_label">Extra instruction</string>

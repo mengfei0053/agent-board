@@ -129,6 +129,11 @@ export function memoryFacade(seed?: { tasks?: Task[]; workspaces?: Workspace[] }
       task.status = "stopped";
       return { ...task };
     },
+    steer: async (id: string, prompt: string) => {
+      const task = tasks.find((item) => item.id === id);
+      if (!task) throw new Error("not found");
+      return { ...task, prompt };
+    },
     task: (id: string) => tasks.find((item) => item.id === id),
     continue: async (id: string, prompt?: string, model?: string, thinkingEffort?: string, attachments?: FacadeCreateInput["attachments"]) => {
       const task = tasks.find((item) => item.id === id);

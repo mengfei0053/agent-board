@@ -9,6 +9,7 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const ARCHIVE_STATUS = "archived" as const;
 export const ARCHIVE_CAPABILITY = "archive.list";
 export const ARCHIVE_WRITE_CAPABILITY = "archive.write";
+export const TASK_STEER_CAPABILITY = "task.steer";
 export const WORKSPACE_SETTINGS_CAPABILITY = "workspace.settings";
 export const BOARD_SETTINGS_CAPABILITY = "board.settings";
 export const ARCHIVE_PAGE_DEFAULT = 20;
@@ -22,6 +23,7 @@ export type LogStream = (typeof LOG_STREAMS)[number];
 
 export const CMD_TYPES = [
   "cmd.create",
+  "cmd.steer",
   "cmd.continue",
   "cmd.stop",
   "cmd.workspace.create",
@@ -49,6 +51,7 @@ const MESSAGE_KINDS = [
   "sub.tasks",
   "sub.logs",
   "cmd.create",
+  "cmd.steer",
   "cmd.continue",
   "cmd.stop",
   "cmd.workspace.create",
@@ -158,6 +161,7 @@ export type Incoming =
   | { ok: true; kind: "sub.tasks"; envelope: Envelope; boardId: string; afterSeq?: number }
   | { ok: true; kind: "sub.logs"; envelope: Envelope; boardId: string; taskId?: string }
   | { ok: true; kind: "cmd.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
+  | { ok: true; kind: "cmd.steer"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.continue"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.stop"; envelope: Envelope; boardId: string; idempotencyKey: string; taskId: string }
   | { ok: true; kind: "cmd.workspace.create"; envelope: Envelope; boardId: string; idempotencyKey: string }
@@ -217,7 +221,8 @@ export function parseMessage(raw: unknown): Incoming {
     case "cmd.create":
       return parseCmdCreate(payload, id, ts);
     case "cmd.continue":
-      return parseCmdTask(payload, id, ts, "cmd.continue");
+    case "cmd.steer":
+      return parseCmdTask(payload, id, ts, kind);
     case "cmd.stop":
       return parseCmdStop(payload, id, ts);
     case "cmd.workspace.create":
@@ -415,7 +420,7 @@ function parseCmdCreate(payload: unknown, id: string, ts: number): Incoming {
   };
 }
 
-function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.continue"): Incoming {
+function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.continue" | "cmd.steer"): Incoming {
   const record = requireRecord(payload, id);
   if (!record.ok) return record.failure;
   const common = readCmdTarget(record.value, id);
@@ -424,6 +429,13 @@ function parseCmdTask(payload: unknown, id: string, ts: number, kind: "cmd.conti
   const prompt = optionalMultiline(record.value.prompt, "prompt", 20_000);
   if (!prompt.ok) return failure("bad_request", prompt.message, id);
   if (prompt.value) body.prompt = prompt.value;
+  if (kind === "cmd.steer") {
+    if (!prompt.value?.trim()) return failure("bad_request", "steer requires a prompt", id);
+    if (Object.keys(record.value).some(key => !["boardId", "taskId", "idempotencyKey", "prompt"].includes(key))) {
+      return failure("bad_request", "steer only accepts task text", id);
+    }
+    return { ok: true, kind, envelope: envelope(kind, id, ts, body), boardId: common.boardId, taskId: common.taskId, idempotencyKey: common.idempotencyKey };
+  }
   const model = optionalText(record.value, "model", 1, 200);
   if (!model.ok) return failure("bad_request", model.message, id);
   if (model.value) body.model = model.value.trim();
@@ -1998,6 +2010,7 @@ const ARCHIVE_CURSOR = /^([0-9]{1,16}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})(?::[a-f
  * run this allowlist before a board registers the names below.
  */
 const KNOWN_CAPABILITIES = new Set<string>([
+  TASK_STEER_CAPABILITY,
   ARCHIVE_CAPABILITY,
   ARCHIVE_WRITE_CAPABILITY,
   WORKSPACE_SETTINGS_CAPABILITY,
