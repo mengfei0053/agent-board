@@ -50,6 +50,7 @@ import type {
   TaskAttachment,
   Workspace,
 } from "./types.js";
+import { grokWebRoutes } from "./grokWebRoutes.js";
 import { readSettingsDocument, writeSettingsDocument } from "./settingsDocument.js";
 import { importModelHistory, readModelHistory } from "./modelHistory.js";
 import { AGENT_KINDS, readAgentModels } from "./agentModels.js";
@@ -806,6 +807,7 @@ app.post("/api/model-history/import", async (c) => {
   }
 });
 
+app.route("/api/settings/grok", grokWebRoutes());
 app.get("/api/settings", async (c) => c.json(await readSettingsDocument()));
 
 app.get("/api/settings/extensions", async (c) => {

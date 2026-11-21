@@ -144,6 +144,17 @@
                   <span class="settings-label"><strong>启用 Grok Bot</strong><span class="muted settings-default">服务端随项目安装 <code>@grok/agent-sdk</code>。请先完成认证并部署目标 Agent。此选项仅连接已部署的 Bot，不连接桌面 Grok，也不切换任务模型。</span></span>
                   <input type="checkbox" id="grok-bot-enabled" />
                 </label>
+                <div class="relay-actions">
+                  <button type="button" class="secondary" id="grok-login">登录 Cursor</button>
+                  <button type="button" class="secondary" id="grok-login-check">查询登录状态</button>
+                  <a id="grok-login-link" target="_blank" rel="noopener noreferrer" hidden>前往 Cursor 授权</a>
+                </div>
+                <p id="grok-login-status" class="settings-block-desc" role="status">尚未查询登录状态。已有账号可直接刷新部署。</p>
+                <div class="relay-actions">
+                  <button type="button" class="secondary" id="grok-refresh-deployments">刷新部署</button>
+                  <select id="grok-deployments" aria-label="选择已部署的 Agent" hidden></select>
+                </div>
+                <p id="grok-deployments-status" class="settings-block-desc" role="status">也可直接填写 slug，保存设置后生效。</p>
                 <label class="settings-row">目标 Agent slug
                   <input type="text" id="grok-bot-slug" maxlength="63" placeholder="例如 review-bot" spellcheck="false" />
                 </label>

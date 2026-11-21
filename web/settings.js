@@ -1,4 +1,5 @@
 import { validBotSlug } from "./grokBot.js";
+import "./grokBotSettings.js";
 
 const tabsEl = document.getElementById("agent-tabs");
 const panelsEl = document.getElementById("agent-panels");

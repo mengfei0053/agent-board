@@ -13,7 +13,7 @@ class RunError extends Error {}
 
 // No workspace cwd, inherited NODE_OPTIONS, endpoint overrides, board DB/API secrets,
 // npm project binaries, shell, or CLI stdout/stderr forwarding.
-function cliEnv(): NodeJS.ProcessEnv {
+export function cliEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { CI: "1", AGENT_SERVE_NO_UPDATE_CHECK: "1" };
   env.PATH = (process.env.PATH ?? "").split(delimiter)
     .filter(dir => isAbsolute(dir) && !dir.split(/[\\/]/).includes("node_modules")).join(delimiter);

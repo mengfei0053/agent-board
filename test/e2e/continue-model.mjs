@@ -30,7 +30,27 @@ let failNext = false;
 let lastBody;
 let settingsPatch;
 const streams = new Set();
+const grokRequests = [];
+const mockLink = "https://cursor.com/loginDeepControl?code=mock-only";
+let loginResult = { state: "idle" };
+let loginHttp = 200;
+let deploymentsHttp = 200;
+let slugs = ["team-agent", "<bad>", "team-agent"];
 const server = createMockServer(state, async (req, res, url) => {
+  if (["/api/settings/grok/login", "/api/settings/grok/deployments"].includes(url.pathname)) {
+    const resource = url.pathname.split("/").pop();
+    grokRequests.push(`${req.method} ${resource}`);
+    if (req.headers["x-board-local"] !== "1") json(res, 403, {});
+    else if (resource === "deployments" && req.method === "GET") json(res, deploymentsHttp, { slugs });
+    else if (resource === "login" && req.method === "GET") json(res, loginHttp, loginResult);
+    else if (resource === "login" && req.method === "POST") {
+      const body = [];
+      for await (const chunk of req) body.push(chunk);
+      const valid = req.headers.origin === base && req.headers["content-type"] === "application/json" && Buffer.concat(body).toString() === "{}";
+      json(res, valid ? loginHttp : 400, loginResult);
+    } else json(res, 405, {});
+    return true;
+  }
   if (url.pathname === "/api/events") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     res.write(`event: hello\ndata: ${JSON.stringify({
@@ -182,6 +202,56 @@ try {
   state.settings.grokBot = { enabled: false, slug: "" };
   await page.reload(nav);
   await page.waitForSelector("#grok-bot-enabled", { visible: true });
+  const waitText = (id, text) => page.waitForFunction((id, text) => document.getElementById(id).textContent.includes(text), {}, id, text);
+  assert.deepEqual(grokRequests, [], "settings load must not contact Cursor APIs");
+  await page.evaluate(() => { window.open = () => { throw new Error("unexpected automatic popup"); }; });
+
+  // Already-authorized accounts can list deployments without starting/checking login.
+  await page.click("#grok-refresh-deployments");
+  await page.waitForSelector("#grok-deployments:not([hidden])");
+  assert.deepEqual(grokRequests, ["GET deployments"]);
+  assert.deepEqual(await page.$$eval("#grok-deployments option", els => els.map(el => el.value)), ["", "team-agent"]);
+  await page.click("#grok-login-check");
+  await waitText("grok-login-status", "没有进行中");
+
+  loginResult = { state: "pending", loginUrl: mockLink };
+  await page.click("#grok-login");
+  await page.waitForSelector("#grok-login-link:not([hidden])");
+  assert.deepEqual(await page.$eval("#grok-login-link", el => [el.href, el.target, [...el.relList].sort()]), [mockLink, "_blank", ["noopener", "noreferrer"]]);
+  assert.equal(await page.$eval("#grok-login", el => el.disabled), true);
+  loginResult = { state: "success" }; // Simulate approval without navigating to Cursor.
+  await waitText("grok-login-status", "已登录");
+  assert.deepEqual(grokRequests.slice(-2), ["POST login", "GET login"]);
+  assert.equal(await page.$("#grok-login-link[href]"), null);
+  slugs = ["authorized-agent"];
+  await page.click("#grok-refresh-deployments");
+  await page.waitForSelector('#grok-deployments option[value="authorized-agent"]');
+  await page.select("#grok-deployments", "authorized-agent");
+  assert.equal(await page.$eval("#grok-bot-slug", el => el.value), "authorized-agent");
+  assert.equal(await page.$eval("#grok-bot-enabled", el => el.checked), false);
+  assert.equal(settingsPatch, undefined);
+
+  for (const unsafe of ["https://cursor.com.evil.invalid/loginDeepControl", "https://evil@cursor.com/loginDeepControl", "https://cursor.com/loginDeepControl/other", "javascript:alert(1)"]) {
+    loginResult = { state: "pending", loginUrl: unsafe };
+    await Promise.all([page.waitForResponse(r => r.url().endsWith("/grok/login")), page.click("#grok-login-check")]);
+    await page.waitForSelector("#grok-login-check:not([disabled])");
+    await waitText("grok-login-status", "暂无可信授权链接");
+    assert.equal(await page.$("#grok-login-link[href]"), null);
+  }
+  loginResult = { state: "failed", message: mockLink };
+  await page.click("#grok-login-check");
+  await waitText("grok-login-status", "登录失败");
+  assert.ok(!(await page.$eval("#grok-login-status", el => el.textContent)).includes(mockLink));
+  loginHttp = 403;
+  await page.click("#grok-login");
+  await waitText("grok-login-status", "本机直连");
+  deploymentsHttp = 404;
+  await page.click("#grok-refresh-deployments");
+  await waitText("grok-deployments-status", "升级看板");
+  assert.equal(await page.$eval("#grok-bot-slug", el => el.value), "authorized-agent");
+
+  // Failed/unsupported login and listing must never block manual configuration.
+  await page.$eval("#grok-bot-slug", el => { el.value = ""; });
   await page.click("#grok-bot-enabled");
   await page.click("#btn-save-settings");
   assert.match(await page.$eval("#settings-status", (el) => el.textContent), /slug/);
