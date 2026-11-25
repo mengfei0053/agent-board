@@ -214,13 +214,40 @@
     return filters.toString();
   }
 
+  const logEvents = {
+    app_started: '应用已启动', relay_connected: '已连接中继', snapshot_synced: '快照已同步',
+    command_sent: '命令已发送', command_executed: '命令已执行', relay_disconnected: '中继连接已断开',
+    auth_rejected: '认证被拒绝', sync_gap: '同步中断', command_failed: '命令失败', command_timeout: '命令超时',
+    board_online: '看板已上线', sync_waiting: '等待同步', sync_recovered: '同步已恢复', reconnecting: '正在重新连接',
+    lookup_result: '查询结果', board_offline: '看板已离线', board_unavailable: '看板不可用', network_failed: '网络请求失败',
+    protocol_invalid: '协议无效', pair_failed: '配对失败', storage_failed: '存储失败', attachment_failed: '附件处理失败',
+    app_exit_abnormal: '应用异常退出', notification_failed: '通知失败',
+  };
+  const logOps = {
+    create: '创建任务', continue: '继续任务', stop: '停止任务', steer: '引导任务', lookup: '查询命令结果',
+    detail: '查看任务详情', archive: '归档任务', archive_list: '查看归档列表', workspace_create: '创建工作区',
+    workspace_delete: '删除工作区', workspace_get: '读取工作区', workspace_update: '更新工作区', settings_get: '读取设置',
+    settings_put: '保存设置', pair: '设备配对', refresh: '刷新令牌', health: '健康检查', connect: '连接中继',
+    board_list: '查看看板列表', subscribe: '订阅看板',
+  };
+  const logReasons = {
+    dns: '域名解析失败', tls: '安全连接失败', timeout: '超时', network: '网络错误', unauthorized: '未认证',
+    forbidden: '无权访问', unsupported: '不支持', board_offline: '看板离线', bad_request: '请求有误', rate_limited: '请求过于频繁',
+    not_found: '未找到', disconnected: '连接已断开', unknown: '原因未知', accepted: '已接受', executed: '已执行', failed: '执行失败',
+    invalid: '数据无效', storage: '存储错误', too_large: '数据过大', empty: '内容为空', unreadable: '无法读取', limit: '已达上限',
+    crash: '应用崩溃', anr: '应用无响应', low_memory: '内存不足', permission: '权限不足',
+  };
+
   function logRow(entry) {
     const row = document.createElement('tr');
     cell(row, entry.deviceId);
     cell(row, date(entry.ts));
     cell(row, date(entry.receivedAt));
     cell(row, entry.level === 'error' ? badge('错误', 'danger') : badge('普通'));
-    cell(row, entry.event);
+    cell(row, logEvents[entry.event] ?? '未知事件');
+    cell(row, logOps[entry.op] ?? '—');
+    cell(row, logReasons[entry.reason] ?? '—');
+    cell(row, entry.count ?? 1);
     return row;
   }
 

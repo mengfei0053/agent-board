@@ -111,7 +111,7 @@ deviceToken 绑定此 deviceId、phone 角色和 boardIds，配对后不会自�
 
 ## 手机诊断日志
 
-`POST /api/device/logs` 使用设备 Bearer，设备身份取自已配对会话。未压缩的 `application/json` 请求最多 64 KiB，`entries` 为 1–50 条 `{id, ts, level, event}`：`id` 是稳定 UUID，`ts` 是设备端 Unix 毫秒。普通事件包括启动、连接、同步和命令收发；错误事件包括断线、认证拒绝、同步缺口、命令失败和超时。只接受定义好的事件码，不接受自由文本、凭证、任务内容或额外字段。服务端提交后返回 `{acked:[id,...]}`。保留期内同设备、同 ID、同内容重试不会重复写入；同 ID 不同内容返回 `409`，限流返回 `429`。
+`POST /api/device/logs` 使用设备 Bearer，设备身份取自已配对会话。未压缩的 `application/json` 请求最多 64 KiB，`entries` 为 1–50 条 `{id, ts, level, event}`：`id` 是稳定 UUID，`ts` 是设备端 Unix 毫秒。`op` 和 `reason` 是可选的枚举值，`count` 为 1–65535 的整数，默认 1，表示此设备本次合并的发生次数。旧版四字段记录无需转换。普通事件包括启动、中继连接、看板上线、等待同步、同步恢复和结果查询；错误事件包括 DNS/TLS/网络问题、配对或存储失败、目标看板离线、协议无效、附件失败和命令超时。例：`{"id":"00000000-0000-4000-8000-000000000001","ts":1700000000000,"level":"error","event":"command_failed","op":"steer","reason":"unsupported","count":2}`。只接受白名单字段和值，不接受自由文本、凭证、看板名、任务 ID、文件名或任务内容。升级时先部署中继，再安装新 App；旧中继会拒绝含新字段或未知事件的批次。服务端提交后返回 `{acked:[id,...]}`。保留期内同设备、同 ID、同内容重试不会重复写入；同 ID 不同内容返回 `409`，限流返回 `429`。
 
 `GET /api/admin/device-logs` 仅允许管理员 Bearer，可指定 `deviceId`、`level=info|error`、`limit`（默认 50、最大 100）以及上一页的 `nextCursor` 作为 `before`；返回 `{entries,nextCursor}`，按服务端接收顺序从新到旧排列。服务端按接收时间清理 7 天前的记录，每设备最多 1,000 条，总计最多 10,000 条。
 

@@ -1,9 +1,5 @@
 package tech.mengfei.agentboard.ui
 
-import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
-import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -32,6 +28,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.navigationBarsPadding
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +58,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import tech.mengfei.agentboard.R
 import tech.mengfei.agentboard.protocol.TaskChip
@@ -90,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import tech.mengfei.agentboard.BoardViewModel
 import tech.mengfei.agentboard.Screen
 import tech.mengfei.agentboard.UiState
+import tech.mengfei.agentboard.data.DiagnosticReason
 import tech.mengfei.agentboard.protocol.AGENT_KINDS
 import tech.mengfei.agentboard.protocol.agentEnabled
 import tech.mengfei.agentboard.protocol.agentLabel
@@ -290,6 +291,7 @@ private fun PairingForm(state: UiState, model: BoardViewModel, padding: PaddingV
             if (firstPair) MakeAction(stringResource(R.string.check_relay), model::checkRelay,
                 modifier = Modifier.fillMaxWidth(), enabled = !state.busy)
         }
+        LocalDiagnosticsEntry(state.sessions)
         SectionCard(stringResource(R.string.instructions), stringResource(R.string.add_board_note)) { }
     }
 }
@@ -298,6 +300,7 @@ private fun PairingForm(state: UiState, model: BoardViewModel, padding: PaddingV
 private fun ReadingScreen(padding: PaddingValues, state: UiState) {
     Column(Modifier.fillMaxSize().padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.reading_boards))
+        LocalDiagnosticsEntry(state.sessions)
     }
 }
 
@@ -313,6 +316,7 @@ private fun MyBoardsScreen(state: UiState, model: BoardViewModel, padding: Paddi
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = .18f)).padding(horizontal = 14.dp, vertical = 12.dp))
         }
         if (state.sessions.isEmpty()) item { Text(stringResource(R.string.no_paired_board), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { LocalDiagnosticsEntry(state.sessions) }
         items(state.sessions, key = { it.sessionId }) { row -> BoardCard(state, model, row) }
     }
 }
@@ -877,6 +881,7 @@ private fun CreateScreen(state: UiState, model: BoardViewModel, padding: Padding
                 attachments = state.draftAttachments,
                 onAdd = model::addDraftAttachments,
                 onRemove = model::removeDraftAttachment,
+                onFailure = model::recordAttachmentFailure,
             )
             if (state.draftAgent != "grok") Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1140,23 +1145,27 @@ internal fun AttachmentPickerSection(
     attachments: List<OutgoingAttachment>,
     onAdd: (List<OutgoingAttachment>) -> Unit,
     onRemove: (Int) -> Unit,
+    onFailure: (DiagnosticReason) -> Unit,
 ) {
-    val context = LocalContext.current
-    val tooLargeMsg = stringResource(R.string.attachment_too_large)
-    var pickError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
+    var failures by remember { mutableStateOf(emptySet<DiagnosticReason>()) }
+    var loading by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        pickError = null
-        val picked = mutableListOf<OutgoingAttachment>()
-        for (uri in uris) {
-            val loaded = readUriAttachment(context, uri)
-            if (loaded == null) {
-                pickError = tooLargeMsg
-            } else {
-                picked.add(loaded)
+        if (uris.isEmpty() || loading) return@rememberLauncherForActivityResult
+        failures = emptySet()
+        loading = true
+        scope.launch {
+            try {
+                val picked = readSelection(uris, attachments.size, { reason ->
+                    failures = failures + reason
+                    onFailure(reason)
+                }) { uri -> withContext(Dispatchers.IO) { readUriAttachment(context, uri) } }
+                if (picked.isNotEmpty()) onAdd(picked)
+            } finally {
+                loading = false
             }
         }
-        if (picked.isNotEmpty()) onAdd(picked)
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(
@@ -1167,7 +1176,7 @@ internal fun AttachmentPickerSection(
             Column(Modifier.weight(1f)) {
                 Text(
                     if (attachments.isEmpty()) stringResource(R.string.attachments_label)
-                    else "${stringResource(R.string.attachments_label)} (${attachments.size}/10)",
+                    else "${stringResource(R.string.attachments_label)} (${attachments.size}/$ATTACHMENT_COUNT_LIMIT)",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1180,11 +1189,12 @@ internal fun AttachmentPickerSection(
             MakeAction(
                 label = "＋ " + stringResource(R.string.add_attachment),
                 onClick = { launcher.launch(arrayOf("*/*")) },
-                enabled = attachments.size < 10,
+                enabled = !loading && attachments.size < ATTACHMENT_COUNT_LIMIT,
             )
         }
-        pickError?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        if (loading) Text(stringResource(R.string.attachment_reading), style = MaterialTheme.typography.bodySmall)
+        failures.forEach {
+            Text(stringResource(attachmentFailureText(it)), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         attachments.forEachIndexed { index, att ->
             Row(
@@ -1218,53 +1228,6 @@ internal fun AttachmentPickerSection(
                 ) { onRemove(index) }
             }
         }
-    }
-}
-
-private const val MAX_MOBILE_ATTACHMENT_BYTES = 8L * 1024L * 1024L
-
-private fun readUriAttachment(context: Context, uri: Uri): OutgoingAttachment? {
-    return try {
-        val resolver = context.contentResolver
-        var displayName = "attachment"
-        var knownSize = -1L
-        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
-                    displayName = cursor.getString(nameIdx)?.trim()?.takeIf { it.isNotEmpty() } ?: displayName
-                }
-                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
-                    knownSize = cursor.getLong(sizeIdx)
-                }
-            }
-        }
-        if (knownSize > MAX_MOBILE_ATTACHMENT_BYTES) return null
-        val bytes = resolver.openInputStream(uri)?.use { input ->
-            val out = java.io.ByteArrayOutputStream()
-            val buf = ByteArray(16 * 1024)
-            var total = 0L
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                total += n
-                if (total > MAX_MOBILE_ATTACHMENT_BYTES) return null
-                out.write(buf, 0, n)
-            }
-            out.toByteArray()
-        } ?: return null
-        if (bytes.isEmpty()) return null
-        val mime = resolver.getType(uri)?.trim()?.takeIf { it.isNotEmpty() } ?: "application/octet-stream"
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        OutgoingAttachment(
-            originalName = displayName.take(180),
-            mime = mime.take(120),
-            size = bytes.size.toLong(),
-            dataBase64 = encoded,
-        )
-    } catch (_: Exception) {
-        null
     }
 }
 

@@ -46,9 +46,10 @@ class SessionStore internal constructor(
         return true
     }
 
-    fun saveIdentity(httpBase: String, deviceName: String) {
-        if (!plain.edit().putString(KEY_HTTP, httpBase).putString(KEY_NAME, deviceName).commit()) return
+    fun saveIdentity(httpBase: String, deviceName: String): Boolean {
+        if (!plain.edit().putString(KEY_HTTP, httpBase).putString(KEY_NAME, deviceName).commit()) return false
         cache = cache.copy(defaultHttpBase = httpBase, deviceName = deviceName.ifBlank { "Android phone" })
+        return true
     }
 
     private fun load(): PhoneDisk {

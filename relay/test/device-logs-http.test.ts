@@ -76,7 +76,7 @@ test("device bearer, method, JSON type/size and closed schema are enforced befor
   for (const invalid of [null, [], {}, { entries: [] }, { entries: Array(51).fill(good) }, { ...body, deviceId: "other" },
     ...[{ deviceId: "other" }, { text: "private task" }, { message: "private URL" }, { token: "private key" },
       { event: "private task" }, { ts: -1 }, { ts: "42" }, { ts: 0.5 }, { ts: 2 ** 53 }, { id: "arbitrary text" },
-      { level: "warn" }, { event: "command_failed" }].map(patch => ({ entries: [good, { ...good, ...patch }] })),
+      { level: "warn" }, { event: "command_failed" }, { op: "free text" }, { reason: "free text" }, { count: 65536 }].map(patch => ({ entries: [good, { ...good, ...patch }] })),
   ]) assert.equal((await f.call(upload, deviceToken, invalid)).status, 400);
   assert.deepEqual((await f.page()).entries, []);
   const result = await f.call(upload, deviceToken, body, "application/json; charset=utf-8");
@@ -137,6 +137,22 @@ test("ACK survives restart in a separate DB; retries/conflicts, rotation and rev
   assert.deepEqual((await f.page()).entries.map(e => e.id), [item.id]);
 });
 
+test("extended context participates in same-batch and committed conflicts; default count retries ACK", async t => {
+  const f = await fixture(t);
+  const { deviceToken, deviceId } = await f.pair();
+  const item: Entry = { ...row(), event: "lookup_result", op: "lookup", reason: "executed" };
+  const send = (...entries: Entry[]) => f.call(upload, deviceToken, { entries });
+  const variants: Entry[] = [{ ...item, op: "detail" }, { ...item, reason: "accepted" }, { ...item, count: 2 },
+    { ...item, op: undefined }, { ...item, reason: undefined }];
+  for (const changed of variants) assert.equal((await send(item, changed)).status, 409);
+  assert.deepEqual((await f.page()).entries, []);
+  assert.deepEqual(await (await send(item, { ...item, count: 1 })).json(), { acked: [item.id] });
+  await f.restart();
+  assert.deepEqual(await (await send({ ...item, count: 1 })).json(), { acked: [item.id] });
+  for (const changed of variants) assert.equal((await send(row(), changed)).status, 409);
+  assert.deepEqual((await f.page()).entries, [{ ...item, receivedAt: 1_700_000_000_000, deviceId }]);
+});
+
 test("a SQLite COMMIT failure never becomes an HTTP ACK; the same batch can retry", async t => {
   const f = await fixture(t);
   const a = await f.pair(), item = row();
@@ -172,7 +188,7 @@ test("at the HTTP write limit new batches return 429 while exact retries still A
   const f = await fixture(t);
   const a = await f.pair();
   const send = (item: Entry) => f.call(upload, a.deviceToken, { entries: [item] });
-  const items = Array.from({ length: 31 }, row);
+  const items = Array.from({ length: 31 }, () => ({ ...row(), count: 65535 }));
   for (const item of items.slice(0, 30)) assert.equal((await send(item)).status, 200);
   assert.equal((await send(items[30]!)).status, 429);
   assert.deepEqual(await (await send(items[0]!)).json(), { acked: [items[0]!.id] });

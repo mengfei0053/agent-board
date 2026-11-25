@@ -24,21 +24,30 @@ internal data class DiagnosticKey(
             it.writeUTF(deviceId)
             it.writeUTF(httpBase)
         }
-        Base64.getEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(tuple.toByteArray()))
+        encodeDigest(MessageDigest.getInstance("SHA-256").digest(tuple.toByteArray()))
     }
 }
+
+private fun encodeDigest(bytes: ByteArray): String = Base64.getEncoder().withoutPadding().encodeToString(bytes)
 
 internal data class DiagnosticRow(
     val owner: String,
     val id: UUID,
     val ts: Long,
     val event: DiagnosticEvent,
-)
+    val operation: DiagnosticOperation? = null,
+    val reason: DiagnosticReason? = null,
+    val count: Int = 1,
+) {
+    init {
+        require(count in 1..65535)
+    }
+}
 
-/** One process-wide FIFO, not one file/quota per credential. Worker-thread only.
- * V1: 4-byte header + up to 3072 fixed 70-byte records = 215044 bytes.
- * Atomic replacement needs one same-sized temp: <=430088 bytes total file contents, excluding FS metadata.
- * `diag-v1` and the ordinal mapping below are on-disk format identifiers; do not reorder the codes.
+/** One worker-confined FIFO and one atomic snapshot, including local-only status history.
+ * V1: 4 + 3072 * 70 = 215044 bytes. V2 encodes the same digest as 32 binary bytes
+ * plus an explicit local marker: 29 + 10 * 13 + 3072 * 62 = 190623 bytes maximum.
+ * Either snapshot plus a replacement fits in the original 430088-byte budget.
  */
 internal class DiagnosticStore(
     directory: File,
@@ -47,76 +56,174 @@ internal class DiagnosticStore(
     private val temp = File(directory, "queue.tmp")
     var rows: List<DiagnosticRow> = emptyList()
         private set
+    var status = DiagnosticStatus(waitReason = null)
+        private set
 
     init {
         Files.createDirectories(directory.toPath())
-        Files.deleteIfExists(temp.toPath()) // Only the atomically committed snapshot is authoritative.
-        if (file.length() > MAX_BYTES) Files.delete(file.toPath()) // Do not retain an oversized damaged snapshot.
-        if (file.exists()) rows = load()
+        Files.deleteIfExists(temp.toPath())
+        if (file.length() > MAX_BYTES) Files.delete(file.toPath())
+        if (file.exists()) {
+            try {
+                DataInputStream(file.inputStream().buffered()).use { load(it, file.length()) }
+            } catch (_: IllegalArgumentException) {
+                // Damaged metadata. Never use partial rows or guess an owner.
+            } catch (_: java.io.EOFException) {
+                // Truncated snapshot.
+            }
+        }
     }
 
-    fun append(new: List<DiagnosticRow>) = replace((rows + new).takeLast(LIMIT))
+    fun append(new: List<DiagnosticRow>) = replace((rows + new).takeLast(LIMIT), summarize(status, new))
 
     fun ack(
         owner: String,
         ids: Set<UUID>,
-    ) = replace(rows.filterNot { it.owner == owner && it.id in ids })
+        atMs: Long,
+    ) = replace(rows.filterNot { it.owner == owner && it.id in ids }, status.copy(lastAckAtMs = atMs))
 
-    private fun replace(next: List<DiagnosticRow>) {
+    private fun summarize(
+        previous: DiagnosticStatus,
+        new: List<DiagnosticRow>,
+    ): DiagnosticStatus {
+        var info = previous.infoCount
+        var errors = previous.errorCount
+        val recent = previous.recentErrors.toMutableList()
+        for (row in new) {
+            if (row.event.level == "error") {
+                errors += row.count
+                recent.add(0, DiagnosticError(row.ts, row.event, row.operation, row.reason, row.count))
+                if (recent.size > RECENT_LIMIT) recent.removeAt(RECENT_LIMIT)
+            } else {
+                info += row.count
+            }
+        }
+        return previous.copy(infoCount = info, errorCount = errors, recentErrors = recent)
+    }
+
+    private fun replace(
+        next: List<DiagnosticRow>,
+        summary: DiagnosticStatus,
+    ) {
         FileOutputStream(temp).use { stream ->
             val out = DataOutputStream(stream.buffered())
-            out.writeInt(MAGIC)
+            out.writeInt(V2)
+            out.writeLong(summary.lastAckAtMs ?: -1)
+            out.writeLong(summary.infoCount)
+            out.writeLong(summary.errorCount)
+            out.writeByte(summary.recentErrors.size)
+            for (error in summary.recentErrors) {
+                out.writeFields(error.timestampMs, error.event, error.operation, error.reason, error.count)
+            }
             for (row in next) {
-                out.writeUTF(row.owner) // 2 + 43 ASCII bytes
+                out.writeBoolean(row.owner == LOCAL_ONLY)
+                out.write(if (row.owner == LOCAL_ONLY) LOCAL_BYTES else Base64.getDecoder().decode(row.owner))
                 out.writeLong(row.id.mostSignificantBits)
                 out.writeLong(row.id.leastSignificantBits)
-                out.writeLong(row.ts)
-                out.writeByte(CODES.indexOf(row.event))
+                out.writeFields(row.ts, row.event, row.operation, row.reason, row.count)
             }
             out.flush()
             stream.fd.sync()
         }
         Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        rows = next
+        install(next, summary)
     }
 
-    private fun load(): List<DiagnosticRow> {
-        val bytes = file.length()
-        if (bytes !in 4L..MAX_BYTES || (bytes - 4) % RECORD_BYTES != 0L) return emptyList()
-        return DataInputStream(file.inputStream().buffered()).use { input ->
-            if (input.readInt() != MAGIC) return emptyList()
-            buildList {
-                repeat(((bytes - 4) / RECORD_BYTES).toInt()) {
-                    // Check the fixed width before reading, even for a damaged file.
-                    if (input.readUnsignedShort() != 43) return emptyList()
-                    val owner = ByteArray(43).also(input::readFully).toString(Charsets.US_ASCII)
-                    if (!owner.all { it.code in 0x21..0x7e }) return emptyList() // Keep re-serialized owners exactly 43 bytes.
-                    val id = UUID(input.readLong(), input.readLong())
-                    val ts = input.readLong()
-                    val event = CODES.getOrNull(input.readUnsignedByte()) ?: return emptyList()
-                    add(DiagnosticRow(owner, id, ts, event))
-                }
+    private fun install(
+        next: List<DiagnosticRow>,
+        summary: DiagnosticStatus,
+    ) {
+        rows = next
+        status = summary.copy(pendingCount = next.count { it.owner != LOCAL_ONLY })
+    }
+
+    private fun load(
+        input: DataInputStream,
+        size: Long,
+    ) {
+        when (input.readInt()) {
+            V1 -> {
+                val legacy =
+                    List(rowCount(size - 4, 70)) {
+                        require(input.readUnsignedShort() == 43)
+                        val owner = ByteArray(43).also(input::readFully).toString(Charsets.US_ASCII)
+                        require(owner == LOCAL_ONLY || encodeDigest(Base64.getDecoder().decode(owner)) == owner)
+                        val id = UUID(input.readLong(), input.readLong())
+                        val ts = input.readLong()
+                        val code = input.readUnsignedByte()
+                        require(code < 10)
+                        DiagnosticRow(owner, id, ts, DiagnosticEvent.entries[code])
+                    }
+                install(legacy, summarize(status, legacy)) // Lazy migration at the next normal write/ACK.
+            }
+
+            V2 -> {
+                val ack = input.readLong()
+                val info = input.readLong()
+                val errors = input.readLong()
+                val recentSize = input.readUnsignedByte()
+                require(info >= 0 && errors >= 0 && recentSize <= RECENT_LIMIT)
+                val count = rowCount(size - 29 - 13 * recentSize, 62)
+                val recent = List(recentSize) { input.readFields().also { require(it.event.level == "error") } }
+                val next =
+                    List(count) {
+                        val local = input.readUnsignedByte()
+                        require(local <= 1)
+                        val bytes = ByteArray(32).also(input::readFully)
+                        val owner = if (local == 1) LOCAL_ONLY else encodeDigest(bytes)
+                        val id = UUID(input.readLong(), input.readLong())
+                        val (ts, event, op, reason, repeats) = input.readFields()
+                        require(!event.localOnly || owner == LOCAL_ONLY)
+                        DiagnosticRow(owner, id, ts, event, op, reason, repeats)
+                    }
+                install(
+                    next,
+                    status.copy(lastAckAtMs = ack.takeUnless { it == -1L }, infoCount = info, errorCount = errors, recentErrors = recent),
+                )
             }
         }
     }
 
+    private fun rowCount(
+        bytes: Long,
+        width: Int,
+    ): Int {
+        require(bytes in 0..LIMIT.toLong() * width && bytes % width == 0L)
+        return (bytes / width).toInt()
+    }
+
+    private fun DataOutputStream.writeFields(
+        ts: Long,
+        event: DiagnosticEvent,
+        op: DiagnosticOperation?,
+        reason: DiagnosticReason?,
+        count: Int,
+    ) {
+        writeLong(ts)
+        writeByte(event.ordinal)
+        writeByte(op?.ordinal ?: NONE)
+        writeByte(reason?.ordinal ?: NONE)
+        writeShort(count)
+    }
+
+    private fun DataInputStream.readFields(): DiagnosticError {
+        val ts = readLong()
+        val event = requireNotNull(DiagnosticEvent.entries.getOrNull(readUnsignedByte()))
+        val op = readUnsignedByte().takeUnless { it == NONE }?.let { requireNotNull(DiagnosticOperation.entries.getOrNull(it)) }
+        val reason = readUnsignedByte().takeUnless { it == NONE }?.let { requireNotNull(DiagnosticReason.entries.getOrNull(it)) }
+        val count = readUnsignedShort()
+        require(count > 0)
+        return DiagnosticError(ts, event, op, reason, count)
+    }
+
     companion object {
         const val LIMIT = 3072
-        private const val RECORD_BYTES = 70
-        const val MAX_BYTES = 4L + LIMIT * RECORD_BYTES
-        private const val MAGIC = 0x44494131
-        private val CODES =
-            listOf(
-                DiagnosticEvent.APP_STARTED,
-                DiagnosticEvent.RELAY_CONNECTED,
-                DiagnosticEvent.SNAPSHOT_SYNCED,
-                DiagnosticEvent.COMMAND_SENT,
-                DiagnosticEvent.COMMAND_EXECUTED,
-                DiagnosticEvent.RELAY_DISCONNECTED,
-                DiagnosticEvent.AUTH_REJECTED,
-                DiagnosticEvent.SYNC_GAP,
-                DiagnosticEvent.COMMAND_FAILED,
-                DiagnosticEvent.COMMAND_TIMEOUT,
-            )
+        const val MAX_BYTES = 215044L
+        val LOCAL_ONLY = ":".repeat(43)
+        private val LOCAL_BYTES = ByteArray(32)
+        private const val V1 = 0x44494131
+        private const val V2 = 0x44494132
+        private const val NONE = 255
+        private const val RECENT_LIMIT = 10
     }
 }

@@ -12,8 +12,10 @@ const entry = (): Entry => ({ id: randomUUID(), ts: 1, level: "info", event: "ap
 
 test("only the enumerated events at their own severity are accepted", () => {
   for (const [level, events] of Object.entries({
-    info: ["app_started", "relay_connected", "snapshot_synced", "command_sent", "command_executed"],
-    error: ["relay_disconnected", "auth_rejected", "sync_gap", "command_failed", "command_timeout"],
+    info: ["app_started", "relay_connected", "snapshot_synced", "command_sent", "command_executed", "board_online", "sync_waiting",
+      "sync_recovered", "reconnecting", "lookup_result"],
+    error: ["relay_disconnected", "auth_rejected", "sync_gap", "command_failed", "command_timeout", "board_offline", "board_unavailable",
+      "network_failed", "protocol_invalid", "pair_failed", "storage_failed", "attachment_failed", "app_exit_abnormal", "notification_failed"],
   })) {
     for (const event of events) {
       const item = { ...entry(), event, level };
@@ -21,6 +23,50 @@ test("only the enumerated events at their own severity are accepted", () => {
       assert.equal(parseLogBatch({ entries: [{ ...item, level: level === "info" ? "error" : "info" }] }), null);
     }
   }
+});
+
+test("only allowlisted context and integer occurrence counts fit the wire schema", () => {
+  const base = entry();
+  const parse = (patch: object) => parseLogBatch({ entries: [{ ...base, ...patch }] });
+  for (const [key, values] of Object.entries({
+    op: ["create", "continue", "stop", "steer", "lookup", "detail", "archive", "archive_list", "workspace_create", "workspace_delete",
+      "workspace_get", "workspace_update", "settings_get", "settings_put", "pair", "refresh", "health", "connect", "board_list", "subscribe"],
+    reason: ["dns", "tls", "timeout", "network", "unauthorized", "forbidden", "unsupported", "board_offline", "bad_request",
+      "rate_limited", "not_found", "disconnected", "unknown", "accepted", "executed", "failed", "invalid", "storage", "too_large",
+      "empty", "unreadable", "limit", "crash", "anr", "low_memory", "permission"],
+    count: [1, 65535],
+  })) for (const value of values) assert.deepEqual(parse({ [key]: value }), [{ ...base, [key]: value }]);
+  for (const key of ["op", "reason"]) {
+    for (const value of [null, {}, [], 1, true, "", "free text", "__proto__", "constructor"]) assert.equal(parse({ [key]: value }), null);
+  }
+  for (const count of [0, -1, 65536, 1.5, "2", null, true]) assert.equal(parse({ count }), null);
+  assert.equal(parse({ op: "create", reason: "accepted", count: 3, message: "arbitrary text" }), null);
+});
+
+test("migration keeps old receipts, cursors and ACKs across extended writes and restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "log-migration-"));
+  const file = join(dir, "logs.sqlite");
+  const old = entry();
+  const extended: Entry = { ...entry(), level: "error", event: "notification_failed", op: "subscribe", reason: "permission", count: 65535 };
+  const legacy = new DatabaseSync(file);
+  try {
+    legacy.exec(`CREATE TABLE device_logs (seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      deviceId TEXT NOT NULL, id TEXT NOT NULL COLLATE NOCASE, ts INTEGER NOT NULL,
+      level TEXT NOT NULL, event TEXT NOT NULL, receivedAt INTEGER NOT NULL, UNIQUE(deviceId, id))`);
+    legacy.prepare("INSERT INTO device_logs VALUES (77, 'phone', ?, ?, ?, ?, ?)").run(old.id, old.ts, old.level, old.event, start);
+  } finally { legacy.close(); }
+  try {
+    for (let open = 0; open < 2; open++) {
+      const store = new DeviceLogs(file, () => start + 1);
+      try {
+        assert.deepEqual(store.append("phone", [{ ...old, count: 1 }]), [old.id]);
+        assert.equal(store.append("phone", [{ ...old, count: 2 }]), "id_conflict");
+        assert.deepEqual(store.append("phone", [extended]), [extended.id]);
+        assert.deepEqual(store.list({ limit: 1 }), { entries: [{ ...extended, deviceId: "phone", receivedAt: start + 1 }], nextCursor: "78" });
+        assert.deepEqual(store.list({ limit: 1, before: 78 }), { entries: [{ ...old, deviceId: "phone", receivedAt: start }], nextCursor: null });
+      } finally { store.close(); }
+    }
+  } finally { rmSync(dir, { recursive: true }); }
 });
 
 test("rate windows count committed new batches, not retries or rejected batches", (t) => {
@@ -77,7 +123,7 @@ test("retention evicts by receipt order at 1000/device and 10000 globally", (t) 
     // Fill the first device past its cap, then add nine full devices and one final batch.
     const batches = d === 0 ? 21 : d === 10 ? 1 : 20;
     for (let b = 0; b < batches; b++) {
-      const batch = Array.from({ length: 50 }, entry);
+      const batch = Array.from({ length: 50 }, () => ({ ...entry(), count: 65535 }));
       assert.deepEqual(store.append(`phone${d}`, batch), batch.map(row => row.id));
       retained.push(...batch.map(({ id }) => ({ id, device: `phone${d}` })));
     }

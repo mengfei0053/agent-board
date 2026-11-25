@@ -96,6 +96,8 @@ internal fun DetailFooter(
             if (showQueue) MakeAction(stringResource(R.string.detail_queue_button, state.followups.size), { panel = DetailPanel.Queue })
             MakeAction(stringResource(R.string.detail_more), { panel = DetailPanel.More })
         }
+        if (queueMode && !canAdd) ActionReason(queueAddBlockReason(state))
+        if (continueMode && !canContinue) ActionReason(continueBlockReason(state))
     }
     when (panel) {
         DetailPanel.Queue -> {
@@ -107,11 +109,7 @@ internal fun DetailFooter(
                         FollowupRow(
                             prompt = listOf(item.prompt, item.attachments.joinToString(" · ") { it.originalName }).filter { it.isNotBlank() }.joinToString("\n"),
                             needsLookup = item.needsLookup,
-                            canSend =
-                                !state.followupBusy && state.writesAllowed && (
-                                    item.needsLookup ||
-                                        (state.canSteerFollowup && (!active || item.attachments.isEmpty()) && !pendingLookup && state.continueMode != "lookup")
-                                ),
+                            sendBlockReason = followupBlockReason(state, task, active, item),
                             canRemove = !state.followupBusy,
                             onSend = { model.sendFollowup(item.id) },
                             onRemove = { model.removeFollowup(item.id) },
@@ -124,7 +122,8 @@ internal fun DetailFooter(
         DetailPanel.Attachments -> if (showAttachments) {
             DetailActionDialog(stringResource(R.string.attachments_label), { panel = null }) {
                 if (active) Text(stringResource(R.string.detail_attachment_queue_hint))
-                AttachmentPickerSection(state.continueAttachments, model::addContinueAttachments, model::removeContinueAttachment)
+                AttachmentPickerSection(state.continueAttachments, model::addContinueAttachments,
+                    model::removeContinueAttachment, model::recordAttachmentFailure)
             }
         }
 

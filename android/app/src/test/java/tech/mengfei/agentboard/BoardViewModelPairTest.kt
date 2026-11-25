@@ -17,6 +17,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.never
+import org.mockito.Mockito.times
+import tech.mengfei.agentboard.data.AppDiagnostics
+import tech.mengfei.agentboard.data.DiagnosticEvent
+import tech.mengfei.agentboard.data.DiagnosticOperation
+import tech.mengfei.agentboard.data.DiagnosticReason
+import tech.mengfei.agentboard.data.networkReason
 import tech.mengfei.agentboard.data.HttpResult
 import tech.mengfei.agentboard.data.RelayApi
 import tech.mengfei.agentboard.data.SessionStore
@@ -119,7 +127,18 @@ class BoardViewModelPairTest {
         assertFalse(harness.model.state.value.sessions.single { !it.active }.validUntilRevoked)
     }
 
-    private fun heldAdd(sessions: List<PhoneSession>): Harness {
+    @Test
+    fun failedPairWhileAddingAnotherBoardIsOnlyRecordedLocally() {
+        val diagnostics = mock(AppDiagnostics::class.java)
+        val harness = heldAdd(listOf(board("sA", "Office", "board-a")), diagnostics)
+        harness.relay.release(HttpResult(429, "unexpected body"))
+        verify(diagnostics).recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.RATE_LIMITED)
+        verify(diagnostics, never()).record("c1", DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.RATE_LIMITED)
+        assertEquals(setOf("c1"), harness.store.readDisk().credentials.keys)
+        assertFalse(harness.model.state.value.busy)
+    }
+
+    private fun heldAdd(sessions: List<PhoneSession>, diagnostics: AppDiagnostics? = null): Harness {
         val plain = MemoryPrefs()
         val secretPrefs = MemoryPrefs()
         val store = SessionStore(plain, secretPrefs)
@@ -142,7 +161,7 @@ class BoardViewModelPairTest {
             ),
         )
         val relay = HoldingRelay()
-        val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)), englishUi = false)
+        val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)), englishUi = false, diagnostics = diagnostics)
         model.openAddBoard()
         model.updateDisplayName("Home Mac")
         model.updateHttpBase("https://relay.example")
@@ -338,7 +357,7 @@ class BoardConnectionTest {
             model.selectWorkspace("ws_2")
             assertEquals("ws_2", model.state.value.selectedWorkspaceId)
             assertEquals("已连接", model.state.value.connection)
-            relay.listener.onClosed("relay unreachable")
+            relay.listener.onClosed(DiagnosticReason.DISCONNECTED)
             assertEquals("弱连接", model.state.value.connection)
             assertFalse(model.state.value.writesAllowed)
         } finally { owner.clear() }
@@ -724,7 +743,71 @@ class BoardConnectionTest {
         } finally { owner.clear() }
     }
 
-    private fun harness(secondBoard: Boolean = false, expiresAt: Long = Long.MAX_VALUE): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
+    @Test
+    fun diagnosticsTrackBoardAndSyncTransitionsNotReplayedFrames() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val diagnostics = mock(AppDiagnostics::class.java)
+        val (_, relay, owner) = harness(diagnostics = diagnostics)
+        try {
+            relay.authenticate()
+            repeat(3) { relay.snapshot("board-a", 1) }
+            repeat(3) { relay.gap() }
+            relay.snapshot("board-a", 1) // Before the gap cursor; not a recovery.
+            relay.newGenerationSnapshot(2)
+            repeat(3) { relay.listener.onMessage("""{"v":1,"id":"down","type":"evt.board","ts":4,"payload":{"boardId":"board-a","online":false}}""") }
+            verify(diagnostics).record("c1", DiagnosticEvent.BOARD_ONLINE, null, null)
+            verify(diagnostics).record("c1", DiagnosticEvent.BOARD_OFFLINE, null, null)
+            verify(diagnostics, times(2)).record("c1", DiagnosticEvent.SYNC_WAITING, null, null)
+            verify(diagnostics, times(2)).record("c1", DiagnosticEvent.SYNC_RECOVERED, null, null)
+            verify(diagnostics, times(2)).record("c1", DiagnosticEvent.SNAPSHOT_SYNCED, null, null)
+            verify(diagnostics, never()).record("c1", DiagnosticEvent.STORAGE_FAILED, null, DiagnosticReason.STORAGE)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun diagnosticsSeparateLookupFromCommandAndConsumeEachReplyRefOnce() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val diagnostics = mock(AppDiagnostics::class.java)
+        val (model, relay, owner) = harness(diagnostics = diagnostics)
+        try {
+            relay.authenticateWithWorkspaceAndSettings()
+            model.openCreate()
+            model.updateDraftPrompt("test draft")
+            model.recordAttachmentFailure(DiagnosticReason.TOO_LARGE)
+            model.submitCreate()
+            val create = relay.sent.single { it.type == "cmd.create" }
+            repeat(2) { relay.stage(create.id, "timeout") }
+            val lookup = relay.sent.single { it.type == "cmd.lookup" }
+            repeat(2) { relay.replyCreated(lookup.id, "task_1") }
+            verify(diagnostics).record("c1", DiagnosticEvent.COMMAND_TIMEOUT, DiagnosticOperation.CREATE, DiagnosticReason.TIMEOUT)
+            verify(diagnostics).record("c1", DiagnosticEvent.LOOKUP_RESULT, DiagnosticOperation.LOOKUP, DiagnosticReason.EXECUTED)
+            verify(diagnostics, never()).record("c1", DiagnosticEvent.COMMAND_EXECUTED, DiagnosticOperation.CREATE, DiagnosticReason.EXECUTED)
+            verify(diagnostics).record("c1", DiagnosticEvent.ATTACHMENT_FAILED, DiagnosticOperation.CREATE, DiagnosticReason.TOO_LARGE)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun invalidRefreshBodyLeavesTheExistingConnectionUsable() = kotlinx.coroutines.test.runTest(main.scheduler) {
+        val diagnostics = mock(AppDiagnostics::class.java)
+        val (model, relay, owner) = harness(diagnostics = diagnostics)
+        try {
+            relay.authenticate()
+            model.refreshCredential("s1") // The fake returns HTTP 200 with an empty object.
+            verify(diagnostics).record("c1", DiagnosticEvent.PROTOCOL_INVALID, DiagnosticOperation.REFRESH, DiagnosticReason.INVALID)
+            assertFalse(model.state.value.busy)
+            assertTrue(model.state.value.writesAllowed)
+            assertEquals(1, relay.opens)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun socketFailuresUseTypesNotExceptionMessages() {
+        assertEquals(DiagnosticReason.DNS, networkReason(java.net.UnknownHostException("arbitrary")))
+        assertEquals(DiagnosticReason.TLS, networkReason(javax.net.ssl.SSLHandshakeException("arbitrary")))
+        assertEquals(DiagnosticReason.TIMEOUT, networkReason(java.net.SocketTimeoutException()))
+        assertEquals(DiagnosticReason.DISCONNECTED, networkReason(java.io.EOFException()))
+        assertEquals(DiagnosticReason.NETWORK, networkReason(java.io.IOException("timeout")))
+    }
+
+    private fun harness(secondBoard: Boolean = false, expiresAt: Long = Long.MAX_VALUE, diagnostics: AppDiagnostics? = null): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
         val store = SessionStore(MemoryPrefs(), MemoryPrefs())
         store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", expiresAt,
             "https://relay.example", "wss://relay.example/v1/ws", if (secondBoard) listOf("board-a", "board-b") else listOf("board-a"))))
@@ -737,7 +820,7 @@ class BoardConnectionTest {
         val relay = ConnectionRelay()
         if (secondBoard) relay.listedBoards += ListedBoard("board-b", true, 1)
         val model = BoardViewModel(store, relay, DoneNotifier(mock(Context::class.java)),
-            clock = { 1_000L + main.scheduler.currentTime })
+            clock = { 1_000L + main.scheduler.currentTime }, diagnostics = diagnostics)
         val owner = androidx.lifecycle.ViewModelStore()
         owner.put("model", model)
         return Triple(model, relay, owner)

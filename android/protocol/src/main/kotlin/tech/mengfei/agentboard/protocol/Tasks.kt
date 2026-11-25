@@ -143,7 +143,7 @@ data class DoneNotice(
 sealed interface ApplyOutcome {
     val view: BoardView
 
-    data class Applied(override val view: BoardView, val notice: DoneNotice? = null) : ApplyOutcome
+    data class Applied(override val view: BoardView, val notice: DoneNotice? = null, val invalidSnapshotRows: Boolean = false) : ApplyOutcome
     data class Resync(override val view: BoardView, val reason: String) : ApplyOutcome
     data class Ignored(override val view: BoardView) : ApplyOutcome
 }
@@ -179,8 +179,9 @@ class BoardReducer(
         val generation = payload.longValue("generation")
         val generationChanged = generation != null && view.generation != null && generation != view.generation
         if (generationChanged) logDedupe.clear()
-        val tasks = readTaskList(payload["tasks"])
-            .filter { it.status != ARCHIVED_STATUS }
+        val rows = payload["tasks"] as? JsonArray
+        val parsed = readTaskList(rows)
+        val tasks = parsed.filter { it.status != ARCHIVED_STATUS }
             .map { incoming ->
                 mergeRelayTask(view.tasks.find { it.id == incoming.id }, incoming)
             }
@@ -194,7 +195,7 @@ class BoardReducer(
             seq = seq ?: view.seq,
             needsResync = stale,
             sawSnapshot = true,
-        ))
+        ), invalidSnapshotRows = rows?.size != parsed.size)
     }
 
     private fun applyTask(view: BoardView, payload: JsonObject, eventBoard: String?): ApplyOutcome {

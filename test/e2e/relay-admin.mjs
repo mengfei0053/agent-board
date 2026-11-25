@@ -108,15 +108,28 @@ try {
   assert.equal(await page.$('#devices svg'), null);
   assert.match(await page.$eval('#devices', el => el.textContent), /长期有效，直至撤销/);
 
-  const events = ['app_started', 'relay_connected', 'snapshot_synced', 'command_sent', 'command_executed',
-    'relay_disconnected', 'auth_rejected', 'sync_gap', 'command_failed', 'command_timeout'];
-  const entries = Array.from({ length: 40 }, (_, i) => ({ id: crypto.randomUUID(), ts: Date.now() + i,
-    level: i % 10 < 5 ? 'info' : 'error', event: events[i % 10] }));
+  const labels = {
+    info: { app_started: '应用已启动', board_online: '看板已上线', sync_waiting: '等待同步', sync_recovered: '同步已恢复',
+      reconnecting: '正在重新连接', lookup_result: '查询结果' },
+    error: { command_failed: '命令失败', board_offline: '看板已离线', board_unavailable: '看板不可用', network_failed: '网络请求失败',
+      protocol_invalid: '协议无效', pair_failed: '配对失败', storage_failed: '存储失败', attachment_failed: '附件处理失败',
+      notification_failed: '通知失败', app_exit_abnormal: '应用异常退出' },
+  };
+  const entries = Array.from({ length: 40 }, (_, i) => {
+    const level = i % 2 ? 'error' : 'info';
+    const events = Object.keys(labels[level]);
+    const event = events[Math.floor(i / 2) % events.length];
+    return { id: crypto.randomUUID(), ts: Date.now() + i, level, event,
+      ...(event === 'lookup_result' && { op: 'lookup', reason: 'executed', count: 65535 }),
+      ...(event === 'notification_failed' && { reason: 'permission' }) };
+  });
   await post('/api/device/logs', { entries }, paired.deviceToken);
   const refreshLogs = () => page.click('#log-filters button');
   const waitRows = count => page.waitForFunction(n => document.querySelector('#device-logs').rows.length === n &&
     !document.querySelector('#log-status').textContent.includes('正在'), {}, count);
-  const shownEvents = () => page.$$eval('#device-logs tr', rows => rows.map(row => row.cells[4].textContent));
+  const shownDetails = () => page.$$eval('#device-logs tr', rows => rows.map(row => Array.from(row.cells).slice(4).map(td => td.textContent)));
+  const details = e => [labels[e.level][e.event], e.op ? '查询命令结果' : '—',
+    ({ executed: '已执行', permission: '权限不足' })[e.reason] ?? '—', String(e.count ?? 1)];
   await page.type('#log-device', paired.deviceId);
   const [firstPage] = await Promise.all([
     page.waitForResponse(res => new URL(res.url()).pathname === '/api/admin/device-logs'), refreshLogs(),
@@ -133,7 +146,7 @@ try {
   await waitRows(40);
   assert.deepEqual(logRequests.at(-1).query, { ...query, before: nextCursor });
   const newest = entries.toReversed();
-  assert.deepEqual(await shownEvents(), newest.map(e => e.event));
+  assert.deepEqual(await shownDetails(), newest.map(details));
   assert.equal(await page.$eval('#log-more', el => el.hidden), true);
   await refreshLogs();
   await waitRows(pageSize);
@@ -143,7 +156,7 @@ try {
     await refreshLogs();
     await waitRows(20);
     assert.deepEqual(logRequests.at(-1).query, { ...query, level });
-    assert.deepEqual(await shownEvents(), newest.filter(e => e.level === level).map(e => e.event));
+    assert.deepEqual(await shownDetails(), newest.filter(e => e.level === level).map(details));
   }
   await page.$eval('#log-device', el => { el.value = 'absent-device'; });
   await refreshLogs();
@@ -155,7 +168,7 @@ try {
   await waitRows(20);
   await releaseLogResponse(page, 401);
   assert.equal(await page.$eval('#dashboard', el => el.hidden), false, 'stale 401 must not log out');
-  assert.deepEqual(await shownEvents(), newest.filter(e => e.level === 'error').map(e => e.event));
+  assert.deepEqual(await shownDetails(), newest.filter(e => e.level === 'error').map(details));
   await holdLogResponse(page);
   await releaseLogResponse(page, 503);
   await page.waitForFunction(() => document.querySelector('#log-status').textContent.includes('读取失败'));

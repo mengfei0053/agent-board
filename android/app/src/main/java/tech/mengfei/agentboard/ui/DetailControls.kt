@@ -48,9 +48,14 @@ internal fun DetailPromptField(
 }
 
 @Composable
+internal fun ActionReason(text: Int) {
+    Text(stringResource(text), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
 internal fun FollowupRow(
     prompt: String,
-    canSend: Boolean,
+    sendBlockReason: Int?,
     canRemove: Boolean,
     needsLookup: Boolean,
     onSend: () -> Unit,
@@ -59,11 +64,12 @@ internal fun FollowupRow(
     HorizontalDivider()
     SelectionContainer { Text(prompt, style = MaterialTheme.typography.bodyMedium) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        TextButton(onSend, Modifier.weight(1f), enabled = canSend) {
+        TextButton(onSend, Modifier.weight(1f), enabled = sendBlockReason == null) {
             Text(stringResource(if (needsLookup) R.string.check_stored else R.string.detail_queue_send))
         }
         TextButton(onRemove, enabled = canRemove) { Text(stringResource(R.string.delete)) }
     }
+    if (sendBlockReason != null) ActionReason(sendBlockReason)
 }
 
 @Composable

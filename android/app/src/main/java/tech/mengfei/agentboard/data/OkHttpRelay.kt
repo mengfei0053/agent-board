@@ -9,15 +9,43 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.io.EOFException
+import java.io.IOException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 data class HttpResult(val code: Int, val body: String)
 
+internal fun networkReason(error: Throwable): DiagnosticReason = when (error) {
+    is UnknownHostException -> DiagnosticReason.DNS
+    is SSLException -> DiagnosticReason.TLS
+    is SocketTimeoutException -> DiagnosticReason.TIMEOUT
+    is java.net.ConnectException, is java.net.NoRouteToHostException -> DiagnosticReason.NETWORK
+    is EOFException, is SocketException -> DiagnosticReason.DISCONNECTED
+    is IOException -> DiagnosticReason.NETWORK
+    else -> DiagnosticReason.UNKNOWN
+}
+
+internal fun httpReason(status: Int): DiagnosticReason = when (status) {
+    400 -> DiagnosticReason.BAD_REQUEST
+    401 -> DiagnosticReason.UNAUTHORIZED
+    403 -> DiagnosticReason.FORBIDDEN
+    404 -> DiagnosticReason.NOT_FOUND
+    408, 504 -> DiagnosticReason.TIMEOUT
+    413 -> DiagnosticReason.TOO_LARGE
+    429 -> DiagnosticReason.RATE_LIMITED
+    else -> DiagnosticReason.UNKNOWN
+}
+
 interface SocketListener {
     fun onOpen()
     fun onMessage(text: String)
-    fun onClosed(reason: String)
+    fun onInvalidFrame()
+    fun onClosed(reason: DiagnosticReason)
 }
 
 interface RelayApi {
@@ -64,16 +92,20 @@ class OkHttpRelay : RelayApi {
                 listener.onMessage(text)
             }
 
+            override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
+                listener.onInvalidFrame()
+            }
+
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                listener.onClosed(reason.ifBlank { "socket closed" })
+                listener.onClosed(DiagnosticReason.DISCONNECTED)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                listener.onClosed(t.message ?: "socket failed")
+                listener.onClosed(response?.takeUnless { it.isSuccessful || it.code == 101 }?.let { httpReason(it.code) } ?: networkReason(t))
             }
         })
         sockets[credentialId] = opened

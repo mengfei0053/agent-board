@@ -1,0 +1,16 @@
+<resources>
+    <string name="attachment_missing_content">附件内容为空。</string>
+    <string name="attachment_count_exceeded">最多可选 10 个附件，多出的文件未添加。</string>
+    <string name="attachment_read_failed">无法读取附件，请重新选择。</string>
+    <string name="attachment_reading">正在读取附件…</string>
+    <string name="action_read_only">看板当前只读，请等待连接确认。</string>
+    <string name="action_not_synced">尚未同步看板数据，暂时无法写入。</string>
+    <string name="action_queue_unavailable">当前任务不支持待办。</string>
+    <string name="action_queue_full">待办已满，请先移除一条。</string>
+    <string name="action_input_needed">请先输入提示词或添加附件。</string>
+    <string name="action_busy">其他命令正在执行，请稍候。</string>
+    <string name="action_lookup_needed">请先查询上一条命令的结果，再发送新命令。</string>
+    <string name="action_attachment_next_round">任务执行中不能发送附件，请保留这条待办，下一轮再发送。</string>
+    <string name="action_running_pi_needed">只有运行中的 Pi 任务支持即时发送，请保留待办到下一轮。</string>
+    <string name="action_steer_unsupported">此看板不支持向运行中的任务即时发送，请保留待办到下一轮。</string>
+</resources>

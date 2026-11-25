@@ -15,6 +15,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
+internal class DiagnosticHttpFailure(
+    val reason: DiagnosticWaitReason,
+) : Exception()
+
 internal object DiagnosticHttp {
     private val http by lazy {
         OkHttpClient
@@ -40,7 +44,11 @@ internal object DiagnosticHttp {
                             put("id", row.id.toString())
                             put("ts", row.ts)
                             put("level", row.event.level)
+                            require(!row.event.localOnly && row.owner != DiagnosticStore.LOCAL_ONLY)
                             put("event", row.event.name.lowercase())
+                            row.operation?.let { put("op", it.name.lowercase()) }
+                            row.reason?.let { put("reason", it.name.lowercase()) }
+                            if (row.count > 1) put("count", row.count)
                         }
                     }
                 }
@@ -53,7 +61,18 @@ internal object DiagnosticHttp {
                 .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
         return http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return emptySet()
+            if (!response.isSuccessful) {
+                throw DiagnosticHttpFailure(
+                    when (response.code) {
+                        400 -> DiagnosticWaitReason.BAD_REQUEST
+                        401 -> DiagnosticWaitReason.UNAUTHORIZED
+                        403 -> DiagnosticWaitReason.FORBIDDEN
+                        429 -> DiagnosticWaitReason.RATE_LIMITED
+                        in 500..599 -> DiagnosticWaitReason.HTTP_SERVER
+                        else -> DiagnosticWaitReason.HTTP_CLIENT
+                    },
+                )
+            }
             // Bound decoded bytes too (chunked/gzip/incorrect Content-Length).
             val source = response.body?.source() ?: return emptySet()
             if (source.request(8193)) return emptySet()

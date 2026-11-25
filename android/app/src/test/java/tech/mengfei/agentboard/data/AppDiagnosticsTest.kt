@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.DataOutputStream
 import java.io.IOException
 import java.util.UUID
 
@@ -76,7 +77,17 @@ class AppDiagnosticsTest {
     @Test fun retriesAreIdempotentAcrossRestartAndAckCannotDeleteOutsideSentBatch() {
         val first = restart()
         first.updateTargets(listOf(a, b), true)
-        repeat(51) { first.record(a.credentialId, DiagnosticEvent.COMMAND_EXECUTED) }
+        repeat(51) { n ->
+            first.record(
+                a.credentialId,
+                DiagnosticEvent.COMMAND_EXECUTED,
+                DiagnosticOperation.entries[n % 20],
+                DiagnosticReason.entries[
+                    n /
+                        20,
+                ],
+            )
+        }
         first.record(b.credentialId, DiagnosticEvent.APP_STARTED)
         first.tick()
         val before = saved()
@@ -141,6 +152,151 @@ class AppDiagnosticsTest {
         assertEquals(1, saved().size)
     }
 
+    @Test fun mergesOnlyUnpublishedMatchingInputsAndNeverChangesSubmittedContent() {
+        val engine = restart()
+        engine.updateTargets(listOf(a, b), false)
+
+        fun recordGroup() = engine.record(a.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, DiagnosticReason.TLS)
+        repeat(65536) { recordGroup() }
+        engine.record(a.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, DiagnosticReason.DNS)
+        engine.record(a.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.HEALTH, DiagnosticReason.TLS)
+        engine.record(b.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, DiagnosticReason.TLS)
+        engine.recordLocal(DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, DiagnosticReason.TLS)
+        now = 30_000
+        ack = { throw IOException("private message") }
+        engine.tick()
+        val sent = calls.single().second
+        assertEquals(listOf(65535, 1, 1, 1), sent.map { it.count })
+        assertEquals(5, engine.status.value.pendingCount)
+        assertEquals(65540L, engine.status.value.errorCount)
+        recordGroup()
+        engine.tick() // b's error cannot alter a's batch
+        val after = restart()
+        after.updateTargets(listOf(a), false)
+        now += 30_000
+        after.tick()
+        val replay = calls.last().second
+        assertEquals(sent, replay.dropLast(1))
+        assertFalse(replay.last().id in sent.map { it.id })
+    }
+
+    @Test fun statusPersistsAckCountsAndTenRecentErrorsEvenOfflineWithoutUploadingLocalEvents() {
+        val engine = restart()
+        engine.updateTargets(listOf(a), false)
+        repeat(12) { engine.record(a.credentialId, DiagnosticEvent.APP_EXIT_ABNORMAL, reason = DiagnosticReason.entries[it]) }
+        engine.record(a.credentialId, DiagnosticEvent.NOTIFICATION_FAILED, reason = DiagnosticReason.PERMISSION)
+        repeat(3) { engine.recordLocal(DiagnosticEvent.APP_EXIT_ABNORMAL, reason = DiagnosticReason.CRASH) }
+        engine.record(a.credentialId, DiagnosticEvent.BOARD_ONLINE)
+        engine.record(a.credentialId, DiagnosticEvent.BOARD_OFFLINE)
+        engine.tick()
+        assertEquals(DiagnosticWaitReason.USER_ACTIVE, engine.status.value.waitReason)
+        assertEquals(2, engine.status.value.pendingCount)
+        now += 30_000
+        engine.tick()
+        assertEquals(listOf(DiagnosticEvent.BOARD_ONLINE, DiagnosticEvent.BOARD_OFFLINE), calls.single().second.map { it.event })
+        val snapshot = engine.status.value
+        assertEquals(0, snapshot.pendingCount)
+        assertTrue(snapshot.lastAckAtMs!! > 0)
+        assertEquals(1L, snapshot.infoCount)
+        assertEquals(17L, snapshot.errorCount)
+        assertEquals(10, snapshot.recentErrors.size)
+        assertEquals(DiagnosticEvent.BOARD_OFFLINE, snapshot.recentErrors.first().event)
+        assertEquals(3, snapshot.recentErrors[1].count)
+        assertEquals(DiagnosticReason.CRASH, snapshot.recentErrors[1].reason)
+        val offline = restart()
+        assertEquals(DiagnosticWaitReason.LOADING, offline.status.value.waitReason)
+        offline.tick()
+        assertEquals(snapshot, offline.status.value)
+        assertEquals(1, calls.size)
+    }
+
+    @Test fun fullV1SnapshotMigratesWithoutRewritingIdsOrUploadingLocalRecords() {
+        val file = temp.root.resolve("queue")
+        val owner = DiagnosticKey(a.credentialId, a.deviceId, a.httpBase).digest
+        val id = UUID.randomUUID()
+        DataOutputStream(file.outputStream().buffered()).use { out ->
+            out.writeInt(0x44494131)
+            repeat(DiagnosticStore.LIMIT) { i ->
+                out.writeUTF(if (i == 1) owner else ":".repeat(43))
+                val uuid = if (i == 1) id else UUID.randomUUID()
+                out.writeLong(uuid.mostSignificantBits)
+                out.writeLong(uuid.leastSignificantBits)
+                out.writeLong(100L + i)
+                out.writeByte(i % 10)
+            }
+        }
+        assertEquals(215044L, file.length())
+        val engine = restart()
+        engine.updateTargets(emptyList(), false)
+        now = 30_000
+        engine.tick()
+        assertEquals(DiagnosticWaitReason.OFFLINE, engine.status.value.waitReason)
+        assertEquals(1, engine.status.value.pendingCount)
+        assertTrue(calls.isEmpty())
+        val original = saved()
+        engine.recordLocal(DiagnosticEvent.APP_EXIT_ABNORMAL, reason = DiagnosticReason.ANR)
+        engine.tick()
+        assertEquals(original.drop(1), saved().dropLast(1))
+        val migrated = restart()
+        migrated.updateTargets(listOf(a), false)
+        now += 30_000
+        migrated.tick()
+        assertEquals(DiagnosticRow(owner, id, 101L, DiagnosticEvent.RELAY_CONNECTED), calls.single().second.single())
+        assertEquals(0, migrated.status.value.pendingCount)
+        assertEquals(3073L, migrated.status.value.infoCount + migrated.status.value.errorCount)
+    }
+
+    @Test fun oldRelay400UsesLongBackoffWithoutReportingItsOwnErrors() {
+        val engine = restart()
+        engine.updateTargets(listOf(a), false)
+        engine.record(a.credentialId, DiagnosticEvent.LOOKUP_RESULT, DiagnosticOperation.LOOKUP, DiagnosticReason.EXECUTED)
+        now = 30_000
+        ack = { throw DiagnosticHttpFailure(DiagnosticWaitReason.BAD_REQUEST) }
+        engine.tick()
+        repeat(99) {
+            now += 3_000
+            engine.tick()
+        }
+        assertEquals(1, calls.size)
+        assertEquals(DiagnosticWaitReason.BAD_REQUEST, engine.status.value.waitReason)
+        assertEquals(0L, engine.status.value.errorCount)
+        assertTrue(
+            engine.status.value.recentErrors
+                .isEmpty(),
+        )
+        ack = { throw DiagnosticHttpFailure(DiagnosticWaitReason.HTTP_SERVER) }
+        now += 3_000
+        engine.tick()
+        engine.tick()
+        assertEquals(2, calls.size)
+        assertEquals(calls.first().second, calls.last().second)
+        assertEquals(DiagnosticWaitReason.HTTP_SERVER, engine.status.value.waitReason)
+        assertEquals(1, saved().size)
+    }
+
+    @Test fun failedLocalAckWriteBacksOffWithoutChangingTheSubmittedRow() {
+        val engine = restart()
+        engine.updateTargets(listOf(a), false)
+        engine.record(a.credentialId, DiagnosticEvent.SYNC_RECOVERED)
+        now = 30_000
+        val blocked = temp.root.resolve("queue.tmp")
+        ack = { batch ->
+            assertTrue(blocked.mkdir())
+            batch.map { it.id.toString() }.toSet()
+        }
+        engine.tick()
+        engine.tick()
+        assertEquals(1, calls.size)
+        assertEquals(DiagnosticWaitReason.STORAGE, engine.status.value.waitReason)
+        assertEquals(0L, engine.status.value.errorCount)
+        assertTrue(blocked.delete())
+        ack = { batch -> batch.map { it.id.toString() }.toSet() }
+        now += 10_000
+        engine.tick()
+        assertEquals(calls.first().second, calls[1].second)
+        assertEquals(0, engine.status.value.pendingCount)
+    }
+
     @Test fun oversizedDamagedFileDoesNotDisableSubsequentRecords() {
         temp.root.resolve("queue").writeBytes(ByteArray(DiagnosticStore.MAX_BYTES.toInt() + 1))
         val engine = restart()
@@ -154,25 +310,37 @@ class AppDiagnosticsTest {
         val engine = restart()
         engine.updateTargets(listOf(a), true)
         engine.record(a.credentialId, DiagnosticEvent.APP_STARTED)
-        repeat(10000) { engine.recordLocal(DiagnosticEvent.COMMAND_FAILED) }
+        repeat(10000) { n ->
+            engine.recordLocal(DiagnosticEvent.COMMAND_FAILED, DiagnosticOperation.entries[n % 20], DiagnosticReason.entries[n / 20 % 26])
+        }
         assertTrue(temp.root.listFiles()!!.isEmpty())
         engine.tick()
         assertEquals(DiagnosticEngine.INBOX_LIMIT, saved().size)
         assertTrue(saved().all { it.event == DiagnosticEvent.COMMAND_FAILED })
         val oldest = saved().first().id
         repeat(DiagnosticStore.LIMIT / DiagnosticEngine.INBOX_LIMIT) {
-            repeat(DiagnosticEngine.INBOX_LIMIT) { engine.record(a.credentialId, DiagnosticEvent.SNAPSHOT_SYNCED) }
+            repeat(DiagnosticEngine.INBOX_LIMIT) { n ->
+                engine.record(
+                    a.credentialId,
+                    DiagnosticEvent.SNAPSHOT_SYNCED,
+                    DiagnosticOperation.entries[n % 20],
+                    DiagnosticReason.entries[
+                        n /
+                            20,
+                    ],
+                )
+            }
             engine.tick()
         }
         val full = saved()
         assertEquals(DiagnosticStore.LIMIT, full.size)
         assertFalse(full.any { it.id == oldest || it.event == DiagnosticEvent.COMMAND_FAILED })
         val committed = temp.root.listFiles()!!.single()
-        assertEquals(DiagnosticStore.MAX_BYTES, committed.length())
+        assertTrue(committed.length() <= DiagnosticStore.MAX_BYTES)
         // Simulate a process death before rename: temp never counts as committed data.
         val scratch = temp.root.resolve("queue.tmp")
         committed.copyTo(scratch)
-        assertTrue(temp.root.listFiles()!!.sumOf { it.length() } <= 512 * 1024)
+        assertTrue(temp.root.listFiles()!!.sumOf { it.length() } <= 430088L)
         assertEquals(full, saved())
         assertFalse(scratch.exists())
     }

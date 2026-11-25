@@ -11,7 +11,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import tech.mengfei.agentboard.data.AppDiagnostics
 import tech.mengfei.agentboard.data.DiagnosticEvent
+import tech.mengfei.agentboard.data.DiagnosticOperation
+import tech.mengfei.agentboard.data.DiagnosticReason
 import tech.mengfei.agentboard.data.DiagnosticTarget
+import tech.mengfei.agentboard.data.httpReason
+import tech.mengfei.agentboard.data.networkReason
+import tech.mengfei.agentboard.protocol.Envelope
+import kotlinx.serialization.json.JsonArray
 import tech.mengfei.agentboard.data.RelayApi
 import tech.mengfei.agentboard.data.SessionStore
 import tech.mengfei.agentboard.data.SocketListener
@@ -445,6 +451,15 @@ class BoardViewModel(
         }
         _state.updateCopy { copy(draftThinkingEffort = clean) }
     }
+    fun recordAttachmentFailure(reason: DiagnosticReason) {
+        val (id, operation) = when (val current = screen) {
+            is Screen.Create -> current.sessionId to DiagnosticOperation.CREATE
+            is Screen.Detail -> current.sessionId to DiagnosticOperation.CONTINUE
+            else -> return
+        }
+        session(id)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.ATTACHMENT_FAILED, operation, reason) }
+    }
+
     fun addDraftAttachments(items: List<OutgoingAttachment>) {
         if (items.isEmpty() || _state.value.draftAgent == "grok") return
         _state.updateCopy {
@@ -720,7 +735,7 @@ class BoardViewModel(
         val cleared = selectWorkspaceChrome(ListChrome(sessionId, chip, searchQuery, null, "", false, "tasks", null))
         searchQuery = cleared.search
         chip = cleared.chip
-        store.apply(DiskOp.PutWorkspace(sessionId, id))
+        persistWorkspace(sessionId, id)
         disk = store.readDisk()
         if (chip == TaskChip.ARCHIVE) loadArchive(reset = true, workspaceId = id) else render()
     }
@@ -971,6 +986,7 @@ class BoardViewModel(
     fun pair() {
         if (busy) return
         if (!store.secure) {
+            diagnostics?.recordLocal(DiagnosticEvent.STORAGE_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.STORAGE)
             banner = say(SECURE_STORAGE_BANNER)
             render()
             return
@@ -978,6 +994,7 @@ class BoardViewModel(
         val repairId = _state.value.repairSessionId
         when (val pre = pairPrecheck(committedSessionCount(disk), repairId != null)) {
             is PairPrecheck.Refuse -> {
+                diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.LIMIT)
                 banner = pre.message
                 render()
                 return
@@ -986,6 +1003,7 @@ class BoardViewModel(
         }
         val issue = inspectPairCode(_state.value.pairCode)
         if (issue != null || !pairSubmitAllowed(_state.value.pairCode, _state.value.httpBase, secure = true, busy = false)) {
+            diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.INVALID)
             banner = issue?.let { pairIssueMessage(it, englishUi) } ?: say("Enter an http or https relay URL.")
             render()
             return
@@ -993,6 +1011,7 @@ class BoardViewModel(
         val repair = repairId?.let { session(it) }
         val name = validateDisplayName(if (repair != null) repair.displayName else _state.value.displayName)
         if (name == null) {
+            diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.INVALID)
             banner = zh("显示名需要 1 到 40 个字。", "The display name must be 1 to 40 characters.")
             render()
             return
@@ -1007,12 +1026,13 @@ class BoardViewModel(
         viewModelScope.launch {
             try {
                 val base = normalizeHttpBase(if (repair != null) disk.credentials[repair.credentialId]?.httpBase ?: _state.value.httpBase else _state.value.httpBase)
-                store.saveIdentity(base, phoneName)
+                if (!store.saveIdentity(base, phoneName)) diagnostics?.recordLocal(DiagnosticEvent.STORAGE_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.STORAGE)
                 disk = store.readDisk()
                 val result = relay.request("POST", "$base/auth/pair", encodePairBody(code, phoneName))
                 if (leaveStalePair(attempt)) return@launch
                 if (result.code !in 200..299) {
-                    if (result.code == 401 || result.code == 403) diagnostics?.recordLocal(DiagnosticEvent.AUTH_REJECTED)
+                    val event = if (result.code == 401 || result.code == 403) DiagnosticEvent.AUTH_REJECTED else DiagnosticEvent.PAIR_FAILED
+                    diagnostics?.recordLocal(event, DiagnosticOperation.PAIR, httpReason(result.code))
                     busy = false
                     banner = pairHttpFailure(result.code, result.body, englishUi)
                     render()
@@ -1021,6 +1041,7 @@ class BoardViewModel(
                 val paired = try {
                     parsePairResponse(result.body)
                 } catch (error: RelayFormatException) {
+                    diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.INVALID)
                     val ux = pairBodyOutcome(httpOk = true, parsed = false)
                     busy = false
                     if (ux.clearPairCode) _state.updateCopy { copy(pairCode = "") }
@@ -1045,7 +1066,8 @@ class BoardViewModel(
                 if (leaveStalePair(attempt)) return@launch
                 when (outcome) {
                     is PairOutcome.Reject -> {
-                        outcome.rollback?.let { applyTx(it) }
+                        diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.INVALID)
+                        outcome.rollback?.let { applyTx(it, operation = DiagnosticOperation.PAIR) }
                         banner = outcome.message
                         render()
                     }
@@ -1055,7 +1077,7 @@ class BoardViewModel(
                             render()
                             return@launch
                         }
-                        when (val applied = applyTx(outcome.tx)) {
+                        when (val applied = applyTx(outcome.tx, operation = DiagnosticOperation.PAIR)) {
                             is ApplyVerdict.RolledBack -> {
                                 banner = CODE_CONSUMED_SAVE
                                 render()
@@ -1075,10 +1097,12 @@ class BoardViewModel(
                     }
                 }
             } catch (error: RelayFormatException) {
+                diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, DiagnosticReason.INVALID)
                 busy = false
                 banner = say(error.message ?: "relay URL is invalid")
                 render()
             } catch (error: IOException) {
+                diagnostics?.recordLocal(DiagnosticEvent.PAIR_FAILED, DiagnosticOperation.PAIR, networkReason(error))
                 busy = false
                 banner = say("Could not reach the relay.")
                 render()
@@ -1096,18 +1120,24 @@ class BoardViewModel(
                 busy = false
                 banner = if (result.code in 200..299) {
                     val health = parseHealth(result.body)
-                    if (health == null) say("The relay answered, but /health was not recognized.")
+                    if (health == null) {
+                        diagnostics?.recordLocal(DiagnosticEvent.PROTOCOL_INVALID, DiagnosticOperation.HEALTH, DiagnosticReason.INVALID)
+                        say("The relay answered, but /health was not recognized.")
+                    }
                     else if (englishUi) "Relay is up. Boards online: ${health.boardsOnline}."
                     else "中继正常。在线看板：${health.boardsOnline}。"
                 } else {
+                    diagnostics?.recordLocal(DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.HEALTH, httpReason(result.code))
                     say(parseRelayError(result.body))
                 }
                 render()
             } catch (error: RelayFormatException) {
+                diagnostics?.recordLocal(DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.HEALTH, DiagnosticReason.INVALID)
                 busy = false
                 banner = say(error.message ?: "relay URL is invalid")
                 render()
             } catch (error: IOException) {
+                diagnostics?.recordLocal(DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.HEALTH, networkReason(error))
                 busy = false
                 banner = say("Could not reach the relay.")
                 render()
@@ -1123,22 +1153,28 @@ class BoardViewModel(
             render()
             try {
                 val result = relay.request("POST", "${secret.httpBase}/auth/refresh", encodeRefreshBody(secret.deviceToken))
+                if (disk.credentials[session.credentialId] != secret) return@launch
                 if (result.code == 401 || result.code == 403) {
-                    markRepair(session.credentialId, zh("需要重新配对", "This board needs to be paired again."))
+                    markRepair(session.credentialId, zh("需要重新配对", "This board needs to be paired again."), DiagnosticOperation.REFRESH, httpReason(result.code))
                     return@launch
                 }
                 if (result.code !in 200..299) {
+                    diagnostics?.record(session.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.REFRESH, httpReason(result.code))
                     banner = say(parseRelayError(result.body))
                 } else {
                     val tx = planRefresh(disk, session.credentialId, parsePairResponse(result.body))
-                    if (tx != null && applyTx(tx) is ApplyVerdict.InForce) {
+                    if (tx != null && applyTx(tx, session.credentialId, DiagnosticOperation.REFRESH) is ApplyVerdict.InForce) {
                         banner = zh("登录已更新，正在重新连接。", "Sign-in refreshed. Reconnecting.")
                         connect(session.credentialId)
                     } else {
                         banner = zh("新的登录没有保存，其他看板仍保持连接。", "The new sign-in was not stored. Other boards stay connected.")
                     }
                 }
+            } catch (error: RelayFormatException) {
+                diagnostics?.record(session.credentialId, DiagnosticEvent.PROTOCOL_INVALID, DiagnosticOperation.REFRESH, DiagnosticReason.INVALID)
+                banner = say("The relay reply could not be read.")
             } catch (error: IOException) {
+                diagnostics?.record(session.credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.REFRESH, networkReason(error))
                 banner = say("Could not reach the relay.")
             } finally {
                 busy = false
@@ -1159,7 +1195,10 @@ class BoardViewModel(
             planMigrationStart(disk, newLocalId("c"))?.let { applyTx(it) }
             disk = store.readDisk()
         }
-        store.applyAll(recoverLaunch(disk).cleanup)
+        val cleanupSaved = store.applyAll(recoverLaunch(disk).cleanup)
+        if (!store.secure || !cleanupSaved) {
+            diagnostics?.recordLocal(DiagnosticEvent.STORAGE_FAILED, reason = DiagnosticReason.STORAGE)
+        }
         disk = store.readDisk()
         val launch = recoverLaunch(disk)
         banner = launch.banner?.let { say(it) }
@@ -1221,6 +1260,12 @@ class BoardViewModel(
         if (chip == TaskChip.ARCHIVE) loadArchive(reset = true, workspaceId = _state.value.selectedWorkspaceId)
     }
 
+    private fun persistWorkspace(sessionId: String, workspaceId: String?) {
+        if (!store.apply(DiskOp.PutWorkspace(sessionId, workspaceId))) {
+            session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.STORAGE_FAILED, reason = DiagnosticReason.STORAGE) }
+        }
+    }
+
     private fun persistActive(sessionId: String): Boolean {
         val tx = planActivate(disk, sessionId) ?: return false
         if (tx.steps.isEmpty()) return true
@@ -1234,13 +1279,15 @@ class BoardViewModel(
         }
     }
 
-    private fun applyTx(tx: Transaction): ApplyVerdict {
+    private fun applyTx(tx: Transaction, credentialId: String? = null, operation: DiagnosticOperation? = null): ApplyVerdict {
         if (tx.steps.isEmpty()) {
             return ApplyVerdict.InForce(disk, openSocketIds(), disk.catalog?.activeSessionId, cleanupPending = false)
         }
         var cutover = false
         tx.steps.forEachIndexed { index, op ->
             if (!store.apply(op)) {
+                if (credentialId == null) diagnostics?.recordLocal(DiagnosticEvent.STORAGE_FAILED, operation, DiagnosticReason.STORAGE)
+                else diagnostics?.record(credentialId, DiagnosticEvent.STORAGE_FAILED, operation, DiagnosticReason.STORAGE)
                 if (!failedStepKeepsCatalog(tx.cutoverIndex, index)) {
                     tx.stagedCredentialIds.forEach { id ->
                         if (id !in referencedCredentialIds(store.readDisk())) store.apply(DiskOp.DeleteCredential(id))
@@ -1349,6 +1396,8 @@ class BoardViewModel(
         val live = lives.getOrPut(credentialId) { LiveSocket() }
         live.job?.cancel()
         live.timeoutJob?.cancel()
+        if (live.epoch != 0L) diagnostics?.record(credentialId, DiagnosticEvent.RECONNECTING, DiagnosticOperation.CONNECT)
+        refs.entries.removeAll { it.value.credentialId == credentialId }
         val epoch = live.epoch + 1
         live.epoch = epoch
         sessionsOn(credentialId).forEach { session ->
@@ -1376,26 +1425,32 @@ class BoardViewModel(
         relay.openSocket(credentialId, secret.wsUrl, object : SocketListener {
             override fun onOpen() {
                 viewModelScope.launch {
-                    if (live.epoch != epoch) return@launch
+                    if (lives[credentialId] !== live || live.epoch != epoch) return@launch
                     val helloId = ids()
                     live.helloRef = helloId
                     val token = disk.credentials[credentialId]?.deviceToken ?: return@launch
-                    relay.send(credentialId, encodeEnvelope(helloEnvelope(helloId, clock(), token, disk.deviceName)))
+                    sendFrame(credentialId, helloEnvelope(helloId, clock(), token, disk.deviceName))
                 }
             }
 
             override fun onMessage(text: String) {
                 viewModelScope.launch {
-                    if (live.epoch != epoch) return@launch
+                    if (lives[credentialId] !== live || live.epoch != epoch) return@launch
                     onFrame(credentialId, epoch, text)
                 }
             }
 
-            override fun onClosed(reason: String) {
+            override fun onInvalidFrame() {
                 viewModelScope.launch {
-                    if (live.epoch != epoch) return@launch
-                    diagnostics?.record(credentialId, DiagnosticEvent.RELAY_DISCONNECTED)
-                    java.util.logging.Logger.getLogger("AgentBoardLink").info("Socket closed; retrying")
+                    if (lives[credentialId] === live && live.epoch == epoch) protocolInvalid(credentialId)
+                }
+            }
+
+            override fun onClosed(reason: DiagnosticReason) {
+                viewModelScope.launch {
+                    if (lives[credentialId] !== live || live.epoch != epoch) return@launch
+                    val event = if (live.phase == SocketPhase.AUTHENTICATED) DiagnosticEvent.RELAY_DISCONNECTED else DiagnosticEvent.NETWORK_FAILED
+                    diagnostics?.record(credentialId, event, DiagnosticOperation.CONNECT, reason)
                     live.timeoutJob?.cancel()
                     live.phase = SocketPhase.CLOSED
                     render()
@@ -1410,7 +1465,8 @@ class BoardViewModel(
         })
         live.timeoutJob = viewModelScope.launch {
             delay(20_000)
-            if (live.epoch == epoch && live.phase != SocketPhase.AUTHENTICATED && live.phase != SocketPhase.UNAUTHORIZED) {
+            if (lives[credentialId] === live && live.epoch == epoch && live.phase != SocketPhase.AUTHENTICATED && live.phase != SocketPhase.UNAUTHORIZED) {
+                diagnostics?.record(credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, DiagnosticReason.TIMEOUT)
                 connect(credentialId)
             }
         }
@@ -1422,19 +1478,34 @@ class BoardViewModel(
         val message = try {
             parseEnvelope(text)
         } catch (error: RelayFormatException) {
-            return
-        }
-        if (sessionRejected(message)) {
-            markRepair(credentialId, zh("需要重新配对", "This board needs to be paired again."))
+            protocolInvalid(credentialId)
             return
         }
         val ref = message.text("ref")
+        if (sessionRejected(message)) {
+            val op = when {
+                ref != null && ref == live.listRef -> DiagnosticOperation.BOARD_LIST
+                ref != null && ref != live.helloRef -> refs[ref]?.takeIf { it.credentialId == credentialId && it.socketEpoch == epoch }?.let { operationFor(it.command) }
+                else -> DiagnosticOperation.CONNECT
+            }
+            markRepair(credentialId, zh("需要重新配对", "This board needs to be paired again."), op, replyReason(message))
+            return
+        }
         if (ref != null && ref == live.helloRef) {
             onHello(credentialId, live, message)
             return
         }
-        if (message.type == "ack" && acceptBoardList(live.listRef, ref, epoch, live.epoch) && parseBoardList(message.payload) != null) {
-            onList(credentialId, live, epoch, parseBoardList(message.payload).orEmpty())
+        if (acceptBoardList(live.listRef, ref, epoch, live.epoch)) {
+            val boards = parseBoardList(message.payload)
+            val rows = message.payload["boards"] as? JsonArray
+            val complete = boards != null && rows != null && rows.size == boards.size && message.text("stage") == "executed"
+            if (message.type == "err" || message.text("stage") in setOf("failed", "timeout")) {
+                diagnostics?.record(credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.BOARD_LIST, replyReason(message))
+            } else if (message.type != "ack" || !complete) {
+                protocolInvalid(credentialId, DiagnosticOperation.BOARD_LIST)
+            }
+            // Continue processing the readable subset, as before. Only a complete list proves omission.
+            if (message.type == "ack" && boards != null) onList(credentialId, live, epoch, boards, complete)
             return
         }
         if (message.type == "evt.board") {
@@ -1444,11 +1515,13 @@ class BoardViewModel(
         val code = message.text("code")
         if (code == "rate_limited") rateLimited = recordRateLimit(rateLimited).count
         if (code == "board_offline" || code == "board_disconnected") {
-            val boardId = message.text("boardId") ?: ref?.let { refs[it]?.boardId }
-            val session = sessionsOn(credentialId).find { it.boardId == boardId }
+            val bound = ref?.let { refs[it] }?.takeIf { it.credentialId == credentialId && it.socketEpoch == epoch }
+            val boardId = message.text("boardId") ?: bound?.boardId
+            val session = sessionsOn(credentialId).find { it.boardId == boardId && (ref == null || it.sessionId == bound?.sessionId) }
             if (session != null) {
                 val holder = slot(session.sessionId)
                 holder.proof = proofAfterDisconnect(clock(), epoch, holder.proof?.listedGeneration)
+                recordPresence(session, holder, DiagnosticEvent.BOARD_OFFLINE)
             }
             sendList(credentialId)
         }
@@ -1457,20 +1530,30 @@ class BoardViewModel(
         val target = routed as? RouteResult.ToSession ?: return
         val record = target.ref
         if (record != null) {
-            val event =
-                when {
-                    message.type == "err" -> DiagnosticEvent.COMMAND_FAILED
-                    message.text("stage") == "failed" -> DiagnosticEvent.COMMAND_FAILED
-                    message.text("stage") == "timeout" -> DiagnosticEvent.COMMAND_TIMEOUT
-                    message.text("stage") == "executed" -> DiagnosticEvent.COMMAND_EXECUTED
-                    else -> null
+            val lookup = record.command == "cmd.lookup"
+            val stage = message.text("stage")
+            if (lookup || message.type == "err" || stage != "accepted") {
+                refs.remove(record.ref)
+                val event = when {
+                    lookup -> DiagnosticEvent.LOOKUP_RESULT
+                    message.type == "err" || stage == "failed" || stage == "unknown" -> DiagnosticEvent.COMMAND_FAILED
+                    stage == "timeout" -> DiagnosticEvent.COMMAND_TIMEOUT
+                    stage == "executed" -> DiagnosticEvent.COMMAND_EXECUTED
+                    else -> DiagnosticEvent.PROTOCOL_INVALID
                 }
-            event?.let { diagnostics?.record(credentialId, it) }
+                val reason = if (event == DiagnosticEvent.PROTOCOL_INVALID) DiagnosticReason.INVALID else replyReason(message)
+                diagnostics?.record(credentialId, event, operationFor(record.command), reason)
+            }
         }
-        when (record?.command) {
+        // A recovered settings write still carries the original settings document, not a task result.
+        val command = if (record?.command == "cmd.lookup") {
+            val current = slot(target.sessionId).inflight?.takeIf { it.lookupId == ref } ?: return
+            current.cmd
+        } else record?.command
+        when (command) {
             "cmd.detail" -> onDetail(target.sessionId, message)
             "cmd.archive.list" -> onArchive(target.sessionId, message)
-            "cmd.workspace.get", "cmd.workspace.update", "cmd.settings.get", "cmd.settings.put" -> onSettings(target.sessionId, record.command, message)
+            "cmd.workspace.get", "cmd.workspace.update", "cmd.settings.get", "cmd.settings.put" -> onSettings(target.sessionId, command, message)
             null -> onEvent(target.sessionId, message)
             else -> onCommand(target.sessionId, message)
         }
@@ -1478,7 +1561,10 @@ class BoardViewModel(
 
     private fun onHello(credentialId: String, live: LiveSocket, message: tech.mengfei.agentboard.protocol.Envelope) {
         live.helloRef = null
-        if (message.type == "err" || message.text("stage") != "executed") {
+        if (message.type != "ack" || message.text("stage") != "executed") {
+            if (message.type == "err" || message.text("stage") in setOf("timeout", "failed")) {
+                diagnostics?.record(credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.CONNECT, replyReason(message))
+            } else protocolInvalid(credentialId, DiagnosticOperation.CONNECT)
             banner = message.text("message")?.let { say(it) } ?: say("The relay did not accept this phone.")
             render()
             return
@@ -1486,7 +1572,7 @@ class BoardViewModel(
         live.timeoutJob?.cancel()
         live.backoff = 1_000
         live.phase = SocketPhase.AUTHENTICATED
-        diagnostics?.record(credentialId, DiagnosticEvent.RELAY_CONNECTED)
+        diagnostics?.record(credentialId, DiagnosticEvent.RELAY_CONNECTED, DiagnosticOperation.CONNECT)
         armPoll()
         live.suppressConnected = false
         live.helloBoardIds = disk.credentials[credentialId]?.boardIds?.toSet().orEmpty()
@@ -1495,7 +1581,7 @@ class BoardViewModel(
         render()
     }
 
-    private fun onList(credentialId: String, live: LiveSocket, epoch: Long, boards: List<tech.mengfei.agentboard.protocol.BoardInfo>) {
+    private fun onList(credentialId: String, live: LiveSocket, epoch: Long, boards: List<tech.mengfei.agentboard.protocol.BoardInfo>, complete: Boolean) {
         live.timeoutJob?.cancel()
         live.listRef = null
         live.suppressConnected = false
@@ -1512,17 +1598,20 @@ class BoardViewModel(
         }
         val mine = sessionsOn(credentialId)
         mine.forEach { session ->
-            val info = boards.find { it.boardId == session.boardId } ?: return@forEach
             val holder = slot(session.sessionId)
-            java.util.logging.Logger.getLogger("AgentBoardLink").info(
-                "Board list: board=${info.boardId} online=${info.online} generation=${info.generation} applied=${holder.appliedGeneration} resync=${holder.view.needsResync}",
-            )
+            val info = boards.find { it.boardId == session.boardId }
+            if (info == null) {
+                if (complete) recordPresence(session, holder, DiagnosticEvent.BOARD_UNAVAILABLE)
+                return@forEach
+            }
+            recordPresence(session, holder, if (info.online) DiagnosticEvent.BOARD_ONLINE else DiagnosticEvent.BOARD_OFFLINE)
             if (info.generation != holder.proof?.listedGeneration) holder.settingsLoaded = false
             holder.proof = BoardProof(info.online, info.generation, now, epoch)
             holder.capabilities = info.capabilities
             holder.view = holder.view.copy(
                 needsResync = resyncAfterList(holder.appliedGeneration, info.generation, holder.view.needsResync, holder.view.sawSnapshot),
             )
+            recordSyncState(session, holder)
         }
         mine.forEach { session ->
             val holder = slot(session.sessionId)
@@ -1545,13 +1634,14 @@ class BoardViewModel(
         epoch: Long,
         message: tech.mengfei.agentboard.protocol.Envelope,
     ) {
-        val presence = parseBoardPresence(message) ?: return
+        val presence = parseBoardPresence(message) ?: return protocolInvalid(credentialId)
         val now = clock()
         sessionsOn(credentialId).filter { it.boardId == presence.boardId }.forEach { session ->
             val holder = slot(session.sessionId)
             val generation = presence.generation ?: holder.proof?.listedGeneration
             if (generation != holder.proof?.listedGeneration) holder.settingsLoaded = false
             holder.proof = BoardProof(presence.online, generation, now, epoch)
+            recordPresence(session, holder, if (presence.online) DiagnosticEvent.BOARD_ONLINE else DiagnosticEvent.BOARD_OFFLINE)
             if (generation != null) {
                 holder.view = holder.view.copy(
                     needsResync = resyncAfterList(
@@ -1562,11 +1652,37 @@ class BoardViewModel(
                     ),
                 )
             }
+            recordSyncState(session, holder)
             if (presence.online && (session.boardId !in live.subscribed || holder.view.needsResync)) {
                 subscribeTasks(session)
             }
         }
         render()
+    }
+
+    private fun recordPresence(session: PhoneSession, holder: Slot, next: DiagnosticEvent) {
+        if (holder.diagnosticCredentialId != session.credentialId) {
+            holder.diagnosticCredentialId = session.credentialId
+            holder.reportedPresence = null
+            holder.waitingForSync = false
+        }
+        if (holder.reportedPresence == next) return
+        holder.reportedPresence = next
+        diagnostics?.record(session.credentialId, next)
+    }
+
+    private fun recordSyncState(session: PhoneSession, holder: Slot) {
+        if (holder.diagnosticCredentialId != session.credentialId || holder.reportedPresence != DiagnosticEvent.BOARD_ONLINE ||
+            holder.proof?.epoch != lives[session.credentialId]?.epoch) return
+        val waiting = holder.appliedGeneration == null || resyncAfterList(holder.appliedGeneration, holder.proof?.listedGeneration,
+            holder.view.needsResync, holder.view.sawSnapshot)
+        if (waiting == holder.waitingForSync) return
+        holder.waitingForSync = waiting
+        diagnostics?.record(session.credentialId, if (waiting) DiagnosticEvent.SYNC_WAITING else DiagnosticEvent.SYNC_RECOVERED)
+    }
+
+    private fun protocolInvalid(credentialId: String, operation: DiagnosticOperation? = null) {
+        diagnostics?.record(credentialId, DiagnosticEvent.PROTOCOL_INVALID, operation, DiagnosticReason.INVALID)
     }
 
     private fun onEvent(sessionId: String, message: tech.mengfei.agentboard.protocol.Envelope) {
@@ -1576,9 +1692,9 @@ class BoardViewModel(
             is ApplyOutcome.Resync -> {
                 if (!holder.view.needsResync) {
                     session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.SYNC_GAP) }
-                    java.util.logging.Logger.getLogger("AgentBoardLink").info("Event gap: board=${holder.view.boardId} reason=${outcome.reason}")
                 }
                 holder.view = outcome.view
+                session(sessionId)?.let { recordSyncState(it, holder) }
                 holder.autoAfterSeq.clear()
                 holder.eligibilityFresh = false
                 banner = if (englishUi) "Missed events (${outcome.reason}). Refreshing from a snapshot." else "漏收了事件（${outcome.reason}）。正在用快照刷新。"
@@ -1590,14 +1706,14 @@ class BoardViewModel(
                     // A subscription replays a cached snapshot followed by historical task events.
                     // Never use such a replay to initiate a write. Keep the queue for manual use.
                     holder.autoAfterSeq.clear()
-                    java.util.logging.Logger.getLogger("AgentBoardLink").info(
-                        "Snapshot: board=${holder.view.boardId} generation=${outcome.view.generation} seq=${outcome.view.seq} resync=${outcome.view.needsResync}",
-                    )
+                    if (outcome.invalidSnapshotRows) session(sessionId)?.let { protocolInvalid(it.credentialId, DiagnosticOperation.SUBSCRIBE) }
                     val now = clock()
                     val live = session(sessionId)?.let { lives[it.credentialId] }
                     holder.snapshotAt = now
                     if (!outcome.view.needsResync) {
-                        session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.SNAPSHOT_SYNCED) }
+                        if (!before.sawSnapshot || before.needsResync || holder.appliedGeneration != outcome.view.generation) {
+                            session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.SNAPSHOT_SYNCED) }
+                        }
                         holder.appliedGeneration = outcome.view.generation
                         holder.resync.onSnapshot()
                     }
@@ -1609,6 +1725,7 @@ class BoardViewModel(
                 holder.view = outcome.view.copy(
                     tasks = outcome.view.tasks.map { rememberTaskThinkingEffort(holder, it) },
                 )
+                session(sessionId)?.let { recordSyncState(it, holder) }
                 if (sessionId == activeId && !holder.continueEffortTouched) {
                     activeTask()?.let { t ->
                         holder.continueThinkingEffort = resolveContinueEffort(holder, t)
@@ -1623,7 +1740,9 @@ class BoardViewModel(
                 }
                 render()
             }
-            is ApplyOutcome.Ignored -> Unit
+            is ApplyOutcome.Ignored -> if (message.type == "evt.task") {
+                session(sessionId)?.let { protocolInvalid(it.credentialId, DiagnosticOperation.SUBSCRIBE) }
+            }
         }
     }
 
@@ -1631,9 +1750,13 @@ class BoardViewModel(
         val holder = slot(sessionId)
         if (!detailReplySettled(message)) return
         val request = holder.pendingDetail ?: return
+        if (request.requestId != message.text("ref")) return
         holder.pendingDetail = null
         val interpreted = interpretCommand(message)
         val task = interpreted?.task?.let { rememberTaskThinkingEffort(holder, it) }
+        if (message.type == "ack" && message.text("stage") == "executed" && (task?.id != request.taskId || !task.detailFull)) {
+            session(sessionId)?.let { protocolInvalid(it.credentialId, DiagnosticOperation.DETAIL) }
+        }
         val active = activeDetailTask(request, holder.epoch, holder.view.boardId, message.text("ref"), task)
         val archived = archivedDetailTask(request, holder.epoch, holder.view.boardId, message.text("ref"), task)
         if (active != null && active.status != ARCHIVED_STATUS) {
@@ -1667,8 +1790,10 @@ class BoardViewModel(
             holder.archiveError = say("Could not load the archive.")
         } else if (message.text("stage") == "executed") {
             val page = readArchivePage(message.payload)
-            if (page == null) holder.archiveError = say("Could not read the archive page.")
-            else if (!acceptArchivePage(request.requestId, message.text("ref"), page.tasks, request.workspaceId)) {
+            if (page == null) {
+                session(sessionId)?.let { protocolInvalid(it.credentialId, DiagnosticOperation.ARCHIVE_LIST) }
+                holder.archiveError = say("Could not read the archive page.")
+            } else if (!acceptArchivePage(request.requestId, message.text("ref"), page.tasks, request.workspaceId)) {
                 clearArchivePresentation(holder)
                 holder.archiveError = ARCHIVE_SCOPE_UNSUPPORTED
             } else {
@@ -1687,7 +1812,8 @@ class BoardViewModel(
     private fun onSettings(sessionId: String, command: String, message: tech.mengfei.agentboard.protocol.Envelope) {
         if (!archiveReplySettled(message)) return
         val holder = slot(sessionId)
-        if (holder.inflight?.requestId == message.text("ref") || holder.inflight?.cmd == command) {
+        val ref = message.text("ref")
+        if (ref != null && (holder.inflight?.requestId == ref || holder.inflight?.lookupId == ref)) {
             holder.inflight = null
             if (sessionId == activeId) commandNote = null
         }
@@ -1697,6 +1823,7 @@ class BoardViewModel(
         val onSettingsScreen = screen == Screen.BoardSettings || screen == Screen.WorkspaceSettings
         val isWrite = command == "cmd.settings.put" || command == "cmd.workspace.update"
         if (!executed || !documentOk) {
+            if (executed) session(sessionId)?.let { protocolInvalid(it.credentialId, operationFor(command)) }
             if (sessionId == activeId && (isWrite || onSettingsScreen)) {
                 if (!executed) {
                     formError = interpretCommand(message)?.summary?.let { say(it) } ?: UNSUPPORTED_COPY
@@ -1913,6 +2040,20 @@ class BoardViewModel(
         }
     }
 
+    /** Record the actual enqueue result; never retry, resolve a credential or write diagnostic payloads here. */
+    private fun sendFrame(credentialId: String, message: Envelope): Boolean {
+        val sent = relay.send(credentialId, encodeEnvelope(message))
+        if (!sent) {
+            val operation = operationFor(message.type)
+            val event = when (operation) {
+                DiagnosticOperation.CONNECT, DiagnosticOperation.BOARD_LIST, DiagnosticOperation.SUBSCRIBE -> DiagnosticEvent.NETWORK_FAILED
+                else -> DiagnosticEvent.COMMAND_FAILED
+            }
+            diagnostics?.record(credentialId, event, operation, DiagnosticReason.DISCONNECTED)
+        }
+        return sent
+    }
+
     private fun sendRaw(session: PhoneSession, cmd: String, taskId: String?, key: String, message: tech.mengfei.agentboard.protocol.Envelope, followupId: String? = null) {
         val live = lives[session.credentialId] ?: return
         val record = RefRecord(message.id, session.sessionId, session.credentialId, session.boardId, cmd, taskId, live.epoch)
@@ -1922,13 +2063,12 @@ class BoardViewModel(
         holder.inflight = Inflight(action, cmd, session, taskId, key, message.id, followupId = followupId,
             sentView = if (followupId != null) holder.view else null)
         if (session.sessionId == activeId) commandNote = if (englishUi) "Sending $cmd." else "正在发送 $cmd。"
-        if (!relay.send(session.credentialId, encodeEnvelope(message))) {
+        if (!sendFrame(session.credentialId, message)) {
             holder.inflight = null
             refs.remove(message.id)
             if (session.sessionId == activeId) commandNote = say("Not connected to the relay.")
-            diagnostics?.record(session.credentialId, DiagnosticEvent.COMMAND_FAILED)
         } else {
-            diagnostics?.record(session.credentialId, DiagnosticEvent.COMMAND_SENT)
+            diagnostics?.record(session.credentialId, DiagnosticEvent.COMMAND_SENT, operationFor(cmd))
             if (followupId == null && holder.inflight?.requestId == message.id) holder.settled.remove(action)
         }
         render()
@@ -1952,14 +2092,16 @@ class BoardViewModel(
 
     private fun beginLookup(sessionId: String, current: Inflight) {
         val session = session(sessionId) ?: return
+        if (session.credentialId != current.session.credentialId || session.boardId != current.session.boardId) return
         val command = OutstandingCommand(current.cmd, session.boardId, current.key, current.polls)
         val lookupId = ids()
         val envelope = lookupEnvelope(lookupId, clock(), session.boardId, command.idempotencyKey, command.cmd)
         val live = lives[session.credentialId] ?: return
-        refs[lookupId] = RefRecord(lookupId, sessionId, session.credentialId, session.boardId, command.cmd, current.taskId, live.epoch)
+        refs[lookupId] = RefRecord(lookupId, sessionId, session.credentialId, session.boardId, "cmd.lookup", current.taskId, live.epoch)
         slot(sessionId).inflight = current.copy(lookupId = lookupId, polls = command.polls)
         if (sessionId == activeId) commandNote = say("Checking the stored result. This command will not be sent again.")
-        if (!relay.send(session.credentialId, encodeEnvelope(envelope))) {
+        if (!sendFrame(session.credentialId, envelope)) {
+            refs.remove(lookupId)
             releaseInflight(sessionId, lookupSendFailed())
             return
         }
@@ -1999,6 +2141,15 @@ class BoardViewModel(
         val current = holder.inflight
         holder.inflight = null
         val interpreted = step.interpretation
+        if (current != null && reply?.type == "ack" && reply.text("stage") == "executed") {
+            val task = interpreted?.task
+            val invalidTask = when {
+                current.followupId != null -> task?.id != current.taskId
+                current.cmd == "cmd.create" || "task" in reply.payload -> task == null
+                else -> false
+            }
+            if (invalidTask) protocolInvalid(current.session.credentialId, operationFor(current.cmd))
+        }
         if (current?.followupId != null && current.taskId != null) {
             val id = current.followupId
             val taskId = current.taskId
@@ -2034,13 +2185,13 @@ class BoardViewModel(
         if (task != null) holder.view = holder.view.withLocalTask(task)
         interpreted?.workspace?.let { workspace ->
             holder.view = holder.view.withWorkspace(workspace)
-            store.apply(DiskOp.PutWorkspace(sessionId, workspace.id))
+            persistWorkspace(sessionId, workspace.id)
             disk = store.readDisk()
         }
         interpreted?.deletedWorkspaceId?.let { deleted ->
             holder.view = holder.view.withoutWorkspace(deleted)
             if (disk.workspaces[sessionId] == deleted) {
-                store.apply(DiskOp.PutWorkspace(sessionId, null))
+                persistWorkspace(sessionId, null)
                 disk = store.readDisk()
             }
         }
@@ -2078,7 +2229,7 @@ class BoardViewModel(
         if (live.phase != SocketPhase.AUTHENTICATED) return
         val requestId = ids()
         val built = validateDetail(requestId, clock(), session.boardId, taskId, keys())
-        if (built is Validated.Ok && relay.send(session.credentialId, encodeEnvelope(built.value))) {
+        if (built is Validated.Ok && sendFrame(session.credentialId, built.value)) {
             refs[requestId] = RefRecord(requestId, session.sessionId, session.credentialId, session.boardId, "cmd.detail", taskId, live.epoch)
             val holder = slot(session.sessionId)
             holder.epoch += 1
@@ -2086,7 +2237,7 @@ class BoardViewModel(
             if (shouldSendLogSubscribe(taskId)) {
                 val logId = ids()
                 live.log = LogBinding(session.credentialId, session.boardId, taskId, live.epoch)
-                relay.send(session.credentialId, encodeEnvelope(subLogsEnvelope(logId, clock(), session.boardId, taskId)))
+                sendFrame(session.credentialId, subLogsEnvelope(logId, clock(), session.boardId, taskId))
             }
         }
     }
@@ -2097,7 +2248,7 @@ class BoardViewModel(
         val workspaceId = disk.workspaces[session.sessionId] ?: _state.value.selectedWorkspaceId ?: return
         if (workspaceId.isEmpty()) return
         val built = workspaceGetEnvelope(ids(), clock(), session.boardId, workspaceId, keys())
-        if (built is Validated.Ok && relay.send(session.credentialId, encodeEnvelope(built.value))) {
+        if (built is Validated.Ok && sendFrame(session.credentialId, built.value)) {
             refs[built.value.id] = RefRecord(built.value.id, session.sessionId, session.credentialId, session.boardId, "cmd.workspace.get", workspaceId, live.epoch)
         }
     }
@@ -2106,7 +2257,7 @@ class BoardViewModel(
         val live = lives[session.credentialId] ?: return
         if (live.phase != SocketPhase.AUTHENTICATED) return
         val message = settingsGetEnvelope(ids(), clock(), session.boardId, keys())
-        if (relay.send(session.credentialId, encodeEnvelope(message))) {
+        if (sendFrame(session.credentialId, message)) {
             refs[message.id] = RefRecord(message.id, session.sessionId, session.credentialId, session.boardId, "cmd.settings.get", null, live.epoch)
         }
     }
@@ -2139,7 +2290,7 @@ class BoardViewModel(
         val built = validateArchiveList(requestId, clock(), session.boardId, keys(), cursor, 20, scoped)
         if (built is Validated.Ok) {
             val live = lives[session.credentialId]
-            if (live != null && relay.send(session.credentialId, encodeEnvelope(built.value))) {
+            if (live != null && sendFrame(session.credentialId, built.value)) {
                 refs[requestId] = RefRecord(requestId, session.sessionId, session.credentialId, session.boardId, "cmd.archive.list", null, live.epoch)
                 holder.pendingArchive = ArchiveHold(requestId, reset, scoped)
                 holder.archiveBusy = true
@@ -2167,7 +2318,7 @@ class BoardViewModel(
         if (live.phase != SocketPhase.AUTHENTICATED || live.listRef != null) return
         val listId = ids()
         live.listRef = listId
-        if (!relay.send(credentialId, encodeEnvelope(boardListEnvelope(listId, clock())))) {
+        if (!sendFrame(credentialId, boardListEnvelope(listId, clock()))) {
             connect(credentialId)
             return
         }
@@ -2175,7 +2326,10 @@ class BoardViewModel(
         val epoch = live.epoch
         live.timeoutJob = viewModelScope.launch {
             delay(LIST_POLL_MS)
-            if (live.epoch == epoch && live.listRef == listId) connect(credentialId)
+            if (lives[credentialId] === live && live.epoch == epoch && live.listRef == listId) {
+                diagnostics?.record(credentialId, DiagnosticEvent.NETWORK_FAILED, DiagnosticOperation.BOARD_LIST, DiagnosticReason.TIMEOUT)
+                connect(credentialId)
+            }
         }
     }
 
@@ -2221,7 +2375,7 @@ class BoardViewModel(
         if (last != null && clock() - last < LIST_POLL_MS) return
         holder.lastSubscribeAt = clock()
         live.subscribed = live.subscribed + session.boardId
-        relay.send(session.credentialId, encodeEnvelope(subTasksEnvelope(ids(), clock(), session.boardId)))
+        sendFrame(session.credentialId, subTasksEnvelope(ids(), clock(), session.boardId))
     }
 
     private fun armResync(sessionId: String) {
@@ -2237,9 +2391,9 @@ class BoardViewModel(
         }
     }
 
-    private fun markRepair(credentialId: String, message: String) {
+    private fun markRepair(credentialId: String, message: String, operation: DiagnosticOperation?, reason: DiagnosticReason) {
         val live = lives[credentialId] ?: return
-        diagnostics?.record(credentialId, DiagnosticEvent.AUTH_REJECTED)
+        diagnostics?.record(credentialId, DiagnosticEvent.AUTH_REJECTED, operation, reason)
         live.phase = SocketPhase.UNAUTHORIZED
         live.epoch += 1
         relay.closeSocket(credentialId)
@@ -2352,7 +2506,11 @@ class BoardViewModel(
                 val secret = disk.credentials[id] ?: return@mapNotNull null
                 val online =
                     !diagnosticsStopped && lives[id]?.phase == SocketPhase.AUTHENTICATED &&
-                        sessionsOn(id).any { slots[it.sessionId]?.proof?.online == true }
+                        sessionsOn(id).any { session ->
+                            val holder = slots[session.sessionId]
+                            holder?.diagnosticCredentialId == id && holder.reportedPresence == DiagnosticEvent.BOARD_ONLINE &&
+                                holder.proof?.epoch == lives[id]?.epoch
+                        }
                 DiagnosticTarget(id, secret.deviceId, secret.httpBase, secret.deviceToken, online)
             }
         // Wire `queued` also denotes a saved draft. Drafts must not prevent uploads forever.
@@ -2382,7 +2540,7 @@ class BoardViewModel(
         val remembered = session?.let { disk.workspaces[it.sessionId] }
         val selection = if (view == null) null else nextWorkspaceSelection(remembered, view.workspaces, rows, saw)
         if (session != null && selection != null && selection.persist) {
-            store.apply(DiskOp.PutWorkspace(session.sessionId, selection.selectedId))
+            persistWorkspace(session.sessionId, selection.selectedId)
             disk = store.readDisk()
         }
         val workspaces = view?.workspaces.orEmpty()
@@ -2675,6 +2833,9 @@ class BoardViewModel(
     private class Slot(val reducer: BoardReducer, var view: BoardView) {
         var appliedGeneration: Long? = null
         var proof: BoardProof? = null
+        var diagnosticCredentialId: String? = null
+        var reportedPresence: DiagnosticEvent? = null
+        var waitingForSync = false
         var snapshotAt: Long? = null
         var lastSubscribeAt: Long? = null
         var capabilities: List<String> = emptyList()

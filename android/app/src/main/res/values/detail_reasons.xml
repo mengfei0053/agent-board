@@ -1,0 +1,16 @@
+<resources>
+    <string name="attachment_missing_content">The attachment is empty.</string>
+    <string name="attachment_count_exceeded">Only 10 attachments fit. Extra files were not added.</string>
+    <string name="attachment_read_failed">Could not read the attachment. Try picking it again.</string>
+    <string name="attachment_reading">Reading attachments…</string>
+    <string name="action_read_only">This board is read-only. Wait for its connection to be confirmed.</string>
+    <string name="action_not_synced">Waiting for board data. Writing is not available yet.</string>
+    <string name="action_queue_unavailable">Follow-ups are unavailable for this task.</string>
+    <string name="action_queue_full">The queue is full. Remove a follow-up to add another.</string>
+    <string name="action_input_needed">Enter a prompt or add an attachment first.</string>
+    <string name="action_busy">Another command is in progress. Wait for it to finish.</string>
+    <string name="action_lookup_needed">Check the previous command result before sending another.</string>
+    <string name="action_attachment_next_round">Attachments cannot be sent mid-run. Leave this follow-up queued for the next round.</string>
+    <string name="action_running_pi_needed">Only a running Pi task can receive a follow-up mid-run. Leave it queued for the next round.</string>
+    <string name="action_steer_unsupported">This board does not support sending to a running task. Leave the follow-up queued for the next round.</string>
+</resources>
