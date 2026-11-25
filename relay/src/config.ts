@@ -6,7 +6,6 @@ export type AppConfig = {
   adminToken: string;
   boardToken: string;
   databasePath?: string;
-  tokenTtlMs: number;
   pairTtlMs: number;
   cmdTimeoutMs: number;
   idempotencyTtlMs: number;
@@ -21,17 +20,12 @@ export type LoadConfigResult =
   | { ok: true; config: AppConfig; warnings: string[] }
   | { ok: false; message: string };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 export function loadConfig(env: NodeJS.ProcessEnv): LoadConfigResult {
   const host = (env.HOST ?? "127.0.0.1").trim() || "127.0.0.1";
   if (/\s/.test(host)) return { ok: false, message: "HOST must not contain whitespace" };
 
   const port = parsePort(env.PORT ?? "8787");
   if (port === null) return { ok: false, message: "PORT must be an integer from 1 to 65535" };
-
-  const tokenTtlMs = parsePositiveInt(env.TOKEN_TTL_MS, 7 * DAY_MS);
-  if (tokenTtlMs === null) return { ok: false, message: "TOKEN_TTL_MS must be a positive integer" };
 
   const pairFromMs = env.PAIR_TTL_MS?.trim() ? env.PAIR_TTL_MS : env.PAIR_TTL;
   const pairTtlMs = parsePositiveInt(pairFromMs, 300_000);
@@ -65,6 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): LoadConfigResult {
   if (production && !databasePath) return { ok: false, message: "RELAY_DB_PATH is required when NODE_ENV=production" };
 
   const warnings: string[] = [];
+  if (env.TOKEN_TTL_MS?.trim()) warnings.push("TOKEN_TTL_MS is ignored; paired devices remain authorized until revoked");
   const adminToken = adminFromEnv || generateAdminToken();
   const boardToken = boardFromEnv || generateBoardToken();
   if (adminToken.length < 16) warnings.push("ADMIN_TOKEN is shorter than 16 characters");
@@ -79,7 +74,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): LoadConfigResult {
       adminToken,
       boardToken,
       databasePath,
-      tokenTtlMs,
       pairTtlMs,
       cmdTimeoutMs,
       idempotencyTtlMs,

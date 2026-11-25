@@ -23,13 +23,37 @@ async function connect(type, payload) {
   return socket;
 }
 
-async function post(path, body, admin = false) {
+async function post(path, body, token) {
   const response = await fetch(server.httpUrl + path, {
-    method: 'POST', headers: { 'content-type': 'application/json', ...(admin ? { authorization: `Bearer ${adminToken}` } : {}) },
+    method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify(body),
   });
   assert.equal(response.status, 200);
   return response.json();
+}
+
+// Hold one response after the request starts, so races do not depend on network timing.
+async function holdLogResponse(page) {
+  await page.evaluate(() => {
+    const fetch = window.fetch;
+    window.fetch = (path, init) => {
+      if (!String(path).startsWith('/api/admin/device-logs?')) return fetch(path, init);
+      window.fetch = fetch;
+      return new Promise(resolve => {
+        window.releaseLogResponse = (status, entries) => resolve(Response.json({ entries, nextCursor: null }, { status }));
+      });
+    };
+  });
+  await page.click('#log-filters button');
+  await page.waitForFunction(() => typeof window.releaseLogResponse === 'function');
+}
+
+async function releaseLogResponse(page, status, entries = []) {
+  await page.evaluate(async (status, entries) => {
+    window.releaseLogResponse(status, entries);
+    delete window.releaseLogResponse;
+    await new Promise(requestAnimationFrame);
+  }, status, entries);
 }
 
 try {
@@ -40,6 +64,13 @@ try {
   });
   const page = await browser.newPage();
   const errors = [];
+  const logRequests = [];
+  page.on('request', req => {
+    const url = new URL(req.url());
+    if (url.pathname === '/api/admin/device-logs') logRequests.push({
+      query: Object.fromEntries(url.searchParams), method: req.method(), auth: req.headers().authorization,
+    });
+  });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.setViewport({ width: 1440, height: 1100 });
   await page.goto(server.httpUrl + '/admin', { waitUntil: 'networkidle0' });
@@ -50,9 +81,11 @@ try {
   await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('令牌无效'));
   assert.equal(await page.$eval('#dashboard', (element) => element.hidden), true);
 
+  assert.equal(logRequests.length, 0, 'no logs before successful admin login');
   await page.type('#admin-token', adminToken);
   await page.click('#login-form button');
   await page.waitForSelector('#dashboard:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#log-status').textContent.includes('暂无'));
   assert.equal(await page.$eval('#boards-count', (element) => element.textContent), '1');
   assert.match(await page.$eval('#boards', (element) => element.textContent), /<img src=x onerror=alert\(1\)>/);
   assert.equal(await page.$('#boards img'), null);
@@ -73,6 +106,65 @@ try {
   await page.waitForFunction(() => document.querySelector('#phones-count').textContent === '1');
   assert.equal(await page.$eval('#devices-count', (element) => element.textContent), '1');
   assert.equal(await page.$('#devices svg'), null);
+  assert.match(await page.$eval('#devices', el => el.textContent), /长期有效，直至撤销/);
+
+  const events = ['app_started', 'relay_connected', 'snapshot_synced', 'command_sent', 'command_executed',
+    'relay_disconnected', 'auth_rejected', 'sync_gap', 'command_failed', 'command_timeout'];
+  const entries = Array.from({ length: 40 }, (_, i) => ({ id: crypto.randomUUID(), ts: Date.now() + i,
+    level: i % 10 < 5 ? 'info' : 'error', event: events[i % 10] }));
+  await post('/api/device/logs', { entries }, paired.deviceToken);
+  const refreshLogs = () => page.click('#log-filters button');
+  const waitRows = count => page.waitForFunction(n => document.querySelector('#device-logs').rows.length === n &&
+    !document.querySelector('#log-status').textContent.includes('正在'), {}, count);
+  const shownEvents = () => page.$$eval('#device-logs tr', rows => rows.map(row => row.cells[4].textContent));
+  await page.type('#log-device', paired.deviceId);
+  const [firstPage] = await Promise.all([
+    page.waitForResponse(res => new URL(res.url()).pathname === '/api/admin/device-logs'), refreshLogs(),
+  ]);
+  const { nextCursor } = await firstPage.json();
+  assert.equal(typeof nextCursor, 'string');
+  await page.waitForSelector('#log-more:not([hidden])');
+  const query = logRequests.at(-1).query;
+  assert.deepEqual(query, { deviceId: paired.deviceId, limit: query.limit });
+  const pageSize = Number(query.limit);
+  assert.ok(pageSize > 0 && pageSize < entries.length);
+  await waitRows(pageSize);
+  await page.click('#log-more');
+  await waitRows(40);
+  assert.deepEqual(logRequests.at(-1).query, { ...query, before: nextCursor });
+  const newest = entries.toReversed();
+  assert.deepEqual(await shownEvents(), newest.map(e => e.event));
+  assert.equal(await page.$eval('#log-more', el => el.hidden), true);
+  await refreshLogs();
+  await waitRows(pageSize);
+  assert.deepEqual(logRequests.at(-1).query, query, 'refresh returns to the latest page');
+  for (const level of ['info', 'error']) {
+    await page.select('#log-level', level);
+    await refreshLogs();
+    await waitRows(20);
+    assert.deepEqual(logRequests.at(-1).query, { ...query, level });
+    assert.deepEqual(await shownEvents(), newest.filter(e => e.level === level).map(e => e.event));
+  }
+  await page.$eval('#log-device', el => { el.value = 'absent-device'; });
+  await refreshLogs();
+  await page.waitForFunction(() => document.querySelector('#log-status').textContent.includes('暂无'));
+  assert.equal(await page.$$eval('#device-logs tr', rows => rows.length), 0);
+  await page.$eval('#log-device', el => { el.value = ''; });
+  await holdLogResponse(page);
+  await refreshLogs();
+  await waitRows(20);
+  await releaseLogResponse(page, 401);
+  assert.equal(await page.$eval('#dashboard', el => el.hidden), false, 'stale 401 must not log out');
+  assert.deepEqual(await shownEvents(), newest.filter(e => e.level === 'error').map(e => e.event));
+  await holdLogResponse(page);
+  await releaseLogResponse(page, 503);
+  await page.waitForFunction(() => document.querySelector('#log-status').textContent.includes('读取失败'));
+  const unsafe = '<svg onload=alert(1)>';
+  await holdLogResponse(page);
+  await releaseLogResponse(page, 200, [{ ...entries[0], deviceId: unsafe, receivedAt: Date.now() }]);
+  await waitRows(1);
+  assert.equal(await page.$eval('#device-logs td', el => el.textContent), unsafe);
+  assert.equal(await page.$('#device-logs svg'), null);
 
   page.once('dialog', (dialog) => dialog.dismiss());
   await page.click('#devices button.danger');
@@ -128,7 +220,12 @@ try {
   await page.click('#refresh');
   await page.waitForFunction(() => document.querySelector('#notice').classList.contains('error'));
   await page.setOfflineMode(false);
+  await holdLogResponse(page);
   await page.click('#logout');
+  await releaseLogResponse(page, 200, [{ ...entries[0], deviceId: 'stale', receivedAt: Date.now() }]);
+  assert.deepEqual(await page.evaluate(() => [document.querySelector('#device-logs').rows.length,
+    document.querySelector('#log-level').value, document.querySelector('#log-device').value,
+    document.querySelector('#log-status').textContent, document.querySelector('#log-more').hidden]), [0, '', '', '', true]);
   assert.equal(await page.$eval('#dashboard', (element) => element.hidden), true);
   assert.equal(await page.$eval('#result-secret', (element) => element.value), '');
   await page.type('#admin-token', adminToken);
@@ -154,6 +251,7 @@ try {
   assert.deepEqual(await page.evaluate(() => [localStorage.length, document.cookie]), [0, '']);
 
   // Logout drops the stored token, so a refresh lands on the login page.
+  const authenticatedReads = logRequests.length;
   await page.click('#logout');
   assert.equal(await page.evaluate(() => sessionStorage.length), 0);
   await page.reload({ waitUntil: 'networkidle0' });
@@ -165,8 +263,10 @@ try {
   await page.waitForFunction(() => document.querySelector('#notice').textContent.includes('令牌无效'));
   assert.equal(await page.$eval('#dashboard', (element) => element.hidden), true);
   assert.equal(await page.evaluate(() => sessionStorage.length), 0);
+  assert.equal(logRequests.length, authenticatedReads, 'no log reads after logout or failed restore');
+  assert.ok(logRequests.every(req => req.method === 'GET' && req.auth === `Bearer ${adminToken}`));
   assert.deepEqual(errors, []);
-  console.log('PASS relay admin browser: login/reject, live status, pairing, device revoke/cancel, board rotation/unregister/delete, XSS escaping, offline errors, logout, refresh keeps session, stale token discarded, responsive layout, no localStorage/cookies, no runtime errors');
+  console.log('PASS relay admin browser: login/reject, live status, device log filters/pagination/refresh/session races, pairing, device revoke/cancel, board rotation/unregister/delete, XSS escaping, offline errors, logout, refresh keeps session, stale token discarded, responsive layout, no localStorage/cookies, no runtime errors');
 } finally {
   for (const socket of sockets) socket.terminate();
   await browser?.close();

@@ -10,6 +10,9 @@
   let adminToken = store?.getItem(STORAGE_KEY) || '';
   let busy = false;
   let knownBoards = new Map();
+  let logRevision = 0;
+  let logQuery = '';
+  let logCursor = null;
 
   function notice(message, error = false) {
     $('notice').textContent = message;
@@ -63,11 +66,18 @@
     $('logout').hidden = true;
     $('boards').replaceChildren();
     $('devices').replaceChildren();
+    ++logRevision;
+    logQuery = '';
+    logCursor = null;
+    $('log-filters').reset();
+    $('device-logs').replaceChildren();
+    $('log-status').textContent = '';
+    $('log-more').hidden = true;
     stopWaiting();
     clearResult();
   }
 
-  async function request(path, body) {
+  async function request(path, body, onUnauthorized = logout) {
     const response = await fetch(path, {
       method: body === undefined ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${adminToken}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
@@ -77,8 +87,9 @@
       signal: AbortSignal.timeout(12000),
     });
     if (response.status === 401) {
-      logout();
-      throw new Error('管理员令牌无效，请重新输入 ADMIN_TOKEN。');
+      const message = '管理员令牌无效，请重新输入 ADMIN_TOKEN。';
+      onUnauthorized(message);
+      throw new Error(message);
     }
     const result = await response.json();
     if (!response.ok) throw new Error(response.status === 429 ? '请求过于频繁，请稍后再试。' : result.error?.message || `请求失败 (${response.status})`);
@@ -137,7 +148,7 @@
   }
 
   function date(value) {
-    return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+    return value || value === 0 ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
   }
 
   function boardRows(boards) {
@@ -184,7 +195,7 @@
       cell(row, device.deviceName, device.deviceId);
       cell(row, badge(device.online ? `在线 · ${device.connections} 连接` : '离线', device.online ? 'live' : ''));
       cell(row, device.boardIds.join(', '));
-      cell(row, date(device.expiresAt));
+      cell(row, device.expiresAt === 0 ? '长期有效，直至撤销' : date(device.expiresAt));
       cell(row, button('撤销设备', 'danger', async () => {
         if (!confirm(`撤销设备 ${device.deviceName} (${device.deviceId})？\n会立即断开手机连接，之后需要重新配对。`)) return;
         await request('/auth/revoke/device', { deviceId: device.deviceId });
@@ -193,6 +204,54 @@
       tbody.append(row);
     }
     if (!devices.length) empty(tbody, '暂无有效的配对设备。生成配对码后，可在手机上完成配对。');
+  }
+
+  function logFilters() {
+    const filters = new URLSearchParams({ limit: '25' });
+    const device = $('log-device').value.trim();
+    if (device) filters.set('deviceId', device);
+    if ($('log-level').value) filters.set('level', $('log-level').value);
+    return filters.toString();
+  }
+
+  function logRow(entry) {
+    const row = document.createElement('tr');
+    cell(row, entry.deviceId);
+    cell(row, date(entry.ts));
+    cell(row, date(entry.receivedAt));
+    cell(row, entry.level === 'error' ? badge('错误', 'danger') : badge('普通'));
+    cell(row, entry.event);
+    return row;
+  }
+
+  async function loadLogs(before = null) {
+    if (!adminToken || $('dashboard').hidden) return;
+    const revision = ++logRevision;
+    const tbody = $('device-logs');
+    if (!before) {
+      logQuery = logFilters();
+      logCursor = null;
+      tbody.replaceChildren();
+    }
+    const params = new URLSearchParams(logQuery);
+    if (before) params.set('before', before);
+    $('log-more').hidden = true;
+    $('log-status').textContent = '正在读取日志…';
+    try {
+      const page = await request(`/api/admin/device-logs?${params}`, undefined, (message) => {
+        if (revision !== logRevision) return;
+        logout();
+        notice(message, true);
+      });
+      if (revision !== logRevision) return;
+      tbody.append(...page.entries.map(logRow));
+      logCursor = page.nextCursor;
+      $('log-status').textContent = tbody.rows.length ? `已显示 ${tbody.rows.length} 条日志` : '暂无匹配的日志。';
+    } catch (error) {
+      if (revision !== logRevision) return;
+      $('log-status').textContent = `日志读取失败：${error.message}`;
+    }
+    $('log-more').hidden = !logCursor;
   }
 
   async function refresh() {
@@ -245,7 +304,14 @@
     $('login').hidden = true;
     $('dashboard').hidden = false;
     $('logout').hidden = false;
+    void loadLogs();
   }
+
+  $('log-filters').addEventListener('submit', (event) => {
+    event.preventDefault();
+    void loadLogs();
+  });
+  $('log-more').addEventListener('click', () => { if (logCursor) void loadLogs(logCursor); });
 
   $('login-form').addEventListener('submit', (event) => {
     event.preventDefault();

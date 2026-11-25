@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { afterEach, test } from "node:test";
 import WebSocket from "ws";
 import { startServer, type StartedServer } from "../src/server.js";
@@ -9,7 +10,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
 });
 
-test("admin pair create, refresh, and revoke stay out of health", async () => {
+test("admin device revocation closes the connected phone and rejects refresh and reconnect", async () => {
   const adminToken = "admin-http-token-value";
   const boardToken = "board-http-token-value";
   const server = await start({ adminToken, boardToken });
@@ -35,8 +36,9 @@ test("admin pair create, refresh, and revoke stay out of health", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ pairCode: created.pairCode, deviceName: "pixel" }),
   });
-  const paired = (await pairedResponse.json()) as { deviceId: string; deviceToken: string; role: string; boardIds: string[] };
+  const paired = (await pairedResponse.json()) as { deviceId: string; deviceToken: string; role: string; boardIds: string[]; expiresAt: number };
   assert.equal(pairedResponse.status, 200);
+  assert.equal(paired.expiresAt, 0);
   assert.equal(paired.role, "phone");
   assert.deepEqual(paired.boardIds, ["thinkbook-main"]);
 
@@ -52,16 +54,30 @@ test("admin pair create, refresh, and revoke stay out of health", async () => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ deviceToken: paired.deviceToken }),
   });
-  const refreshed = (await refreshedResponse.json()) as { deviceToken: string; deviceId: string };
+  const refreshed = (await refreshedResponse.json()) as { deviceToken: string; deviceId: string; expiresAt: number };
   assert.equal(refreshedResponse.status, 200);
+  assert.equal(refreshed.expiresAt, 0);
   assert.notEqual(refreshed.deviceToken, paired.deviceToken);
 
+  const phone = new WebSocket(server.wsUrl);
+  await opened(phone);
+  const hello = readNext(phone);
+  phone.send(JSON.stringify({ v: 1, id: "hello", type: "client.hello", ts: Date.now(), payload: { token: refreshed.deviceToken } }));
+  assert.equal((await hello).type, "ack");
+  const closed = once(phone, "close", { signal: AbortSignal.timeout(2_000) });
   const revoked = await fetch(new URL("/auth/revoke/device", server.httpUrl), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${adminToken}` },
     body: JSON.stringify({ deviceId: refreshed.deviceId }),
   });
   assert.equal(revoked.status, 200);
+  await closed;
+  const retry = new WebSocket(server.wsUrl);
+  await opened(retry);
+  const rejected = readNext(retry);
+  retry.send(JSON.stringify({ v: 1, id: "retry", type: "client.hello", ts: Date.now(), payload: { token: refreshed.deviceToken } }));
+  assert.equal((await rejected).payload?.code, "unauthorized");
+  retry.close();
   const stale = await fetch(new URL("/auth/refresh", server.httpUrl), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -254,7 +270,6 @@ async function start(options: { adminToken: string; boardToken: string; pairAtte
     adminToken: options.adminToken,
     boardToken: options.boardToken,
     pairTtlMs: 60_000,
-    tokenTtlMs: 60_000,
     pairAttemptLimit: options.pairAttemptLimit,
     wsMessagesPerSec: options.wsMessagesPerSec,
     log: () => {},

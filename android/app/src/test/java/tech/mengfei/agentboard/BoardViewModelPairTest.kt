@@ -115,6 +115,8 @@ class BoardViewModelPairTest {
         assertEquals(order.last(), active)
         assertEquals(active, harness.model.state.value.activeSessionId)
         assertEquals(2, harness.store.readDisk().credentials.size)
+        assertTrue(harness.model.state.value.sessions.single { it.active }.validUntilRevoked)
+        assertFalse(harness.model.state.value.sessions.single { !it.active }.validUntilRevoked)
     }
 
     private fun heldAdd(sessions: List<PhoneSession>): Harness {
@@ -164,7 +166,7 @@ class BoardViewModelPairTest {
             relay.release(
                 HttpResult(
                     200,
-                    """{"deviceId":"dev_new","deviceToken":"dt_newtoken","role":"phone","boardIds":["board-new"],"expiresAt":80}""",
+                    """{"deviceId":"dev_new","deviceToken":"dt_newtoken","role":"phone","boardIds":["board-new"],"expiresAt":0}""",
                 ),
             )
         }
@@ -182,6 +184,25 @@ class BoardConnectionTest {
 
     @After
     fun teardown() { Dispatchers.resetMain() }
+
+    @Test
+    fun pastCachedExpiryStillAuthenticatesWithoutClaimingPermanentPairing() {
+        val (model, relay, owner) = harness(expiresAt = 50L) // Test clock starts at 1,000.
+        try {
+            assertFalse(model.state.value.sessions.single().validUntilRevoked)
+            relay.authenticate()
+            assertEquals("已连接", model.state.value.connection)
+            assertFalse(model.state.value.sessions.single().validUntilRevoked)
+        } finally { owner.clear() }
+    }
+
+    @Test
+    fun missingLegacyExpiryIsNotTheRelaysExplicitZero() {
+        val secret = MemoryPrefs()
+        secret.edit().putString("device_token", "dt_old").commit()
+        val legacy = SessionStore(MemoryPrefs(), secret).readDisk().legacy!!
+        assertTrue(legacy.expiresAt != 0L)
+    }
 
     @Test
     fun coldStartPollsAfterAuthenticationAndDoesNotReplayHealthySubscriptions() = kotlinx.coroutines.test.runTest(main.scheduler) {
@@ -703,9 +724,9 @@ class BoardConnectionTest {
         } finally { owner.clear() }
     }
 
-    private fun harness(secondBoard: Boolean = false): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
+    private fun harness(secondBoard: Boolean = false, expiresAt: Long = Long.MAX_VALUE): Triple<BoardViewModel, ConnectionRelay, androidx.lifecycle.ViewModelStore> {
         val store = SessionStore(MemoryPrefs(), MemoryPrefs())
-        store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", Long.MAX_VALUE,
+        store.apply(DiskOp.PutCredential(CredentialSecret("c1", "dt_test", "dev", expiresAt,
             "https://relay.example", "wss://relay.example/v1/ws", if (secondBoard) listOf("board-a", "board-b") else listOf("board-a"))))
         val sessions = listOfNotNull(PhoneSession("s1", "c1", "board-a", "Office", 1),
             if (secondBoard) PhoneSession("s2", "c1", "board-b", "Cabin", 2) else null)

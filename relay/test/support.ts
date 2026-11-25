@@ -27,7 +27,6 @@ export class Peer {
 
 export function setup(opts?: {
   cmdTimeoutMs?: number;
-  tokenTtlMs?: number;
   pairTtlMs?: number;
   pairAttemptLimit?: number;
   idempotencyTtlMs?: number;
@@ -39,7 +38,6 @@ export function setup(opts?: {
     adminToken: "admin-token-value",
     boardToken: "board-token-value",
     pairTtlMs: opts?.pairTtlMs ?? 60_000,
-    tokenTtlMs: opts?.tokenTtlMs ?? 60_000,
     pairAttemptLimit: opts?.pairAttemptLimit ?? 100,
     pairWindowMs: 60_000,
     now,

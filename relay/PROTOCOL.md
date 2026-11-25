@@ -46,11 +46,11 @@ Pair success:
   "deviceToken": "dt_example",
   "role": "phone",
   "boardIds": ["thinkbook-main"],
-  "expiresAt": 1761890300000
+  "expiresAt": 0
 }
 ```
 
-The device token is bound to that `deviceId`, `role: "phone"`, and those board ids. Refresh rotates the token and keeps the binding. Revoke drops it immediately and closes the socket.
+The device token is bound to that `deviceId`, `role: "phone"`, and those board ids. `expiresAt: 0` means this paired device has no expiry; refresh is optional and rotates the token without changing the binding. Revoke drops it immediately and closes the socket.
 
 `/health` is unauthenticated and looks like:
 
@@ -94,7 +94,7 @@ Each successful `board.register` bumps `generation` and resets `seq` to 0. Event
 
 `POST /auth/board/issue` revokes every earlier credential that could register those boards, including the bootstrap `BOARD_TOKEN`. The new token is the one that can register them. `POST /auth/revoke/board` with a `boardId` does the same for that id.
 
-On `sub.tasks` the relay sends the cached snapshot, then `evt.task` events newer than that snapshot. Pass `afterSeq` to skip task events the phone already applied. `evt.log` is not included; it is replayed only by `sub.logs`. `evt.task.done` is not replayed. Terminal status is in the snapshot. A live `evt.task.done` is best-effort for phones whose device token still verifies at send time. A refreshed, revoked, or expired token closes the old socket and does not receive later events. Clients dedupe a live `evt.task.done` by `eventId`.
+On `sub.tasks` the relay sends the cached snapshot, then `evt.task` events newer than that snapshot. Pass `afterSeq` to skip task events the phone already applied. `evt.log` is not included; it is replayed only by `sub.logs`. `evt.task.done` is not replayed. Terminal status is in the snapshot. A live `evt.task.done` is best-effort for phones whose device token still verifies at send time. A refreshed or revoked token closes the old socket and does not receive later events. Clients dedupe a live `evt.task.done` by `eventId`.
 
 If the board is offline, `cmd.*` returns `err` `board_offline` and is not queued.
 

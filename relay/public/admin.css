@@ -46,6 +46,9 @@ td .sub { display: block; color: #7a8e94; font-size: 11px; margin-top: 6px; max-
 .action-panel { padding: 24px; }
 label { display: block; font-size: 12px; font-weight: 600; margin: 20px 0 9px; }
 input, textarea { width: 100%; padding: 12px 14px; background: #fff; color: #233e46; border: 1px solid #d5dfe3; border-radius: 7px; font: inherit; }
+.log-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 0 24px 16px; }
+.log-filters label { margin: 0 0 5px; }
+.log-filters select { padding: 11px; color: inherit; font: inherit; background: white; border: 1px solid #d5dfe3; border-radius: 7px; }
 textarea { resize: vertical; font-family: ui-monospace, monospace; margin-bottom: 16px; overflow-wrap: anywhere; }
 input::placeholder { color: #9aaab0; }
 input:focus, textarea:focus { outline: 2px solid #b4ded5; border-color: #288e7e; }

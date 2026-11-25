@@ -41,7 +41,7 @@
       <div class="stats">
         <article class="panel stat"><span class="muted">在线看板</span><strong id="boards-count">0</strong><span class="hint">已注册的看板连接</span></article>
         <article class="panel stat"><span class="muted">在线手机连接</span><strong id="phones-count">0</strong><span class="hint">有效设备会话</span></article>
-        <article class="panel stat"><span class="muted">已配对设备</span><strong id="devices-count">0</strong><span class="hint">未过期且未撤销</span></article>
+        <article class="panel stat"><span class="muted">已配对设备</span><strong id="devices-count">0</strong><span class="hint">当前获授权的设备</span></article>
         <article class="panel stat"><span class="muted">服务运行时间</span><strong id="uptime">—</strong><span id="protocol" class="hint"></span></article>
       </div>
       <div class="notice info">当前为内存模式：服务重启会清空设备、配对码、动态令牌与撤销记录。这里只管理连接权限，不会执行或停止本机任务。</div>
@@ -53,7 +53,18 @@
 
       <section class="panel table-panel">
         <div class="section-heading"><div><h2>配对设备</h2><p class="hint">“撤销设备”会立即断开该手机，之后需要重新配对才能使用。</p></div><span id="devices-total" class="count"></span></div>
-        <div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>授权看板</th><th>令牌到期</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>设备</th><th>连接状态</th><th>授权看板</th><th>配对有效期</th><th>操作</th></tr></thead><tbody id="devices"></tbody></table></div>
+      </section>
+
+      <section class="panel table-panel" aria-labelledby="log-title">
+        <div class="section-heading"><div><h2 id="log-title">设备日志</h2><p class="hint">按中继接收顺序显示，最新的在前。</p></div></div>
+        <form id="log-filters" class="log-filters">
+          <div><label for="log-device">设备 ID</label><input id="log-device" placeholder="全部设备" autocomplete="off" spellcheck="false" maxlength="128"></div>
+          <div><label for="log-level">日志级别</label><select id="log-level"><option value="">全部级别</option><option value="info">普通</option><option value="error">错误</option></select></div>
+          <button type="submit" class="secondary">筛选 / 刷新日志</button>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>设备 ID</th><th>设备时间</th><th>接收时间</th><th>级别</th><th>事件</th></tr></thead><tbody id="device-logs"></tbody></table></div>
+        <div class="section-heading"><span id="log-status" class="hint" role="status"></span><button id="log-more" type="button" class="secondary" hidden>加载更多</button></div>
       </section>
 
       <section id="add-section" class="panel action-panel add-panel">

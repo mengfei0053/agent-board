@@ -34,6 +34,12 @@ Commands use one idempotency key per attempt. `accepted` waits. `executed` is th
 
 `evt.task.done` posts one notification per `eventId` on the `task_done` channel while the socket is online. The dedupe set lasts for the signed-in session, including a switch to another board. `evt.gap` keeps the list marked stale until a recovery snapshot covers that gap or a snapshot arrives on a new board generation. A log, task update, completion, or the cached snapshot replayed with the gap does not clear it, and the phone subscribes again. A dropped socket looks up an in-flight command instead of sending it again.
 
+## 手机诊断日志
+
+只记录预定义的启动、连接、同步和命令结果事件（含时间和普通/错误等级），不采集系统 logcat、任务正文、输出、附件、URL、令牌或异常原文。未配对时产生的本地记录不会在以后归给其他账户。所有设备共用有界内存入口（256 条）和不参与 Android 备份的磁盘队列（3,072 条，快照最多 215,044 字节，含原子替换临时文件最多 430,088 字节，不计文件系统元数据）。满时移除最旧记录。
+
+App 进程存活、已认证且对应看板在线、至少 30 秒无用户交互且没有运行中的任务或命令时，独立后台线程才向原中继发送，每批最多 50 条。失败退避、重试沿用原事件 ID，收到确认才删除；进程被系统终止时不唤醒手机，已落盘的记录下次启动后续传。中继管理台 →「设备日志」可筛选设备及错误/普通等级。这些诊断不是任务原始日志。
+
 ## Connection recovery
 
 「正在同步」means the relay reports the board online but the phone is still waiting for a complete snapshot of the current board generation. Cached pre-gap snapshots do not make the data current. The app shows the last receive time in local `HH:mm:ss` and offers 「重新连接」 without deleting pairing or resending task commands.

@@ -47,21 +47,23 @@ test("admin metadata lists offline, revoked and scoped boards without sharing mu
   assert.equal(hub.adminState().devices.every((item) => !item.online), true);
   assert.equal(hub.adminState().boards.find((item) => item.boardId === "thinkbook-main")?.online, false);
   clock.t += 60_001;
-  assert.equal(hub.adminState().devices.length, 0);
+  assert.deepEqual(hub.adminState().devices.map((item) => item.deviceId).sort(), [phone.deviceId, idle.deviceId].sort());
   assert.equal(hub.adminState().activePairCodes, 0);
   hub.dispose();
 });
 
-test("expired connected sessions and revoked devices disappear from admin metadata", () => {
-  const { auth, hub, peer, clock } = setup({ tokenTtlMs: 1_000 });
+test("admin metadata keeps long-lived connected devices but excludes revoked ones", () => {
+  const { auth, hub, peer, clock } = setup();
   const phone = helloPhone(hub, auth, peer());
   const other = helloPhone(hub, auth, peer(), "other");
   assert.ok(auth.revokeDevice(other.deviceId));
   hub.kickDevice(other.deviceId);
   assert.equal(hub.adminState().devices.length, 1);
-  clock.t += 1_001;
-  assert.equal(hub.adminState().devices.length, 0);
-  assert.equal(auth.verifyDevice(phone.token), null);
+  clock.t += 365 * 86_400_000;
+  const devices = hub.adminState().devices;
+  assert.deepEqual(devices.map((device) => device.deviceId), [phone.deviceId]);
+  assert.equal(devices[0]?.online, true);
+  assert.equal(devices[0]?.expiresAt, 0);
   hub.dispose();
 });
 

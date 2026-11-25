@@ -99,7 +99,8 @@ class SessionStore internal constructor(
                 deviceName = name,
                 deviceToken = token,
                 deviceId = secret.getString(KEY_DEVICE, null).orEmpty(),
-                expiresAt = secret.getLong(KEY_EXPIRES, 0L),
+                // An absent legacy field is unknown, not the relay's explicit zero.
+                expiresAt = secret.getLong(KEY_EXPIRES, -1L),
             )
         }
         return PhoneDisk(

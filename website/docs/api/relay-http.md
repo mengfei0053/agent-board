@@ -9,7 +9,7 @@ description: Relay 中继服务的健康检查、设备配对、令牌轮换、�
 ## 通用约定
 
 - 除 GET 外，业务请求使用 JSON 对象，推荐 `Content-Type: application/json`；请求体最大 **64 KiB**。
-- HTTP 响应带 `Cache-Control: no-store`。时间戳 `expiresAt` / `connectedAt` 均为 Unix 毫秒，`uptimeSec` 为秒。
+- HTTP 响应带 `Cache-Control: no-store`。非零时间戳 `expiresAt` / `connectedAt` 均为 Unix 毫秒；设备的 `expiresAt: 0` 表示长期有效，`uptimeSec` 为秒。
 - 管理接口要求 `Authorization: Bearer $ADMIN_TOKEN`。不能以 boardToken 或 deviceToken 代替。
 - 管理请求按 TCP 对端 IP 限制为 **60 次/分钟**，包括令牌校验失败的请求。配对尝试另有默认 **8 次/60 秒** 限制，由 `PAIR_ATTEMPT_LIMIT` / `PAIR_WINDOW_MS` 控制。当前不读取 `X-Forwarded-For`；反向代理后的请求可能共享限额。
 - JSON 响应提供 CORS `*`，允许 `Content-Type` / `Authorization`，方法 GET / POST / OPTIONS。OPTIONS 返回 `204`；CORS 不替代鉴权。
@@ -103,11 +103,17 @@ curl -X POST http://127.0.0.1:8787/auth/pair/create \
   "deviceToken": "dt_EXAMPLE",
   "role": "phone",
   "boardIds": ["thinkbook-main"],
-  "expiresAt": 1794132000000
+  "expiresAt": 0
 }
 ```
 
-deviceToken 绑定此 deviceId、phone 角色和 boardIds，默认有效期 7 天，由 `TOKEN_TTL_MS` 控制。保存到安全存储后，在 WebSocket 首帧 `client.hello` 使用。无效/过期/已使用配对码返回 `401`，尝试过多为 `429`。重复兑换不会返回原设备令牌。
+deviceToken 绑定此 deviceId、phone 角色和 boardIds，配对后不会自动过期，无需定期续期；丢失设备可在中继管理台撤销授权。保存到安全存储后，在 WebSocket 首帧 `client.hello` 使用。无效/过期/已使用配对码返回 `401`，尝试过多为 `429`。重复兑换不会返回原设备令牌。
+
+## 手机诊断日志
+
+`POST /api/device/logs` 使用设备 Bearer，设备身份取自已配对会话。未压缩的 `application/json` 请求最多 64 KiB，`entries` 为 1–50 条 `{id, ts, level, event}`：`id` 是稳定 UUID，`ts` 是设备端 Unix 毫秒。普通事件包括启动、连接、同步和命令收发；错误事件包括断线、认证拒绝、同步缺口、命令失败和超时。只接受定义好的事件码，不接受自由文本、凭证、任务内容或额外字段。服务端提交后返回 `{acked:[id,...]}`。保留期内同设备、同 ID、同内容重试不会重复写入；同 ID 不同内容返回 `409`，限流返回 `429`。
+
+`GET /api/admin/device-logs` 仅允许管理员 Bearer，可指定 `deviceId`、`level=info|error`、`limit`（默认 50、最大 100）以及上一页的 `nextCursor` 作为 `before`；返回 `{entries,nextCursor}`，按服务端接收顺序从新到旧排列。服务端按接收时间清理 7 天前的记录，每设备最多 1,000 条，总计最多 10,000 条。
 
 ## POST `/auth/refresh`
 
@@ -115,9 +121,9 @@ deviceToken 绑定此 deviceId、phone 角色和 boardIds，默认有效期 7 �
 {"deviceToken":"dt_OLD"}
 ```
 
-成功 `200`，结构与 pair 相同；deviceId、role、boardIds 不变，deviceToken 和 expiresAt 更新。旧令牌立即失效，其关联的旧 WebSocket 会被关闭，客户端须保存新令牌后重新连接和认证。
+成功 `200`，结构与 pair 相同；deviceId、role、boardIds 不变，deviceToken 轮换，expiresAt 保持为 0。旧令牌立即失效，其关联的旧 WebSocket 会被关闭，客户端须保存新令牌后重新连接和认证。
 
-无效、过期或已撤销令牌返回 `401`。此接口不是延长原令牌：响应丢失后不能依赖旧令牌重复刷新成功。
+无效、已轮换或已撤销的令牌返回 `401`。此接口不是延长原令牌：响应丢失后不能依赖旧令牌重复刷新成功。
 
 ## POST `/auth/revoke/device`
 
@@ -176,7 +182,7 @@ deviceToken 绑定此 deviceId、phone 角色和 boardIds，默认有效期 7 �
     "deviceName": "Pixel 8",
     "role": "phone",
     "boardIds": ["thinkbook-main"],
-    "expiresAt": 1794132000000,
+    "expiresAt": 0,
     "online": true,
     "connections": 1
   }]

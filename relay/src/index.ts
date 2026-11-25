@@ -17,7 +17,6 @@ const server = await startServer({
   adminToken: config.adminToken,
   boardToken: config.boardToken,
   databasePath: config.databasePath,
-  tokenTtlMs: config.tokenTtlMs,
   pairTtlMs: config.pairTtlMs,
   cmdTimeoutMs: config.cmdTimeoutMs,
   idempotencyTtlMs: config.idempotencyTtlMs,

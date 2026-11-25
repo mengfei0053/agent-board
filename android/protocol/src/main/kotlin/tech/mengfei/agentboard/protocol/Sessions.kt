@@ -995,9 +995,3 @@ fun relayHost(httpBase: String): String = try {
 }
 
 fun cardSubtitle(httpBase: String, boardId: String): String = "${relayHost(httpBase)} · $boardId"
-
-fun expiryCopy(expiresAt: Long, formatted: String, english: Boolean = false): String = if (english) {
-    "Sign-in expires at $formatted"
-} else {
-    "登录将于 $formatted 失效"
-}

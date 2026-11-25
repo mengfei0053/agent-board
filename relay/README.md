@@ -38,7 +38,7 @@ npm run dev
 | `BOARD_TOKEN` | generated | Bootstrap credential the connector sends in `board.register`. |
 | `RELAY_DB_PATH` | memory only in development | SQLite authorization database. Required in production; mount its parent directory on persistent storage. |
 | `PAIR_TTL_MS` | `300000` | Maximum pair-code lifetime. `PAIR_TTL` is accepted as an alias. |
-| `TOKEN_TTL_MS` | 7 days | Device token lifetime. Refresh rotates it. |
+| `TOKEN_TTL_MS` | obsolete (ignored) | Paired devices stay authorized until revoked. Refresh rotates the credential; it is not required to keep the pairing. |
 | `IDEMPOTENCY_TTL_MS` | `600000` | How long a `cmd.*` result is remembered. |
 | `CMD_TIMEOUT_MS` | `8000` | How long `accepted` waits before `timeout`. |
 | `PAIR_ATTEMPT_LIMIT` | `8` | Pair attempts per `PAIR_WINDOW_MS` per TCP peer. |
@@ -50,7 +50,7 @@ npm run dev
 Open **http://127.0.0.1:8787/admin** (or `https://<relay-host>/admin` behind TLS) and enter `ADMIN_TOKEN`.
 
 - View uptime, protocol version, online boards/phone connections, paired devices, and the count of unused pair codes. Use **刷新状态** to reload; there is no background polling.
-- View online/offline known boards, device names, allowed board IDs, and token expiration times. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
+- View online/offline known boards, device names, allowed board IDs, and pairing validity. The protected `GET /api/admin/state` endpoint returns metadata only, never tokens, pair codes, task contents, or logs. `/health` remains counts-only.
 - Create one-time phone pair codes for 1–20 board IDs (including offline boards); revoke devices and immediately disconnect their sockets.
 - **Add a board**: enter a board ID in "添加看板". The console issues a scoped `BOARD_TOKEN` with `rotate: false` (other boards' credentials are untouched), shows a ready-to-paste env snippet (`RELAY_WS_URL`, `BOARD_ID`, `BOARD_TOKEN`), and polls until the board connects. The boards table lists online boards first.
 - **生成配对码** (row action): a one-time code the phone enters to get access to that board. **解除注册** disconnects one board and blocks its ID (`POST /auth/board/unregister`): only that board's own scoped token is revoked, the shared bootstrap token and other boards are untouched, and adding the board again lifts the block. **删除** removes an offline board completely (`POST /auth/board/delete`): the ID, its scoped tokens, unused pair codes and cached state are dropped, and devices that only had access to that board are revoked. Deleting an online board returns 409.

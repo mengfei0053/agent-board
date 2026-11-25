@@ -803,7 +803,7 @@ export class RelayHub {
     phone.closeSocket();
   }
 
-  /** Re-read the device token. An expired, revoked, or rotated token closes the socket. */
+  /** Re-read the device token. A revoked or rotated token closes the socket. */
   private sessionStillValid(phone: PhoneConn): boolean {
     if (phone.closed || !phone.token) return false;
     const session = this.auth.verifyDevice(phone.token);

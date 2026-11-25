@@ -45,7 +45,7 @@ Relay behavior that already matches the product, and must not be re-specified as
 | Fact | Where |
 | --- | --- |
 | Pair code is `pc_` + 32 random bytes, one-time, default TTL 5 minutes (`PAIR_TTL_MS`). The admin chooses `boardIds` (1–20, unique, `BOARD_ID` grammar). | `relay/src/auth.ts` `createPairCode`, `POST /auth/pair/create` |
-| `POST /auth/pair` returns `{ deviceId, deviceToken, role: "phone", boardIds, expiresAt }`. The token is bound to that list for its life. Refresh rotates the token and **keeps** `deviceId` and `boardIds`. Default token TTL is 7 days (`TOKEN_TTL_MS`). | `auth.ts` `pair` / `refresh` / `mint` |
+| `POST /auth/pair` returns `{ deviceId, deviceToken, role: "phone", boardIds, expiresAt }`. The token is bound to that list for its life. Refresh rotates the token and **keeps** `deviceId` and `boardIds`. Paired devices have no expiry (`expiresAt: 0`). | `auth.ts` `pair` / `refresh` / `mint` |
 | Auth state is in memory. A relay restart invalidates every token. | `relay/src/index.ts` |
 | `client.hello` is once per socket. A second hello on the same socket is `already_authenticated`. Two sockets with two tokens are two `PhoneConn`s. `kickToken` drops only the rotated token. | `relay/src/hub.ts` `hello`, `kickToken` |
 | `board.list` returns each allowed `boardId` with `online: Boolean(live socket)`. No presence push exists. | `hub.ts` `listBoards` |
@@ -158,7 +158,7 @@ Forget is one S1 catalog commit. It removes that `sessionId` from the order and 
 | Forget the only session | Control disabled. Copy explains that the phone keeps one paired board. Replacing it is add-then-forget. |
 | Unpaired | Fresh install, or encrypted prefs unreadable. Empty guide and the pair form. Do not synthesize a board so the minimum-one rule looks satisfied. Plain-pref display names without a readable secret are not shown as paired. |
 
-Forget does not `POST /auth/revoke/device`. Copy must not say the board or the relay session was revoked. The token remains valid on the relay until expiry, restart, or an admin revoke. After a local forget of the last session on a credential, this phone no longer has the secret.
+Forget does not `POST /auth/revoke/device`. Copy must not say the board or the relay session was revoked. Persistent relays keep the token across restarts until rotation or admin revocation. After a local forget of the last session on a credential, this phone no longer has the secret.
 
 There is no “forget phone” that wipes the last board. Keystore failure is the empty state above, not a forget action.
 

@@ -134,7 +134,6 @@
     <string name="back">返回</string>
     <string name="save_relay">保存中继地址</string>
     <string name="device_line">设备 %1$s</string>
-    <string name="token_expires">设备令牌到期（不是配对码）：%1$s</string>
     <string name="refresh_token">刷新设备令牌</string>
     <string name="forget_phone">忘记这台手机</string>
     <string name="settings_hint">默认主机 relay.mengfei.tech 只是占位。请指向中继，不要填 ThinkBook 上的 127.0.0.1。模拟器访问电脑上的中继用 http://10.0.2.2:8787。</string>
@@ -166,11 +165,11 @@
     <string name="last_board_forget">仅剩一块看板，忘记已禁用</string>
     <string name="current_board">当前看板</string>
     <string name="switch_to_board">切换到此看板</string>
-    <string name="session_saved">本机会话已保存</string>
+    <string name="session_saved">配对记录已保存在本机</string>
     <string name="relay_line">中继 %1$s</string>
     <string name="add_board_note">同一中继可挂多块看板；手机本地存多套配对会话，切换只改活动看板。忘记某块只删本机连接，不是远端撤销。</string>
     <string name="no_paired_board">这台手机还没有已配对看板。</string>
-    <string name="sign_in_expires">登录将于 %1$s 失效</string>
+    <string name="pairing_until_revoked">配对长期有效，直至撤销</string>
     <string name="chip_all">全部</string>
     <string name="chip_todo">待办</string>
     <string name="chip_running">进行中</string>

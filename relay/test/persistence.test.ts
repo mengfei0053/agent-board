@@ -7,7 +7,7 @@ import WebSocket from "ws";
 import { AuthStore } from "../src/auth.js";
 import { SqliteAuthStore } from "../src/persistence.js";
 import { startServer, type StartedServer } from "../src/server.js";
-import { NOW } from "./support.js";
+import { NOW, pairPhone } from "./support.js";
 
 const servers: StartedServer[] = [];
 
@@ -61,11 +61,54 @@ test("SQLite restores device sessions, scoped credentials and revocations withou
   assert.equal(auth.verifyDevice(paired.deviceToken), null);
   assert.equal(auth.verifyDevice(refreshed.deviceToken)?.deviceId, paired.deviceId);
 
-  clock.t += 60_001;
-  assert.equal(auth.verifyDevice(refreshed.deviceToken), null);
+  clock.t += 365 * 86_400_000;
+  assert.deepEqual(auth.verifyDevice(refreshed.deviceToken)?.boardIds, ["thinkbook-main"]);
+  assert.equal(auth.revokeDevice(paired.deviceId), true);
   auth.close();
   auth = openAuth(databasePath, () => clock.t);
   assert.equal(auth.verifyDevice(refreshed.deviceToken), null);
+  assert.equal(auth.verifyDevice(paired.deviceToken), null);
+});
+
+test("startup migrates only unexpired legacy devices and preserves their scope across restarts", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "agent-board-relay-migration-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "relay.sqlite");
+  let now = NOW;
+  const original = openAuth(path, () => now);
+  const live = pairPhone(original, ["allowed"]);
+  const expired = pairPhone(original, ["another-board"]);
+  const revoked = pairPhone(original, ["another-board"]);
+  assert.equal(original.revokeDevice(revoked.deviceId), true);
+  original.close();
+
+  // Recreate a v1 snapshot just before the legacy live token's expiry.
+  const db = new SqliteAuthStore(path);
+  try {
+    const snapshot = db.load();
+    assert.ok(snapshot);
+    for (const row of snapshot.devices) row.expiresAt = row.deviceId === live.deviceId ? now + 1 : now;
+    db.save(snapshot);
+  } finally {
+    db.close();
+  }
+
+  for (const restartAt of [NOW, NOW + 1, NOW + 365 * 86_400_000]) {
+    now = restartAt;
+    const auth = openAuth(path, () => now);
+    try {
+      const session = auth.verifyDevice(live.deviceToken);
+      assert.equal(session?.expiresAt, 0);
+      assert.deepEqual(session?.boardIds, ["allowed"]);
+      assert.deepEqual(auth.adminState().devices.map((device) => device.deviceId), [live.deviceId]);
+      for (const unavailable of [expired, revoked]) {
+        assert.equal(auth.verifyDevice(unavailable.deviceToken), null);
+        assert.equal(auth.refresh(unavailable.deviceToken).ok, false);
+      }
+    } finally {
+      auth.close();
+    }
+  }
 });
 
 test("server restart keeps phone access and known boards but resets online connection state", async (t) => {
@@ -74,7 +117,7 @@ test("server restart keeps phone access and known boards but resets online conne
   const databasePath = join(directory, "relay.sqlite");
   const adminToken = "admin-persistent-token-value";
   const boardToken = "board-persistent-token-value";
-  const options = { adminToken, boardToken, databasePath, tokenTtlMs: 60_000, pairTtlMs: 60_000, log: () => {} };
+  const options = { adminToken, boardToken, databasePath, pairTtlMs: 60_000, log: () => {} };
   let server = await startServer(options);
   servers.push(server);
 
@@ -153,7 +196,6 @@ function openAuth(databasePath: string, now: () => number): AuthStore {
     adminToken: "admin-token-value",
     boardToken: "board-token-value",
     pairTtlMs: 60_000,
-    tokenTtlMs: 60_000,
     now,
     persistence: new SqliteAuthStore(databasePath),
   });

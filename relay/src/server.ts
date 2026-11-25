@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type Server as HttpServer, type Ser
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { AuthStore } from "./auth.js";
 import { serveAdmin } from "./admin.js";
+import { DeviceLogService, LogQueueFull } from "./device-log-service.js";
+import { parseLogBatch, parseLogQuery } from "./device-logs.js";
 import { RelayHub, type BoardConn, type PhoneConn } from "./hub.js";
 import { log as defaultLog, type LogFields } from "./log.js";
 import { makeErr, PROTOCOL_VERSION, type Envelope } from "./protocol.js";
@@ -17,7 +19,6 @@ export type ServerOptions = {
   boardToken: string;
   /** Omit for the backwards-compatible in-memory development mode. */
   databasePath?: string;
-  tokenTtlMs?: number;
   pairTtlMs?: number;
   cmdTimeoutMs?: number;
   idempotencyTtlMs?: number;
@@ -47,12 +48,12 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
   const now = options.now ?? Date.now;
   let persistence: SqliteAuthStore | undefined;
   let auth: AuthStore;
+  let deviceLogs: DeviceLogService | undefined;
   try {
     persistence = options.databasePath ? new SqliteAuthStore(options.databasePath) : undefined;
     auth = new AuthStore({
       adminToken: options.adminToken,
       boardToken: options.boardToken,
-      tokenTtlMs: options.tokenTtlMs ?? 7 * 24 * 60 * 60 * 1000,
       pairTtlMs: options.pairTtlMs ?? 300_000,
       pairAttemptLimit: options.pairAttemptLimit,
       pairWindowMs: options.pairWindowMs,
@@ -62,6 +63,12 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
   } catch (error) {
     persistence?.close();
     throw error;
+  }
+  try {
+    deviceLogs = await DeviceLogService.open(options.databasePath ? `${options.databasePath}.device-logs.sqlite` : undefined, now);
+  } catch {
+    // A damaged diagnostics DB must not take down pairing or task traffic.
+    writeLog("error", "device logs unavailable; task relay remains enabled");
   }
   const hub = new RelayHub(auth, {
     cmdTimeoutMs: options.cmdTimeoutMs ?? 8_000,
@@ -76,7 +83,8 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
   const adminLimiter = new RateLimiter(60, 60_000, now);
 
   const server = createServer((req, res) => {
-    void handleHttp(req, res, { auth, hub, startedAt, log: writeLog, adminLimiter, now }).catch((error: unknown) => {
+    void handleHttp(req, res, { auth, hub, startedAt, log: writeLog, adminLimiter, now, deviceLogs }).catch((error: unknown) => {
+      if (error instanceof LogQueueFull) error = new HttpError(429, "rate_limited", "too many pending device log requests");
       const status = error instanceof HttpError ? error.status : 500;
       const code = error instanceof HttpError ? error.code : "internal";
       const message = status === 500 ? "internal error" : error instanceof Error ? error.message : "internal error";
@@ -179,6 +187,15 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
     }
   }, 30_000);
   ping.unref?.();
+  const sweep = setInterval(() => {
+    void deviceLogs?.run({ op: "prune" }).catch(() => writeLog("error", "device log expiry failed"));
+  }, 60_000);
+  sweep.unref();
+  const close = async () => {
+    clearInterval(sweep);
+    try { await closeServer(server, wss, sockets, hub, ping, auth); }
+    finally { await deviceLogs?.run({ op: "close" }); }
+  };
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -193,13 +210,13 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
       });
     });
   } catch (error) {
-    await closeServer(server, wss, sockets, hub, ping, auth);
+    await close();
     throw error;
   }
 
   const address = server.address();
   if (!address || typeof address === "string") {
-    await closeServer(server, wss, sockets, hub, ping, auth);
+    await close();
     throw new Error("server did not bind a TCP port");
   }
   const clientHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
@@ -208,14 +225,14 @@ export async function startServer(options: ServerOptions): Promise<StartedServer
     port: address.port,
     httpUrl: `http://${clientHost}:${address.port}`,
     wsUrl: `ws://${clientHost}:${address.port}/v1/ws`,
-    close: () => closeServer(server, wss, sockets, hub, ping, auth),
+    close,
   };
 }
 
 async function handleHttp(
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: { auth: AuthStore; hub: RelayHub; startedAt: number; log: LogFn; adminLimiter: RateLimiter; now: () => number },
+  ctx: { auth: AuthStore; hub: RelayHub; startedAt: number; log: LogFn; adminLimiter: RateLimiter; now: () => number; deviceLogs?: DeviceLogService },
 ): Promise<void> {
   if (req.method === "OPTIONS") {
     sendJson(res, 204, {});
@@ -224,13 +241,39 @@ async function handleHttp(
   const url = new URL(req.url ?? "/", "http://relay.local");
   const path = url.pathname;
   if (serveAdmin(path, req.method, res)) return;
-  if (path === "/api/admin/state") {
+  if (path === "/api/device/logs") {
+    if (req.method !== "POST") return methodNotAllowed(res);
+    const token = bearer(req);
+    if (!ctx.auth.verifyDevice(token)) throw new HttpError(401, "unauthorized", "device token rejected");
+    if (!ctx.deviceLogs) throw new HttpError(503, "unavailable", "device logs unavailable");
+    if (url.search) throw new HttpError(400, "bad_request", "unexpected query parameters");
+    const mediaType = req.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json" || (req.headers["content-encoding"] ?? "identity") !== "identity") {
+      throw new HttpError(415, "unsupported_media_type", "uncompressed application/json required");
+    }
+    const entries = parseLogBatch(await readJson(req, res));
+    if (!entries) throw new HttpError(400, "bad_request", "invalid device log batch");
+    // Credentials may have been revoked while the body was streaming.
+    const session = ctx.auth.verifyDevice(token);
+    if (!session) throw new HttpError(401, "unauthorized", "device token rejected");
+    const acked = await ctx.deviceLogs.run({ op: "append", deviceId: session.deviceId, entries });
+    if (acked === "id_conflict") throw new HttpError(409, acked, "entry ID already used with different content");
+    if (acked === "rate_limited") throw new HttpError(429, acked, "too many device log writes");
+    return sendJson(res, 200, { acked });
+  }
+  if (path === "/api/admin/state" || path === "/api/admin/device-logs") {
     if (req.method !== "GET") {
       res.setHeader("allow", "GET");
       sendJson(res, 405, { error: { code: "method_not_allowed", message: "method not allowed" } });
       return;
     }
     if (!authorizeAdmin(req, res, ctx)) return;
+    if (path === "/api/admin/device-logs") {
+      if (!ctx.deviceLogs) throw new HttpError(503, "unavailable", "device logs unavailable");
+      const query = parseLogQuery(url.searchParams);
+      if (!query) throw new HttpError(400, "bad_request", "invalid device log filters");
+      return sendJson(res, 200, await ctx.deviceLogs.run({ op: "list", query }));
+    }
     sendJson(res, 200, {
       service: "agent-board-relay",
       protocol: PROTOCOL_VERSION,
@@ -445,13 +488,17 @@ class HttpError extends Error {
   }
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage, streamingResponse?: ServerResponse): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
+  // Preserve the socket long enough to send 413 even for a streaming upload.
+  for await (const chunk of streamingResponse ? req.iterator({ destroyOnReturn: false }) : req) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buf.length;
-    if (size > MAX_BODY) throw new HttpError(413, "payload_too_large", "body too large");
+    if (size > MAX_BODY) {
+      if (streamingResponse) streamingResponse.shouldKeepAlive = false;
+      throw new HttpError(413, "payload_too_large", "body too large");
+    }
     chunks.push(buf);
   }
   if (size === 0) throw new HttpError(400, "bad_request", "JSON body required");

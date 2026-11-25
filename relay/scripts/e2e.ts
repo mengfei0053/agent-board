@@ -25,7 +25,6 @@ export async function runE2E(options?: { quiet?: boolean }): Promise<E2EResult> 
     port: 0,
     adminToken,
     boardToken,
-    tokenTtlMs: 60_000,
     pairTtlMs: 60_000,
     cmdTimeoutMs: 2_000,
     pairAttemptLimit: 30,

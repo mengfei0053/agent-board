@@ -16,6 +16,7 @@ test("pair codes are high entropy, one-time, and short lived", () => {
   const created = auth.createPairCode(["thinkbook-main"], 1_000);
   assert.equal(created.ok, true);
   if (!created.ok) return;
+  assert.equal(created.expiresAt, clock.t + 1_000);
   assert.ok(created.pairCode.startsWith("pc_"));
   assert.ok(created.pairCode.length >= 40);
 
@@ -59,18 +60,25 @@ test("pair attempts are rate limited", () => {
   if (!blocked.ok) assert.equal(blocked.code, "rate_limited");
 });
 
-test("device refresh keeps the board binding and revoke kills the token", () => {
-  const { auth, hub } = setup();
+test("permanent device tokens keep their board binding across time and rotation until revoked", () => {
+  const { auth, hub, clock } = setup();
   hubs.push(hub);
   const paired = auth.pair(must(auth.createPairCode(["thinkbook-main"])).pairCode, "pixel", "ip");
   assert.equal(paired.ok, true);
   if (!paired.ok) return;
+  assert.equal(paired.expiresAt, 0);
+  clock.t += 365 * 86_400_000;
+  assert.deepEqual(auth.verifyDevice(paired.deviceToken)?.boardIds, ["thinkbook-main"]);
   const refreshed = auth.refresh(paired.deviceToken);
   assert.equal(refreshed.ok, true);
   if (!refreshed.ok) return;
+  assert.equal(refreshed.expiresAt, 0);
   assert.equal(refreshed.deviceId, paired.deviceId);
   assert.deepEqual(refreshed.boardIds, ["thinkbook-main"]);
   assert.equal(auth.verifyDevice(paired.deviceToken), null);
+  assert.equal(auth.refresh(paired.deviceToken).ok, false);
+  clock.t += 365 * 86_400_000;
+  assert.equal(auth.verifyDevice(refreshed.deviceToken)?.expiresAt, 0);
   assert.equal(auth.revokeDevice(refreshed.deviceId), true);
   assert.equal(auth.verifyDevice(refreshed.deviceToken), null);
   assert.equal(auth.refresh(refreshed.deviceToken).ok, false);

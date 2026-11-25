@@ -329,8 +329,8 @@ test("a sequence gap is reported and a board generation change forces a resync",
   assert.equal(phonePeer.ofType("evt.gap").at(-1)?.payload?.reason, "generation_changed");
 });
 
-test("a rotated or expired phone token does not keep receiving events", () => {
-  const fx = setup({ tokenTtlMs: 1_000 });
+test("only the rotated token keeps receiving scoped events over time", () => {
+  const fx = setup();
   open.push(fx.hub);
   const boardPeer = fx.peer();
   const board = registerBoard(fx.hub, boardPeer);
@@ -360,18 +360,16 @@ test("a rotated or expired phone token does not keep receiving events", () => {
   assert.equal(freshPeer.ofType("evt.task").length, 1);
   assert.equal(freshPeer.ofType("evt.task.done").length, 1);
 
-  const expiredPeer = fx.peer();
-  const expired = helloPhone(fx.hub, fx.auth, expiredPeer, "expired");
-  fx.hub.handlePhone(expired.conn, frame("sub.tasks", "sub-expired", { boardId: "thinkbook-main" }));
-  fx.clock.t += 1_000;
-  fx.hub.handleBoard(board, frame("evt.task", "task-exp", { ...cursor(3, "task-exp"), task: task("running", "task_02") }));
-  assert.equal(expiredPeer.closed, true);
-  assert.equal(expiredPeer.ofType("evt.task").length, 0);
-  assert.equal(expiredPeer.ofType("evt.task.done").length, 0);
+  fx.clock.t += 365 * 86_400_000;
+  registerBoard(fx.hub, fx.peer(), "other-board");
+  fx.hub.handlePhone(fresh, frame("sub.tasks", "sub-other", { boardId: "other-board" }));
+  assert.equal(codeOf(byRef(freshPeer, "sub-other")), "forbidden");
+  fx.hub.handleBoard(board, frame("evt.task", "task-later", { ...cursor(3, "task-later"), task: task("running", "task_02") }));
+  assert.equal(stalePeer.ofType("evt.task").length, 0);
   assert.equal(freshPeer.ofType("evt.task").some((message) => {
     const body = message.payload?.task;
     return isRecord(body) && body.id === "task_02";
-  }), false);
+  }), true);
 });
 
 test("another board cannot complete a command by guessing its id", () => {

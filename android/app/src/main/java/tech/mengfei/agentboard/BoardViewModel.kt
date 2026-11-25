@@ -9,6 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import tech.mengfei.agentboard.data.AppDiagnostics
+import tech.mengfei.agentboard.data.DiagnosticEvent
+import tech.mengfei.agentboard.data.DiagnosticTarget
 import tech.mengfei.agentboard.data.RelayApi
 import tech.mengfei.agentboard.data.SessionStore
 import tech.mengfei.agentboard.data.SocketListener
@@ -238,7 +241,7 @@ data class SessionRow(
     val subtitle: String,
     val relayUrl: String = "",
     val pill: String,
-    val expiresAt: Long?,
+    val validUntilRevoked: Boolean,
     val active: Boolean,
 )
 
@@ -265,7 +268,6 @@ data class UiState(
     val repairSessionId: String? = null,
     val paired: Boolean = false,
     val secureStore: Boolean = true,
-    val expiresAt: Long? = null,
     val sessions: List<SessionRow> = emptyList(),
     val activeSessionId: String? = null,
     val connection: String = "",
@@ -348,6 +350,7 @@ class BoardViewModel(
     private val ids: () -> String = { newMessageId() },
     private val keys: () -> String = { newIdempotencyKey() },
     private val englishUi: Boolean = false,
+    private val diagnostics: AppDiagnostics? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(UiState(englishUi = englishUi))
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -372,6 +375,8 @@ class BoardViewModel(
     private var pollJob: Job? = null
     private val proofJobs = mutableMapOf<String, Job>()
     private var screen: Screen = Screen.Pair
+    private val diagnosticStarts = mutableSetOf<String>()
+    private var diagnosticsStopped = false
 
     init {
         boot()
@@ -1007,6 +1012,7 @@ class BoardViewModel(
                 val result = relay.request("POST", "$base/auth/pair", encodePairBody(code, phoneName))
                 if (leaveStalePair(attempt)) return@launch
                 if (result.code !in 200..299) {
+                    if (result.code == 401 || result.code == 403) diagnostics?.recordLocal(DiagnosticEvent.AUTH_REJECTED)
                     busy = false
                     banner = pairHttpFailure(result.code, result.body, englishUi)
                     render()
@@ -1388,6 +1394,7 @@ class BoardViewModel(
             override fun onClosed(reason: String) {
                 viewModelScope.launch {
                     if (live.epoch != epoch) return@launch
+                    diagnostics?.record(credentialId, DiagnosticEvent.RELAY_DISCONNECTED)
                     java.util.logging.Logger.getLogger("AgentBoardLink").info("Socket closed; retrying")
                     live.timeoutJob?.cancel()
                     live.phase = SocketPhase.CLOSED
@@ -1449,6 +1456,17 @@ class BoardViewModel(
         val routed = routeFrame(routeInput(credentialId, epoch, live, message, kind))
         val target = routed as? RouteResult.ToSession ?: return
         val record = target.ref
+        if (record != null) {
+            val event =
+                when {
+                    message.type == "err" -> DiagnosticEvent.COMMAND_FAILED
+                    message.text("stage") == "failed" -> DiagnosticEvent.COMMAND_FAILED
+                    message.text("stage") == "timeout" -> DiagnosticEvent.COMMAND_TIMEOUT
+                    message.text("stage") == "executed" -> DiagnosticEvent.COMMAND_EXECUTED
+                    else -> null
+                }
+            event?.let { diagnostics?.record(credentialId, it) }
+        }
         when (record?.command) {
             "cmd.detail" -> onDetail(target.sessionId, message)
             "cmd.archive.list" -> onArchive(target.sessionId, message)
@@ -1468,6 +1486,7 @@ class BoardViewModel(
         live.timeoutJob?.cancel()
         live.backoff = 1_000
         live.phase = SocketPhase.AUTHENTICATED
+        diagnostics?.record(credentialId, DiagnosticEvent.RELAY_CONNECTED)
         armPoll()
         live.suppressConnected = false
         live.helloBoardIds = disk.credentials[credentialId]?.boardIds?.toSet().orEmpty()
@@ -1556,6 +1575,7 @@ class BoardViewModel(
         when (val outcome = holder.reducer.apply(before, message)) {
             is ApplyOutcome.Resync -> {
                 if (!holder.view.needsResync) {
+                    session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.SYNC_GAP) }
                     java.util.logging.Logger.getLogger("AgentBoardLink").info("Event gap: board=${holder.view.boardId} reason=${outcome.reason}")
                 }
                 holder.view = outcome.view
@@ -1577,6 +1597,7 @@ class BoardViewModel(
                     val live = session(sessionId)?.let { lives[it.credentialId] }
                     holder.snapshotAt = now
                     if (!outcome.view.needsResync) {
+                        session(sessionId)?.let { diagnostics?.record(it.credentialId, DiagnosticEvent.SNAPSHOT_SYNCED) }
                         holder.appliedGeneration = outcome.view.generation
                         holder.resync.onSnapshot()
                     }
@@ -1905,8 +1926,10 @@ class BoardViewModel(
             holder.inflight = null
             refs.remove(message.id)
             if (session.sessionId == activeId) commandNote = say("Not connected to the relay.")
-        } else if (followupId == null && holder.inflight?.requestId == message.id) {
-            holder.settled.remove(action)
+            diagnostics?.record(session.credentialId, DiagnosticEvent.COMMAND_FAILED)
+        } else {
+            diagnostics?.record(session.credentialId, DiagnosticEvent.COMMAND_SENT)
+            if (followupId == null && holder.inflight?.requestId == message.id) holder.settled.remove(action)
         }
         render()
     }
@@ -2216,6 +2239,7 @@ class BoardViewModel(
 
     private fun markRepair(credentialId: String, message: String) {
         val live = lives[credentialId] ?: return
+        diagnostics?.record(credentialId, DiagnosticEvent.AUTH_REJECTED)
         live.phase = SocketPhase.UNAUTHORIZED
         live.epoch += 1
         relay.closeSocket(credentialId)
@@ -2321,7 +2345,33 @@ class BoardViewModel(
         return false
     }
 
+    private fun updateDiagnosticTargets() {
+        val sink = diagnostics ?: return
+        val targets =
+            referencedCredentialIds(disk).mapNotNull { id ->
+                val secret = disk.credentials[id] ?: return@mapNotNull null
+                val online =
+                    !diagnosticsStopped && lives[id]?.phase == SocketPhase.AUTHENTICATED &&
+                        sessionsOn(id).any { slots[it.sessionId]?.proof?.online == true }
+                DiagnosticTarget(id, secret.deviceId, secret.httpBase, secret.deviceToken, online)
+            }
+        // Wire `queued` also denotes a saved draft. Drafts must not prevent uploads forever.
+        val workInProgress =
+            busy ||
+                slots.values.any { holder ->
+                    holder.inflight != null || holder.view.tasks.any { it.status == "running" || it.status == "paused" }
+                }
+        sink.updateTargets(targets, busy = workInProgress || diagnosticsStopped)
+        diagnosticStarts.retainAll(targets.map { it.credentialId }.toSet())
+        for (target in targets) {
+            if (diagnosticStarts.add(target.credentialId)) {
+                sink.record(target.credentialId, DiagnosticEvent.APP_STARTED)
+            }
+        }
+    }
+
     private fun render() {
+        updateDiagnosticTargets()
         val session = session(activeId)
         val holder = session?.let { slot(it.sessionId) }
         val pill = session?.let { pillFor(it) }
@@ -2387,7 +2437,8 @@ class BoardViewModel(
                 subtitle = secret?.let { cardSubtitle(it.httpBase, item.boardId) } ?: item.boardId,
                 relayUrl = secret?.wsUrl.orEmpty(),
                 pill = itemPill,
-                expiresAt = secret?.expiresAt,
+                // A cached finite expiry may predate a relay upgrade. Only zero is definitive.
+                validUntilRevoked = secret?.expiresAt == 0L,
                 active = item.sessionId == activeId,
             )
         }
@@ -2406,7 +2457,6 @@ class BoardViewModel(
             deviceName = disk.deviceName,
             paired = sessions.isNotEmpty(),
             secureStore = disk.secretsReadable,
-            expiresAt = session?.let { disk.credentials[it.credentialId]?.expiresAt },
             sessions = sessions,
             activeSessionId = activeId,
             connection = if (screen == Screen.Reading) zh(MIGRATION_READING, "Reading paired boards") else copy?.primary.orEmpty(),
@@ -2596,6 +2646,8 @@ class BoardViewModel(
     private fun newLocalId(prefix: String) = prefix + UUID.randomUUID().toString().replace("-", "").take(16)
 
     override fun onCleared() {
+        diagnosticsStopped = true
+        updateDiagnosticTargets()
         pollJob?.cancel()
         proofJobs.values.forEach { it.cancel() }
         lives.values.forEach { it.job?.cancel(); it.timeoutJob?.cancel() }
@@ -2698,6 +2750,6 @@ class BoardViewModelFactory(private val app: AgentBoardApp) : ViewModelProvider.
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val english = tech.mengfei.agentboard.ui.prefersEnglish(java.util.Locale.getDefault().language)
-        return BoardViewModel(app.store, app.relay, app.notifier, englishUi = english) as T
+        return BoardViewModel(app.store, app.relay, app.notifier, englishUi = english, diagnostics = app.diagnostics) as T
     }
 }

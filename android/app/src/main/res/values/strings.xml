@@ -134,7 +134,6 @@
     <string name="back">Back</string>
     <string name="save_relay">Save relay URL</string>
     <string name="device_line">Device %1$s</string>
-    <string name="token_expires">Device token expires (not the pair code): %1$s</string>
     <string name="refresh_token">Refresh device token</string>
     <string name="forget_phone">Forget this phone</string>
     <string name="settings_hint">The default host is a placeholder for relay.mengfei.tech. Point this at the relay, not at 127.0.0.1 on the ThinkBook. An emulator reaches a relay on the computer at http://10.0.2.2:8787.</string>
@@ -166,11 +165,11 @@
     <string name="last_board_forget">Forget is off while this is the only board.</string>
     <string name="current_board">Current board</string>
     <string name="switch_to_board">Switch to this board</string>
-    <string name="session_saved">Saved on this phone</string>
+    <string name="session_saved">Pairing saved on this phone</string>
     <string name="relay_line">Relay %1$s</string>
     <string name="add_board_note">One relay can hold several boards. This phone keeps each pairing locally, and switching only changes the active board. Forgetting a board removes this phone connection. It does not revoke the remote board.</string>
     <string name="no_paired_board">This phone has no paired board yet.</string>
-    <string name="sign_in_expires">Sign-in expires at %1$s</string>
+    <string name="pairing_until_revoked">Pairing is valid until revoked</string>
     <string name="chip_all">All</string>
     <string name="chip_todo">Todo</string>
     <string name="chip_running">Running</string>

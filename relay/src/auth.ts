@@ -65,6 +65,8 @@ type Credential = Omit<PersistedCredential, "boardIds"> & {
   revoked: boolean;
 };
 
+// Keep the numeric v1 wire field for older phones; 0 means no expiry for a paired device.
+const NO_DEVICE_EXPIRY = 0;
 const BOARD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
@@ -88,7 +90,6 @@ export class AuthStore {
       adminToken: string;
       boardToken: string;
       pairTtlMs: number;
-      tokenTtlMs: number;
       pairAttemptLimit?: number;
       pairWindowMs?: number;
       now?: () => number;
@@ -98,7 +99,6 @@ export class AuthStore {
     if (!opts.adminToken) throw new Error("admin token is empty");
     if (!opts.boardToken) throw new Error("board token is empty");
     if (!Number.isFinite(opts.pairTtlMs) || opts.pairTtlMs < 1_000) throw new Error("pair TTL must be at least 1000ms");
-    if (!Number.isFinite(opts.tokenTtlMs) || opts.tokenTtlMs <= 0) throw new Error("token TTL must be positive");
     this.adminToken = opts.adminToken;
     this.persistence = opts.persistence;
     this.bootstrap = { token: opts.boardToken, revoked: false };
@@ -155,12 +155,9 @@ export class AuthStore {
     if (!deviceToken) return { ok: false, code: "bad_request", message: "deviceToken is required" };
     const tokenHash = hashSecret(deviceToken);
     const session = this.devices.get(tokenHash);
-    if (!session || session.expiresAt <= this.now()) {
-      if (session) this.forgetTokenAndPersist(tokenHash, session.deviceId);
-      return { ok: false, code: "unauthorized", message: "device token rejected" };
-    }
+    if (!session) return { ok: false, code: "unauthorized", message: "device token rejected" };
     const minted = this.mint(session.deviceName, session.boardIds, session.deviceId);
-    this.forgetToken(tokenHash, session.deviceId, false);
+    this.forgetToken(tokenHash, session.deviceId);
     this.persist();
     return { ok: true, ...minted };
   }
@@ -168,12 +165,7 @@ export class AuthStore {
   verifyDevice(token: string): DeviceSession | null {
     const tokenHash = hashSecret(token);
     const session = this.devices.get(tokenHash);
-    if (!session) return null;
-    if (session.expiresAt <= this.now()) {
-      this.forgetTokenAndPersist(tokenHash, session.deviceId);
-      return null;
-    }
-    return publicSession(session);
+    return session ? publicSession(session) : null;
   }
 
   verifyBoard(token: string, boardId: string): BoardCheck {
@@ -197,7 +189,7 @@ export class AuthStore {
   revokeDevice(deviceId: string): boolean {
     const tokens = this.tokensByDevice.get(deviceId);
     if (!tokens || tokens.size === 0) return false;
-    for (const token of [...tokens]) this.forgetToken(token, deviceId, false);
+    for (const token of [...tokens]) this.forgetToken(token, deviceId);
     this.persist();
     return true;
   }
@@ -273,7 +265,7 @@ export class AuthStore {
       if (session.boardIds.length === 0) orphaned.add(session.deviceId);
     }
     for (const deviceId of orphaned) {
-      for (const token of [...(this.tokensByDevice.get(deviceId) ?? [])]) this.forgetToken(token, deviceId, false);
+      for (const token of [...(this.tokensByDevice.get(deviceId) ?? [])]) this.forgetToken(token, deviceId);
     }
     this.persist();
     return { ok: true, credentialIds, revokedDeviceIds: [...orphaned] };
@@ -315,10 +307,6 @@ export class AuthStore {
   }
 
   deviceCount(): number {
-    const now = this.now();
-    for (const [token, session] of this.devices) {
-      if (session.expiresAt <= now) this.forgetTokenAndPersist(token, session.deviceId);
-    }
     return this.tokensByDevice.size;
   }
 
@@ -328,7 +316,6 @@ export class AuthStore {
     boards: { boardId: string; revoked: boolean; credentialActive: boolean }[];
     activePairCodes: number;
   } {
-    this.deviceCount();
     this.prunePairs();
     const devices = [...new Map([...this.devices.values()].map((session) => [session.deviceId, session])).values()]
       .map(publicSession);
@@ -368,9 +355,11 @@ export class AuthStore {
     ];
     this.revokedBoardIds = new Set(snapshot.revokedBoardIds);
     this.boardIds = new Set(snapshot.boardIds);
+    // Migrate only still-valid legacy pairings. Never resurrect an expired token.
+    const now = this.now();
     for (const session of snapshot.devices) {
-      if (session.expiresAt <= this.now()) continue;
-      this.devices.set(session.tokenHash, { ...session, boardIds: [...session.boardIds] });
+      if (session.expiresAt !== NO_DEVICE_EXPIRY && session.expiresAt <= now) continue;
+      this.devices.set(session.tokenHash, { ...session, boardIds: [...session.boardIds], expiresAt: NO_DEVICE_EXPIRY });
       this.tokensByDevice.set(session.deviceId, new Set([session.tokenHash]));
     }
     this.persist();
@@ -405,7 +394,7 @@ export class AuthStore {
 
   private mint(deviceName: string, boardIds: string[], deviceId = `dev_${randomBytes(8).toString("hex")}`): Omit<PairSuccess, "ok"> {
     const deviceToken = `dt_${randomBytes(32).toString("base64url")}`;
-    const expiresAt = this.now() + this.opts.tokenTtlMs;
+    const expiresAt = NO_DEVICE_EXPIRY;
     const session: StoredDeviceSession = {
       deviceId,
       deviceName,
@@ -421,17 +410,12 @@ export class AuthStore {
     return { deviceId, deviceToken, role: "phone", boardIds: [...boardIds], expiresAt };
   }
 
-  private forgetTokenAndPersist(token: string, deviceId: string): void {
-    this.forgetToken(token, deviceId, true);
-  }
-
-  private forgetToken(token: string, deviceId: string, persist = false): void {
+  private forgetToken(token: string, deviceId: string): void {
     this.devices.delete(token);
     const bucket = this.tokensByDevice.get(deviceId);
     if (!bucket) return;
     bucket.delete(token);
     if (bucket.size === 0) this.tokensByDevice.delete(deviceId);
-    if (persist) this.persist();
   }
 
   private prunePairs(): void {
@@ -495,7 +479,7 @@ function validateSnapshot(snapshot: AuthSnapshot): void {
     Array.isArray(snapshot.devices) && snapshot.devices.every((session) =>
       session && typeof session.deviceId === "string" && typeof session.deviceName === "string" &&
       session.role === "phone" && validHash(session.tokenHash) && validIds(session.boardIds) &&
-      Number.isSafeInteger(session.expiresAt) && session.expiresAt > 0) &&
+      Number.isSafeInteger(session.expiresAt) && session.expiresAt >= 0) &&
     Array.isArray(snapshot.credentials) && snapshot.credentials.every((credential) =>
       credential && typeof credential.id === "string" && validHash(credential.tokenHash) && validIds(credential.boardIds)) &&
     Array.isArray(snapshot.boardIds) && snapshot.boardIds.every((id) => typeof id === "string" && BOARD_ID.test(id)) &&

@@ -332,7 +332,8 @@ private fun BoardCard(state: UiState, model: BoardViewModel, row: tech.mengfei.a
                 Text(row.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (row.relayUrl.isNotBlank()) Text(stringResource(R.string.relay_line, row.relayUrl),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(stringResource(R.string.session_saved), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(if (row.validUntilRevoked) R.string.pairing_until_revoked else R.string.session_saved),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Box {
                 ConnectionPill(row.pill, Modifier.clip(CircleShape).clickable { optionsOpen = true }.padding(vertical = 3.dp))
@@ -344,8 +345,6 @@ private fun BoardCard(state: UiState, model: BoardViewModel, row: tech.mengfei.a
                 }
             }
         }
-        row.expiresAt?.let { Text(stringResource(R.string.sign_in_expires, DateFormat.getDateTimeInstance().format(Date(it))),
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MakeAction(stringResource(if (row.active) R.string.current_board else R.string.switch_to_board),
                 { model.activateSession(row.sessionId, BoardPickPath.MyBoards) }, Modifier.weight(1f), primary = true, enabled = !row.active)

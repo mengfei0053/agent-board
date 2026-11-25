@@ -113,7 +113,7 @@ test("a missing capability is unsupported and is not stored", () => {
 });
 
 test("settings writes redact the journal, keep a placeholder, and do not replay a different body", () => {
-  const fx = setup({ tokenTtlMs: 120_000 });
+  const fx = setup();
   const boardPeer = fx.peer();
   const board = register(fx, boardPeer, CAPS);
   const phonePeer = fx.peer();
