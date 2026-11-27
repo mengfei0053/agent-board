@@ -88,6 +88,7 @@ async function createViaUi(page, { mode, title, prompt, model }) {
 
 async function main() {
   const state = createState();
+  state.workspaces.get("ws_default").settings = { skills: ["docs/deploy.md"] };
   const server = createMockServer(state);
   const { base } = await listen(server);
   console.log(`[e2e-board] mock server ${base}`);
@@ -498,6 +499,18 @@ async function main() {
       assert.equal(await page.$eval("#create-model", (el) => el.value), "wb/cn:deepseek-v4.1-flash");
       await page.select("#create-thinking-effort", "high");
       await page.type('input[name="title"]', "数据库模型草稿");
+      await page.type("#create-prompt", "/");
+      await page.waitForSelector("#create-skills [role=option]");
+      assert.deepEqual(await page.$$eval("#create-skills button", rows => rows.map(r => r.textContent)), ["/docs/deploy.md", "/pi-review"]);
+      await page.type("#create-prompt", "p"); // Without arrow navigation Tab completes the first match.
+      await page.keyboard.press("Tab");
+      assert.equal(await page.$eval("#create-prompt", el => el.value), "/docs/deploy.md ");
+      assert.equal(await page.evaluate(() => document.activeElement.id), "create-prompt");
+      await page.$eval("#create-prompt", el => el.select());
+      await page.keyboard.type("/rev");
+      await page.waitForSelector("#create-skills button");
+      await page.click("#create-skills button");
+      assert.equal(await page.$eval("#create-prompt", el => el.value), "/pi-review ");
       await page.type("#create-prompt", "use db model in draft");
       await Promise.all([
         page.waitForSelector("#detail-modal:not(.hidden)"),
@@ -527,6 +540,20 @@ async function main() {
       assert.equal(createdTodo?.model, "gpt-6.1-terra");
       assert.equal(createdTodo?.thinkingEffort, "medium");
       assert.equal(createdTodo?.status, "queued");
+
+      await page.type("#continue-prompt", "/");
+      await page.waitForSelector("#continue-skills button");
+      const highlightedSkill = () => page.$eval('#continue-skills [aria-selected="true"]', el => el.textContent);
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await highlightedSkill(), "/codex-review");
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await highlightedSkill(), "/docs/deploy.md");
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Tab");
+      assert.equal(await page.$eval("#continue-prompt", el => el.value), "/codex-review ");
+      assert.equal(await page.$("#followup-queue .followup-item"), null);
+      await page.$eval("#continue-prompt", el => el.select());
+      await page.keyboard.press("Backspace");
 
       // While task is active, pressing Enter in #continue-prompt queues up to 5 pending prompts without stopping the task
       for (let i = 1; i <= 5; i++) {

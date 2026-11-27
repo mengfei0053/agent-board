@@ -1,3 +1,4 @@
+import { attachSkillPicker } from "./skillPicker.js";
 import { renderMarkdown } from "./markdown.js";
 import { mergeBoardTask, sortLaneTasks } from "./boardTaskMerge.js";
 import { grokBotAvailable } from "./grokBot.js";
@@ -614,7 +615,7 @@ function applyCreateAgentDefaults() {
   createThinkingEffortSelect.closest("label").hidden = isBot;
   form.querySelector(".attach-field").hidden = isBot;
   form.querySelector(".prompt-toolbar").hidden = isBot;
-  document.getElementById("create-prompt").placeholder = isBot ? "用文字描述任务；托管 Bot 无法读取看板本地文件。" : "要 Agent 做的事（可粘贴或插入图片）";
+  document.getElementById("create-prompt").placeholder = isBot ? "用文字描述任务；托管 Bot 无法读取看板本地文件。" : "要 Agent 做的事（输入 / 选择技能，可粘贴或插入图片）";
   const def = isBot ? {} : getAgentDefaultForKind(kind);
   createDefaultsPristine = true;
   createPreferredEffort = def.thinkingEffort || "";
@@ -2488,7 +2489,7 @@ function paintDetail(task) {
   continueModel.closest(".continue-model-grid").hidden = isBot;
   continueModelHint.hidden = isBot;
   continueRow.querySelector(".prompt-toolbar").hidden = isBot;
-  continuePrompt.placeholder = isBot ? "用文字补充续跑说明；托管 Bot 无法读取看板本地文件。" : "可选：补充续跑说明；留空则按原任务继续（可粘贴图片）。运行中按回车添加下一轮待办";
+  continuePrompt.placeholder = isBot ? "用文字补充续跑说明；托管 Bot 无法读取看板本地文件。" : "可选：补充续跑说明；输入 / 选择技能，可粘贴图片。运行中按回车添加下一轮待办";
   continueModel.disabled = isBot || !canContinue(task) || !task.sessionId || submitting;
   if (continueThinkingEffort) {
     continueThinkingEffort.disabled = isBot || !canContinue(task) || submitting;
@@ -3147,6 +3148,22 @@ document.getElementById("ws-path-pick")?.addEventListener("click", async () => {
   const modal = ensureFolderModal();
   modal.classList.remove("hidden");
   await loadFolder(wsPathInput.value.trim() || undefined);
+});
+
+async function promptSkills(kind, workspaceId) {
+  if (!kind || kind === "grok") return [];
+  const res = await fetch(`/api/agents/${encodeURIComponent(kind)}/skills`);
+  if (!res.ok) throw new Error("读取技能失败");
+  const { skills } = await res.json();
+  const workspaceSkills = workspaces.get(workspaceId)?.settings?.skills || [];
+  return [...new Set([...workspaceSkills, ...skills])];
+}
+
+attachSkillPicker(document.getElementById("create-prompt"), document.getElementById("create-skills"),
+  () => promptSkills(createKindSelect.value, selectedWorkspaceId));
+attachSkillPicker(continuePrompt, document.getElementById("continue-skills"), () => {
+  const task = tasks.get(selectedId);
+  return promptSkills(task?.kind, task?.workspaceId);
 });
 
 function promptEnterSubmits(e) {

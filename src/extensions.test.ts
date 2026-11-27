@@ -32,6 +32,18 @@ function makeSkill(root: string) {
   writeFileSync(join(root, "scripts", "review.sh"), "#!/bin/sh\necho review\n", { mode: 0o755 });
 }
 
+test("task skill picker lists only installed skills for the requested agent, including managed links", () => {
+  const f = fixture();
+  makeSkill(join(f.paths.pi.skills, "local"));
+  makeSkill(join(f.store, "managed"));
+  symlinkSync(join(f.store, "managed"), join(f.paths.pi.skills, "managed"), "dir");
+  mkdirSync(join(f.paths.pi.skills, "incomplete"));
+  makeSkill(join(f.paths.codex.skills, "codex-only"));
+  assert.deepEqual(f.manager.installedSkillNames("pi"), ["local", "managed"]);
+  assert.deepEqual(f.manager.installedSkillNames("claude"), []);
+  assert.throws(() => f.manager.installedSkillNames("../pi"));
+});
+
 test("native paths include Cursor and XDG Devin and honor tool environment overrides", () => {
   const paths = extensionPaths("/example", { XDG_CONFIG_HOME: "/xdg", CODEX_HOME: "/codex", PI_CODING_AGENT_DIR: "/pi", KIMI_CODE_HOME: "/kimi" });
   assert.equal(paths.cursor.mcp, "/example/.cursor/mcp.json");

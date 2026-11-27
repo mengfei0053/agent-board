@@ -816,6 +816,12 @@ app.get("/api/settings/extensions", async (c) => {
   catch (e) { return errorJson(c, e, 500); }
 });
 
+app.get("/api/agents/:kind/skills", (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json({ skills: extensionManager().installedSkillNames(c.req.param("kind")) }); }
+  catch (e) { return errorJson(c, e, 500); }
+});
+
 app.get("/api/settings/extensions/local-skills", async (c) => {
   c.header("Cache-Control", "no-store");
   try { return c.json({ skills: await extensionManager().discoverSkills() }); }

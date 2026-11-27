@@ -189,8 +189,9 @@
         </label>
         <label class="prompt-field">任务内容
           <div id="create-quick-prompts" class="quick-prompts" hidden></div>
-          <textarea name="prompt" id="create-prompt" required rows="6" placeholder="要 Agent 做的事（可粘贴或插入图片）"></textarea>
+          <textarea name="prompt" id="create-prompt" aria-controls="create-skills" aria-autocomplete="list" required rows="6" placeholder="要 Agent 做的事（可粘贴或插入图片）"></textarea>
         </label>
+        <div id="create-skills" class="skill-picker" role="listbox" aria-label="可用技能" hidden></div>
         <div class="prompt-toolbar" data-for="create-prompt">
           <button type="button" class="secondary prompt-img-btn" data-for="create-prompt">插入图片</button>
           <input type="file" class="prompt-img-file" data-for="create-prompt" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
@@ -292,7 +293,8 @@
           <p id="continue-model-hint" class="muted continue-hint"></p>
           <div id="continue-quick-prompts" class="quick-prompts" hidden></div>
           <ul id="followup-queue" class="followup-queue" hidden aria-label="待办下一轮提示词"></ul>
-          <textarea id="continue-prompt" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）。运行中按回车作为待办下一轮提示词（最多 5 条）"></textarea>
+          <textarea id="continue-prompt" aria-controls="continue-skills" aria-autocomplete="list" rows="2" placeholder="可选：补充续跑说明；留空则「请基于当前上下文继续完成任务」（可粘贴图片）。运行中按回车作为待办下一轮提示词（最多 5 条）"></textarea>
+          <div id="continue-skills" class="skill-picker" role="listbox" aria-label="可用技能" hidden></div>
           <div class="prompt-toolbar prompt-toolbar-inline" data-for="continue-prompt">
             <button type="button" class="secondary prompt-img-btn" data-for="continue-prompt">插入图片</button>
             <input type="file" class="prompt-img-file" data-for="continue-prompt" accept="image/png,image/jpeg,image/gif,image/webp" hidden />

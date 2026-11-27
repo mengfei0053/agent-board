@@ -314,6 +314,19 @@ export class ExtensionManager {
     return results;
   }
 
+  installedSkillNames(kind: string): string[] {
+    const agent = EXTENSION_AGENTS.find(id => id === kind);
+    if (!agent) throw new HttpError(400, "不支持的技能目录");
+    const root = this.deps.paths[agent].skills;
+    if (!existsSync(root)) return [];
+    // Include managed links too: unlike the import dialog, the picker wants installed skills.
+    return readdirSync(root, { withFileTypes: true })
+      .filter(entry => !entry.name.startsWith(".") && (entry.isDirectory() || entry.isSymbolicLink()))
+      .map(entry => entry.name)
+      .filter(name => statSync(join(root, name, "SKILL.md"), { throwIfNoEntry: false })?.isFile())
+      .sort();
+  }
+
   async discoverSkills() {
     const catalog = await this.deps.load();
     const entries: { agent: ExtensionAgent | "board"; name: string; path: string }[] = [];

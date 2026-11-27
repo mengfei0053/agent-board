@@ -296,6 +296,10 @@ export function createMockServer(state, extra) {
       }
     }
 
+    const skillsRoute = /^\/api\/agents\/(\w+)\/skills$/.exec(pathname);
+    if (skillsRoute && req.method === "GET") {
+      return json(res, 200, { skills: [`${skillsRoute[1]}-review`] });
+    }
     if ((pathname === "/api/agent-models" || pathname === "/api/models") && req.method === "GET") {
       const kind = u.searchParams.get("kind") || "";
       if (kind && state.agentModels[kind]) {
