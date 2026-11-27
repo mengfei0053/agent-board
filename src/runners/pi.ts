@@ -1,6 +1,7 @@
 import { customAlphabet } from "nanoid";
-import { modelFromJsonLine } from "./modelFromEvent.js";
-import { sessionFromJsonLine } from "./sessionFromEvent.js";
+import { modelFromEvent } from "./modelFromEvent.js";
+import { sessionFromEvent } from "./sessionFromEvent.js";
+import { createUsageParser } from "./usageFromEvent.js";
 import type { Runner, RunnerHandle } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
@@ -114,6 +115,7 @@ export const piRunner: Runner = {
     const built = buildPiRpcArgs(task, opts);
     if (built.assignSession) hooks.onStatus({ sessionId: built.sessionId });
 
+    const parseUsage = createUsageParser("pi");
     let status = task.status;
     let modelError: string | undefined;
     let steerSeq = 0;
@@ -131,6 +133,7 @@ export const piRunner: Runner = {
 
     const handle = spawnLogged(resolveCliCommand("pi"), built.args, task.cwd, {
       onLog: hooks.onLog,
+      onUsage: hooks.onUsage,
       onStatus: (patch) => {
         // Wait for exit/watchdog so retries can recover and all output is retained.
         if (patch.status === "succeeded" && modelError) {
@@ -149,16 +152,6 @@ export const piRunner: Runner = {
         pendingSteerIds.size === 0 &&
         runsSettled >= Math.max(1, runsStarted),
       classifyLine: (line, h) => {
-        const detected = modelFromJsonLine(line);
-        if (detected && !task.model) {
-          task.model = detected;
-          h.onStatus({ model: detected });
-        }
-        const sid = sessionFromJsonLine(line);
-        if (sid && sid !== task.sessionId) {
-          task.sessionId = sid;
-          h.onStatus({ sessionId: sid });
-        }
         try {
           const ev = JSON.parse(line) as {
             id?: string;
@@ -177,6 +170,20 @@ export const piRunner: Runner = {
             method?: string;
             toolName?: string;
           };
+          if (h.onUsage) {
+            const usage = parseUsage(ev);
+            if (usage) h.onUsage(usage);
+          }
+          const detected = modelFromEvent(ev);
+          if (detected && !task.model) {
+            task.model = detected;
+            h.onStatus({ model: detected });
+          }
+          const sid = sessionFromEvent(ev);
+          if (sid && sid !== task.sessionId) {
+            task.sessionId = sid;
+            h.onStatus({ sessionId: sid });
+          }
           if (!ev.type) return;
           if (ev.type === "extension_ui_request") {
             if (

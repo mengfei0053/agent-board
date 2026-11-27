@@ -1,6 +1,8 @@
 import type { Task } from "../types.js";
+import type { RunnerUsage } from "../usageRecord.js";
 
 export type RunnerHooks = {
+  onUsage?: (usage: RunnerUsage) => void;
   onStatus: (patch: Partial<Task>) => void;
   /** `source` is set for child stdout/stderr. Omitted for board-authored lines. */
   onLog: (line: string, source?: "stdout" | "stderr") => void;

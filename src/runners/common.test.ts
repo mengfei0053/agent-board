@@ -43,6 +43,17 @@ describe("stream line buffer", () => {
     assert.deepEqual(pushed.lines, ["short-a", "short-b"]);
   });
 
+  it("preserves final usage events and a clean tail after a burst exceeds the line budget", () => {
+    const state = createStreamLineState();
+    const burst = Array.from({ length: 2123 }, (_, i) => String(i));
+    const result = '{"type":"turn.completed","usage":{"output_tokens":9}}';
+    const pushed = pushStreamBytes(state, Buffer.from([...burst, result, 'partial'].join('\n')));
+    assert.equal(pushed.lines.length, 500);
+    assert.equal(pushed.droppedLines, 1624);
+    assert.deepEqual(pushed.lines.slice(-3), ['2121', '2122', result]);
+    assert.equal(endStream(state), 'partial');
+  });
+
   it("drops an unterminated line that exceeds the cap", () => {
     const state = createStreamLineState();
     const huge = Buffer.alloc(1_000_001, 0x61);

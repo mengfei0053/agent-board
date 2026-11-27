@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>用量查询 · agent-board</title>
+  <script>
+    try {
+      const pref = localStorage.getItem("agent-board.theme");
+      const systemTheme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.dataset.theme = pref === "light" || pref === "dark" ? pref : systemTheme;
+    } catch { document.documentElement.dataset.theme = "dark"; }
+  </script>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/usage.css" />
+  <script type="module" src="/usage.js"></script>
+</head>
+<body class="docs-page">
+  <div class="app docs-app">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-mark" aria-hidden="true">ab</div>
+        <div class="topbar-brand-text"><h1>用量查询</h1><p class="muted">agent-board · 本地时间</p></div>
+      </div>
+      <a class="btn-link secondary" href="/">← 返回看板</a>
+    </header>
+    <main class="docs-main usage-main">
+      <section>
+        <h2>查询范围</h2>
+        <form id="filters" class="usage-controls">
+          <label>日期范围<select id="range">
+            <option value="1">今天</option><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="custom">自选日期</option>
+          </select></label>
+          <label hidden>开始日期<input type="date" id="from" /></label>
+          <label hidden>结束日期（含）<input type="date" id="to" /></label>
+          <label>Agent<select id="agent">
+            <option value="">全部 Agent</option><option value="pi">pi</option><option value="claude">Claude Code</option>
+            <option value="cursor">Cursor CLI</option><option value="devin">Devin CLI</option><option value="codex">Codex CLI</option>
+            <option value="kimi">Kimi Code CLI</option><option value="grok">Grok</option>
+          </select></label>
+          <label>时间粒度<select id="bucket"><option value="hour">按小时</option><option value="day">按日</option></select></label>
+          <button type="submit" class="secondary">查询</button>
+        </form>
+        <p>仅统计本 Board 内自启用记录起的用量。目前支持 Pi、Claude Code 和 Codex，其他 Agent 尚未采集。Claude Code 和 Codex 按轮次结束时间计入；轮次汇总不等于请求数。</p>
+        <p id="status" role="status"></p>
+      </section>
+      <div id="results" hidden>
+        <section>
+          <h2>用量概览</h2>
+          <div id="summary" class="usage-summary"></div>
+          <p>“—”表示无可确认数据；标有“部分”的数值仅基于已覆盖的记录，不代表全部用量。费用来自 CLI 上报，可能包含按模型定价估算的金额，不代表实际账单。</p>
+        </section>
+        <section>
+          <h2>用量趋势</h2>
+          <label class="usage-metric">趋势指标<select id="metric"></select></label>
+          <div class="usage-chart">
+            <div class="usage-axis" aria-hidden="true"><span id="trend-max"></span><span>0</span></div>
+            <div class="usage-scroll" role="group" aria-label="各时段用量" aria-describedby="trend-key"><div id="trend"></div></div>
+          </div>
+          <p id="trend-key" class="usage-key">空槽：无记录 · ?：指标未知 · 短线：已确认 0 · 斜纹：部分记录</p>
+          <p id="trend-detail" class="usage-detail">悬停或点选时段查看详情，聚焦后可用左右方向键切换。</p>
+        </section>
+        <section>
+          <h2>按 Agent 汇总</h2>
+          <div class="usage-scroll"><table class="docs-table" aria-label="按 Agent 汇总">
+            <thead><tr><th>Agent</th><th>费用（美元）</th><th>可确认请求数</th><th>Token</th><th>缓存命中率</th></tr></thead><tbody id="agents"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

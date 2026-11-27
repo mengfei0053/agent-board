@@ -51,6 +51,12 @@
         <p>下列 curl 假设服务在 <code>http://127.0.0.1:8791</code>。</p>
       </section>
 
+      <section id="usage">
+        <h2><a href="/usage.html">全局用量查询</a></h2>
+        <p><code>GET /api/usage?from=1780272000000&amp;to=1780358400000&amp;bucket=hour&amp;timezone=Asia%2FShanghai</code>。时间为毫秒时间戳，含开始、不含结束；可选 <code>agent</code>。按小时最多查 32 天，按日最多查 366 天。不传时区时使用 <code>offset</code>（UTC 以东分钟数，默认 0）。</p>
+        <p>返回 <code>summary</code>、<code>byAgent</code>、<code>trend</code> 和各时段起点 <code>slots</code>。没有可确认的数据返回 null；各指标的 Records 计数表示覆盖的记录数。只统计本 Board 新采集的事件，不导入终端历史。删除任务不会删除已计入的用量，不保存对话正文。</p>
+      </section>
+
       <section id="webhook">
         <h2>Webhook 新建草稿 / Todo</h2>
         <p><code>POST /api/hooks/tasks</code>（别名 <code>POST /webhook/tasks</code>）</p>

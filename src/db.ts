@@ -152,6 +152,24 @@ CREATE TABLE IF NOT EXISTS model_history (
 );
 CREATE INDEX IF NOT EXISTS model_history_recent_idx ON model_history(kind, last_used_at DESC);
 
+CREATE TABLE IF NOT EXISTS usage_events (
+  run_key TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  occurred_ms BIGINT NOT NULL,
+  agent TEXT NOT NULL,
+  model TEXT,
+  fresh_input BIGINT,
+  output_tokens BIGINT,
+  cache_read BIGINT,
+  cache_write BIGINT,
+  total_tokens BIGINT,
+  cost_usd DOUBLE PRECISION,
+  requests BIGINT,
+  PRIMARY KEY (run_key, event_key)
+);
+CREATE INDEX IF NOT EXISTS usage_time_idx ON usage_events(occurred_ms);
+CREATE INDEX IF NOT EXISTS usage_agent_time_idx ON usage_events(agent, occurred_ms);
+
 CREATE TABLE IF NOT EXISTS agent_models (
   kind TEXT NOT NULL,
   model TEXT NOT NULL,

@@ -33,6 +33,10 @@ export function pushStreamBytes(state: StreamLineState, chunk: Buffer): StreamPu
   }
   state.buf += text;
   const lines: string[] = [];
+  // Keep the end of a burst as well as its head: final usage / completion events
+  // must not get stranded as a multi-line string passed to JSON.parse on exit.
+  const tailSize = 32;
+  let droppedLines = 0;
   for (;;) {
     const nl = state.buf.indexOf("\n");
     if (nl < 0) break;
@@ -43,13 +47,10 @@ export function pushStreamBytes(state: StreamLineState, chunk: Buffer): StreamPu
       truncated = true;
       continue;
     }
-    lines.push(line);
-    if (lines.length > MAX_STREAM_LINES_PER_CHUNK) {
-      return {
-        lines: lines.slice(0, MAX_STREAM_LINES_PER_CHUNK),
-        truncated,
-        droppedLines: lines.length - MAX_STREAM_LINES_PER_CHUNK,
-      };
+    if (lines.length < MAX_STREAM_LINES_PER_CHUNK) lines.push(line);
+    else {
+      lines[MAX_STREAM_LINES_PER_CHUNK - tailSize + droppedLines % tailSize] = line;
+      droppedLines++;
     }
   }
   if (state.buf.length > MAX_STREAM_LINE_CHARS) {
@@ -57,7 +58,12 @@ export function pushStreamBytes(state: StreamLineState, chunk: Buffer): StreamPu
     state.discarding = true;
     truncated = true;
   }
-  return { lines, truncated, droppedLines: 0 };
+  if (droppedLines % tailSize) {
+    const tail = lines.splice(MAX_STREAM_LINES_PER_CHUNK - tailSize);
+    const first = droppedLines % tailSize;
+    lines.push(...tail.slice(first), ...tail.slice(0, first));
+  }
+  return { lines, truncated, droppedLines };
 }
 
 /** Flush a trailing partial line and any bytes split across chunks. */

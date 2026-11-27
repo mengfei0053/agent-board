@@ -1,0 +1,26 @@
+.usage-main { margin-top: 16px; }
+.usage-controls { display: flex; gap: 10px 16px; align-items: flex-end; flex-wrap: wrap; }
+.usage-controls label { margin: 0; }
+.usage-controls button { min-height: 36px; }
+.usage-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 10px; }
+.usage-summary > div { padding: 12px; border-radius: var(--radius-sm); background: var(--panel-2); }
+.usage-summary h3 { margin: 0 0 6px; }
+.usage-summary strong { font-size: 20px; }
+.usage-coverage { display: block; color: var(--warn); font-size: 12px; }
+.usage-metric { max-width: 15em; }
+.usage-scroll { overflow: auto; }
+.usage-chart { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; font-variant-numeric: tabular-nums; }
+.usage-axis { height: 120px; display: flex; flex-direction: column; justify-content: space-between; text-align: right; }
+.usage-axis, .usage-tick, .usage-main .usage-key { font-size: 11px; color: var(--muted); }
+#trend { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(18px, 1fr); padding-bottom: 24px; }
+.usage-slot { position: relative; height: 120px; border-block: 1px solid var(--border); background: linear-gradient(to bottom, transparent 49.5%, var(--border-soft) 50%, transparent 50.5%); }
+.usage-point { position: relative; width: 100%; height: 100%; display: flex; align-items: flex-end; justify-content: center; padding: 0 2px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--muted); }
+.usage-point:hover, .usage-point:focus-visible { background: var(--accent-soft); outline: 1px solid var(--accent); outline-offset: -1px; }
+.usage-bar { width: 85%; max-width: 32px; min-height: 1px; background: var(--accent); border-radius: 2px 2px 0 0; }
+.usage-bar.zero { height: 3px; background: var(--text-2); }
+.usage-bar.partial { background: repeating-linear-gradient(135deg, var(--warn) 0 2px, var(--panel-2) 2px 4px); }
+.usage-tick { position: absolute; top: 100%; left: 2px; padding-top: 4px; white-space: nowrap; }
+.usage-key, .usage-detail { margin: 6px 0; }
+.usage-detail { min-height: 1.6em; font-size: 13px; }
+.usage-main .docs-table { font-variant-numeric: tabular-nums; }
+.usage-main [hidden] { display: none; }

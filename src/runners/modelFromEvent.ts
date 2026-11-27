@@ -1,33 +1,21 @@
+import { fields } from "./eventFields.js";
+
 export function modelFromJsonLine(line: string): string | undefined {
   try {
-    const ev = JSON.parse(line) as Record<string, any>;
-    const bag: unknown[] = [
-      ev.model,
-      ev.modelId,
-      ev.model_name,
-      ev.displayModelId,
-      ev.message?.model,
-      ev.data?.model,
-      ev.event?.model,
-      ev.result?.model,
-      ev.session?.model,
-      ev.info?.model,
-      ev.payload?.model,
-    ];
-    // Claude Code stream-json often has type=system subtype=init with model
-    if (ev.type === "system" && ev.model) bag.push(ev.model);
-    if (ev.type === "assistant" && ev.message?.model) bag.push(ev.message.model);
-    // Cursor stream-json
-    if (ev.type === "result" && ev.model) bag.push(ev.model);
-    // pi json mode may include model in message_start / agent events later
-    if (ev.assistantMessageEvent?.model) bag.push(ev.assistantMessageEvent.model);
-    // Codex turn_context / session payload
-    if (ev.type === "turn_context" && ev.payload?.model) bag.push(ev.payload.model);
-    for (const c of bag) {
-      if (typeof c === "string" && c.trim()) return c.trim();
-    }
+    return modelFromEvent(JSON.parse(line));
   } catch {
-    /* ignore */
+    return undefined;
   }
-  return undefined;
+}
+
+export function modelFromEvent(event: unknown): string | undefined {
+  const ev = fields(event);
+  if (!ev) return;
+  const candidates = [ev.model, ev.modelId, ev.model_name, ev.displayModelId];
+  for (const name of ["message", "data", "event", "result", "session", "info", "payload", "assistantMessageEvent"]) {
+    candidates.push(fields(ev[name])?.model);
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
 }

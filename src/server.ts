@@ -42,6 +42,7 @@ import {
   upsertWorkspace,
 } from "./store.js";
 import { redactDatabaseUrl } from "./db.js";
+import { flushUsage, queryUsage } from "./usageStats.js";
 import type {
   AgentKind,
   BoardLane,
@@ -778,6 +779,12 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 
 
 
+app.get("/api/usage", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json(await queryUsage(c.req.query())); }
+  catch (err) { return errorJson(c, err, 500); }
+});
+
 app.get("/api/agent-models", async (c) => {
   const kindRaw = c.req.query("kind")?.trim();
   if (kindRaw && !AGENT_KINDS.includes(kindRaw as AgentKind)) {
@@ -1014,7 +1021,7 @@ async function main() {
       console.error("[shutdown] runners:", err);
     }
     try {
-      await flushPersist();
+      await Promise.all([flushPersist(), flushUsage()]);
     } catch (err) {
       console.error("[db] flush on shutdown failed:", err);
     }

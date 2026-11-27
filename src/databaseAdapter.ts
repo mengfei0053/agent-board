@@ -103,13 +103,14 @@ export class SqlitePool implements DatabasePool {
 /** Bounded batches avoid SQLite's parameter limit and PostgreSQL's protocol limit. Identifiers are code constants. */
 export async function insertRows(
   client: Pick<DatabaseClient, "query">,
-  table: "task_logs" | "model_history" | "agent_models",
+  table: "task_logs" | "model_history" | "agent_models" | "usage_events",
   columns: readonly string[],
   rows: readonly (readonly unknown[])[],
   suffix = "",
 ): Promise<void> {
   const allowed = {
     task_logs: ["task_id", "line"],
+    usage_events: ["run_key", "event_key", "occurred_ms", "agent", "model", "fresh_input", "output_tokens", "cache_read", "cache_write", "total_tokens", "cost_usd", "requests"],
     model_history: ["kind", "model", "last_used_at"],
     agent_models: ["kind", "model", "thinking_efforts", "updated_at"],
   };

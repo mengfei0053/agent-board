@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { modelFromJsonLine } from "./modelFromEvent.js";
-import { sessionFromJsonLine } from "./sessionFromEvent.js";
+import { modelFromEvent } from "./modelFromEvent.js";
+import { sessionFromEvent } from "./sessionFromEvent.js";
+import { createUsageParser } from "./usageFromEvent.js";
 import type { Runner } from "./types.js";
 import { spawnLogged } from "./common.js";
 import { resolveCliCommand } from "../cliPaths.js";
@@ -86,24 +87,29 @@ export const claudeRunner: Runner = {
       );
     }
 
+    const parseUsage = createUsageParser("claude");
     let status = task.status;
     return spawnLogged(resolveCliCommand("claude"), built.args, task.cwd, hooks, {
       cliKind: "claude",
       workspaceMcp: opts?.workspaceMcp,
       getStatus: () => status,
       classifyLine: (line, h) => {
-        const detected = modelFromJsonLine(line);
-        if (detected && !task.model) {
-          task.model = detected;
-          h.onStatus({ model: detected });
-        }
-        const sid = sessionFromJsonLine(line);
-        if (sid && sid !== task.sessionId) {
-          task.sessionId = sid;
-          h.onStatus({ sessionId: sid });
-        }
         try {
           const ev = JSON.parse(line) as { type?: string; subtype?: string };
+          if (h.onUsage) {
+            const usage = parseUsage(ev);
+            if (usage) h.onUsage(usage);
+          }
+          const detected = modelFromEvent(ev);
+          if (detected && !task.model) {
+            task.model = detected;
+            h.onStatus({ model: detected });
+          }
+          const sid = sessionFromEvent(ev);
+          if (sid && sid !== task.sessionId) {
+            task.sessionId = sid;
+            h.onStatus({ sessionId: sid });
+          }
           const label = [ev.type, ev.subtype].filter(Boolean).join(":");
           if (label) {
             status = "running";

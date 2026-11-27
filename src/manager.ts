@@ -1,5 +1,7 @@
 import { requireEnabledAgent, validateGrokOptions } from "./grokBot.js";
-import { customAlphabet } from "nanoid";
+import { customAlphabet, nanoid } from "nanoid";
+import { recordUsage } from "./usageStats.js";
+import type { RunnerUsage } from "./usageRecord.js";
 import {
   appendLog,
   deleteTasks,
@@ -295,6 +297,14 @@ export function isUndeletableStatus(status: TaskStatus): boolean {
   return UNDELETABLE.includes(status);
 }
 
+// A fresh key for every invocation, including after a restart or Continue.
+function usageHook(task: Task, runId: number) {
+  const key = nanoid();
+  return (usage: RunnerUsage) => {
+    if (currentRunId(task.id) === runId) recordUsage(key, task.kind, usage);
+  };
+}
+
 function spawnRunner(task: Task): Task {
   const id = task.id;
   const runner = runners[task.kind];
@@ -317,6 +327,7 @@ function spawnRunner(task: Task): Task {
   const runnerTask: Task = { ...task, prompt: runnerPrompt };
   const runId = currentRunId(id);
   const handle = runner.start(runnerTask, {
+    onUsage: usageHook(task, runId),
     onStatus: (p) => {
       if (currentRunId(id) !== runId) return;
       applyStatus(id, p);
@@ -668,6 +679,7 @@ async function continueTaskBody(
   const handle = runner.start(
     runnerTask,
     {
+      onUsage: usageHook(fresh, runId),
       onStatus: (p) => {
         if (currentRunId(id) !== runId) return;
         applyStatus(id, p);
