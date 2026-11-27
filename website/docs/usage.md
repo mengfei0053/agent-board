@@ -9,6 +9,10 @@ title: 使用指南
 
 打开任务详情可查看实时输出和状态，也可以停止运行。任务结束后可按 CLI session 继续运行，或将已完成的任务归档。
 
+## 全局用量查询
+
+点击左上角品牌菜单的「用量查询」，按时间、Agent、供应商或模型查看四项指标、趋势和全历史热力图。图下有可分页的请求日志、独立供应商与模型统计，支持点击记录查看来源。日志包含轮次，不能把条数当作 API 请求数。未知和部分覆盖会标出，默认只统计本 Board 的任务。详见[全局用量查询手册](https://github.com/mengfei0053/agent-board/blob/main/docs/global-usage.md)。
+
 ## Git worktree
 
 当工作区是带有可用 HEAD 的 Git 仓库根目录时，创建任务可以选择在 worktree 中启动。看板会在工作区下的 `.agent-board/worktrees/<任务 id>` 创建目录及对应分支。删除任务时，干净的 worktree 会被移除；有未提交改动的 worktree 会保留。

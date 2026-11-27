@@ -1,73 +1,201 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>用量查询 · agent-board</title>
-  <script>
-    try {
-      const pref = localStorage.getItem("agent-board.theme");
-      const systemTheme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-      document.documentElement.dataset.theme = pref === "light" || pref === "dark" ? pref : systemTheme;
-    } catch { document.documentElement.dataset.theme = "dark"; }
-  </script>
-  <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="/usage.css" />
-  <script type="module" src="/usage.js"></script>
-</head>
-<body class="docs-page">
-  <div class="app docs-app">
-    <header class="topbar">
-      <div class="topbar-brand">
-        <div class="brand-mark" aria-hidden="true">ab</div>
-        <div class="topbar-brand-text"><h1>用量查询</h1><p class="muted">agent-board · 本地时间</p></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>用量查询 · agent-board</title>
+    <script>
+      try {
+        const p = localStorage.getItem("agent-board.theme");
+        document.documentElement.dataset.theme = ["light", "dark"].includes(p)
+          ? p
+          : matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/usage.css" />
+    <script type="module" src="/usage.js"></script>
+  </head>
+  <body class="usage-page">
+    <header class="u-header">
+      <div>
+        <a class="u-home" href="/" aria-label="返回看板">ab</a>
+        <h1>用量查询</h1>
+        <span class="u-global">全局 · 跨任务</span>
       </div>
-      <a class="btn-link secondary" href="/">← 返回看板</a>
+      <div>
+        <button id="sync" title="写入本 Board 的待处理用量，并重新查询">↻ 立即刷新</button
+        ><button id="settings" aria-haspopup="dialog">数据来源与设置</button>
+      </div>
     </header>
-    <main class="docs-main usage-main">
-      <section>
-        <h2>查询范围</h2>
-        <form id="filters" class="usage-controls">
-          <label>日期范围<select id="range">
-            <option value="1">今天</option><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="custom">自选日期</option>
-          </select></label>
-          <label hidden>开始日期<input type="date" id="from" /></label>
-          <label hidden>结束日期（含）<input type="date" id="to" /></label>
-          <label>Agent<select id="agent">
-            <option value="">全部 Agent</option><option value="pi">pi</option><option value="claude">Claude Code</option>
-            <option value="cursor">Cursor CLI</option><option value="devin">Devin CLI</option><option value="codex">Codex CLI</option>
-            <option value="kimi">Kimi Code CLI</option><option value="grok">Grok</option>
-          </select></label>
-          <label>时间粒度<select id="bucket"><option value="hour">按小时</option><option value="day">按日</option></select></label>
-          <button type="submit" class="secondary">查询</button>
-        </form>
-        <p>仅统计本 Board 内自启用记录起的用量。目前支持 Pi、Claude Code 和 Codex，其他 Agent 尚未采集。Claude Code 和 Codex 按轮次结束时间计入；轮次汇总不等于请求数。</p>
-        <p id="status" role="status"></p>
-      </section>
+    <main class="u-main">
+      <div class="u-filters" aria-label="用量筛选">
+        <label class="u-inline"
+          >时间<select id="range">
+            <option value="today">当天</option>
+            <option value="24h">近 24 小时</option>
+            <option value="7d">近 7 天</option>
+            <option value="14d">近 14 天</option>
+            <option value="30d">近 30 天</option>
+            <option value="all">全部历史</option>
+            <option value="custom">自选时间</option>
+          </select></label
+        >
+        <div id="agents" role="group" aria-label="Agent 快捷筛选"></div>
+        <label class="u-inline"
+          >供应商<select id="provider">
+            <option value="">全部供应商</option>
+          </select></label
+        ><label class="u-inline"
+          >模型<select id="model">
+            <option value="">全部模型</option>
+          </select></label
+        >
+        <span class="u-muted u-push" id="last-sync"></span>
+      </div>
+      <form id="custom" class="u-filters" hidden>
+        <label>开始 <input type="datetime-local" id="from" required /></label
+        ><label>结束（含该分钟） <input type="datetime-local" id="to" required /></label
+        ><label><input type="checkbox" id="live" /> 至现在</label><button>应用时段</button>
+      </form>
+      <p id="notice" role="status" hidden></p>
       <div id="results" hidden>
-        <section>
-          <h2>用量概览</h2>
-          <div id="summary" class="usage-summary"></div>
-          <p>“—”表示无可确认数据；标有“部分”的数值仅基于已覆盖的记录，不代表全部用量。费用来自 CLI 上报，可能包含按模型定价估算的金额，不代表实际账单。</p>
-        </section>
-        <section>
-          <h2>用量趋势</h2>
-          <label class="usage-metric">趋势指标<select id="metric"></select></label>
-          <div class="usage-chart">
-            <div class="usage-axis" aria-hidden="true"><span id="trend-max"></span><span>0</span></div>
-            <div class="usage-scroll" role="group" aria-label="各时段用量" aria-describedby="trend-key"><div id="trend"></div></div>
+        <section class="u-panel" aria-label="用量概览">
+          <div id="cards" class="u-cards"></div>
+          <div class="u-expander">
+            <button id="more" aria-expanded="false" aria-controls="parts" title="展开或收起 Token 分项">
+              ⌄ 更多指标
+            </button>
           </div>
-          <p id="trend-key" class="usage-key">空槽：无记录 · ?：指标未知 · 短线：已确认 0 · 斜纹：部分记录</p>
-          <p id="trend-detail" class="usage-detail">悬停或点选时段查看详情，聚焦后可用左右方向键切换。</p>
+          <div id="parts" class="u-cards" hidden></div>
+          <div class="u-chart-head">
+            <h2 id="chart-title"></h2>
+            <div id="trend-controls">
+              <select id="granularity" aria-label="时间粒度">
+                <option value="auto">自动粒度</option>
+                <option value="hour">按小时</option>
+                <option value="day">按日</option></select
+              ><select id="chart-style" aria-label="趋势图样式">
+                <option value="bar">柱状图</option>
+                <option value="line">折线图</option>
+              </select>
+            </div>
+            <div id="heat-controls" hidden>
+              <button id="earlier">← 更早 53 周</button><button id="later">较近 53 周 →</button>
+            </div>
+          </div>
+          <div id="chart-scroll">
+            <div
+              id="chart"
+              role="group"
+              tabindex="0"
+              aria-label="用量图，方向键浏览时段"
+              aria-describedby="plot-tip"
+            ></div>
+          </div>
+          <div id="plot-tip" role="tooltip" hidden></div>
+          <div id="legend" class="u-legend"></div>
         </section>
-        <section>
-          <h2>按 Agent 汇总</h2>
-          <div class="usage-scroll"><table class="docs-table" aria-label="按 Agent 汇总">
-            <thead><tr><th>Agent</th><th>费用（美元）</th><th>可确认请求数</th><th>Token</th><th>缓存命中率</th></tr></thead><tbody id="agents"></tbody>
-          </table></div>
+        <section class="u-panel u-data" aria-label="用量明细与统计">
+          <div class="u-tabbar">
+            <div role="tablist" aria-label="用量表" id="tabs"></div>
+            <div class="u-tools">
+              <label
+                >状态
+                <select id="status">
+                  <option value="">全部状态</option>
+                  <option value="success">成功</option>
+                  <option value="failed">失败</option>
+                  <option value="aborted">中止</option>
+                  <option value="unknown">未知</option>
+                </select></label
+              >
+              <details id="cols">
+                <summary>日志列</summary>
+                <div id="col-options"></div>
+              </details>
+            </div>
+          </div>
+          <div id="table-panel" role="tabpanel">
+            <div class="u-table-scroll"><table id="table"></table></div>
+            <div id="pager" class="u-pager"></div>
+          </div>
         </section>
+        <details class="u-compare u-panel">
+          <summary>按 Agent 对比</summary>
+          <div class="u-table-scroll"><table id="comparison" aria-label="Agent 对比"></table></div>
+        </details>
+        <p class="u-footnote" id="coverage"></p>
       </div>
     </main>
-  </div>
-</body>
+    <dialog id="detail" aria-labelledby="detail-title">
+      <div class="u-dialog-head">
+        <h2 id="detail-title">记录明细</h2>
+        <form method="dialog"><button aria-label="关闭明细">关闭</button></form>
+      </div>
+      <div id="detail-body"></div>
+    </dialog>
+    <dialog id="config" aria-labelledby="config-title">
+      <div class="u-dialog-head">
+        <h2 id="config-title">数据来源与设置</h2>
+        <form method="dialog"><button aria-label="关闭设置">关闭</button></form>
+      </div>
+      <h3>本 Board 运行事件</h3>
+      <p>
+        仅采 Start / Continue 的最终用量，不读取终端历史或其他工具的会话库。Pi 的 assistant
+        响应可确认调用；Claude Code result、Codex turn 是轮次汇总。Cursor、Devin、Kimi、托管 Grok
+        暂无接入的用量源。旧版记录不补猜供应商、状态或首字。
+      </p>
+      <label
+        >页面自动刷新
+        <select id="interval">
+          <option value="0">关闭</option>
+          <option value="5">5 秒</option>
+          <option value="10">10 秒</option>
+          <option value="30">30 秒</option>
+          <option value="60">60 秒</option>
+        </select></label
+      >
+      <p>打开时立即查询；隐藏页面、翻看历史页或查看明细时暂停轮询。刷新不会启动任务、重扫磁盘或重建历史。</p>
+      <h3>显示币种</h3>
+      <form id="display-form" class="u-filters">
+        <label
+          >币种
+          <select id="currency">
+            <option>USD</option>
+            <option>CNY</option>
+            <option>EUR</option>
+            <option>GBP</option>
+            <option>JPY</option>
+          </select></label
+        ><label id="fx-label"
+          >1 USD 折合
+          <input
+            type="number"
+            id="fx"
+            step="any"
+            min="0.00000001"
+            max="1000000"
+            required
+            placeholder="手动汇率" /></label
+        ><button>应用显示</button>
+      </form>
+      <p>仅换算当前浏览器的显示金额。单价配置及原始统计始终是 USD；不会联网发送模型清单或获取汇率。</p>
+      <h3>模型定价 <small>USD / 百万 Tokens</small></h3>
+      <p>
+        先用事件金额；只有费用缺失、模型精确匹配且计费分项齐备时，才按下表估算。编辑仅改变查询估值，不改原始记录，也不代表实际扣费。
+      </p>
+      <div class="u-table-scroll"><table id="prices" aria-label="本地定价"></table></div>
+      <form id="price-form">
+        <label
+          >模型 ID<input id="price-model" required maxlength="192" placeholder="精确匹配返回的模型 ID"
+        /></label>
+        <div id="rate-inputs"></div>
+        <button>保存定价</button>
+      </form>
+      <p id="price-msg" role="status"></p>
+    </dialog>
+  </body>
 </html>

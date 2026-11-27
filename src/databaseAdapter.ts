@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { usageColumns } from "./usageRecord.js";
 
 export type QueryResult<Row> = { rows: Row[]; rowCount: number | null };
 export interface DatabaseClient {
@@ -108,9 +109,9 @@ export async function insertRows(
   rows: readonly (readonly unknown[])[],
   suffix = "",
 ): Promise<void> {
-  const allowed = {
+  const allowed: Record<typeof table, readonly string[]> = {
     task_logs: ["task_id", "line"],
-    usage_events: ["run_key", "event_key", "occurred_ms", "agent", "model", "fresh_input", "output_tokens", "cache_read", "cache_write", "total_tokens", "cost_usd", "requests"],
+    usage_events: usageColumns,
     model_history: ["kind", "model", "last_used_at"],
     agent_models: ["kind", "model", "thinking_efforts", "updated_at"],
   };

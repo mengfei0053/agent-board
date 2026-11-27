@@ -42,7 +42,9 @@ import {
   upsertWorkspace,
 } from "./store.js";
 import { redactDatabaseUrl } from "./db.js";
-import { flushUsage, queryUsage } from "./usageStats.js";
+import { flushUsage } from "./usageStats.js";
+import { queryUsage } from "./usageQuery.js";
+import { setUsagePrice, usagePrices } from "./usagePricing.js";
 import type {
   AgentKind,
   BoardLane,
@@ -778,11 +780,27 @@ function presentTaskEvent(ev: BoardEvent): BoardEvent {
 }
 
 
+function usageError(c: Context, err: unknown) {
+  if (err instanceof HttpError) return errorJson(c, err);
+  // Driver diagnostics can contain connection details. Never return them to a browser.
+  console.error("[usage] database operation failed", c.req.method, c.req.path);
+  return c.json({ error: "用量数据库暂不可用，请稍后重试。" }, 500);
+}
 
 app.get("/api/usage", async (c) => {
   c.header("Cache-Control", "no-store");
   try { return c.json(await queryUsage(c.req.query())); }
-  catch (err) { return errorJson(c, err, 500); }
+  catch (err) { return usageError(c, err); }
+});
+
+app.get("/api/usage/prices", async (c) => {
+  c.header("Cache-Control", "no-store");
+  try { return c.json({ prices: await usagePrices() }); }
+  catch (err) { return usageError(c, err); }
+});
+app.on(["PUT", "DELETE"], "/api/usage/prices", async (c) => {
+  try { return c.json({ prices: await setUsagePrice(await readJsonObject(c), c.req.method === "DELETE") }); }
+  catch (err) { return usageError(c, err); }
 });
 
 app.get("/api/agent-models", async (c) => {

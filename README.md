@@ -34,6 +34,8 @@
 | Webhook | `POST /api/hooks/tasks`（需 `AGENT_BOARD_WEBHOOK_SECRET`） |
 | 存储 | SQLite（本机默认）或 Postgres（显式 `DATABASE_URL`） |
 
+左上角品牌菜单 → **用量查询** 可跨任务查看按 Agent、时间、供应商和模型筛选的趋势、请求日志及统计；采集范围、估算口径和兼容性见[全局用量查询手册](./docs/global-usage.md)。
+
 整体架构及多端通信图解见文档站的 [项目架构](./website/docs/architecture.md)，本机功能细节见 [ARCHITECTURE.md](./ARCHITECTURE.md)，HTTP 接口见运行中的 [/docs](http://127.0.0.1:8791/docs)。
 
 在「设置 → MCP 与 Skills」中，每行可以独立选择目标 Agent，更改自动保存并分发到**看板进程所在机器**的用户级配置；下次启动 CLI 生效。MCP 支持 stdio 和 HTTP，可编辑单个服务器 JSON，或从应用已有的全局配置导入；`env` / `headers` 在页面隐藏，保留占位符即可沿用凭据。Skill 可从本机目录或 GitHub HTTPS 仓库安装（填写分支和技能子目录），会复制整个目录，包括脚本、参考资料和可执行权限，再通过符号链接分发。

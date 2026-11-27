@@ -53,8 +53,8 @@
 
       <section id="usage">
         <h2><a href="/usage.html">全局用量查询</a></h2>
-        <p><code>GET /api/usage?from=1780272000000&amp;to=1780358400000&amp;bucket=hour&amp;timezone=Asia%2FShanghai</code>。时间为毫秒时间戳，含开始、不含结束；可选 <code>agent</code>。按小时最多查 32 天，按日最多查 366 天。不传时区时使用 <code>offset</code>（UTC 以东分钟数，默认 0）。</p>
-        <p>返回 <code>summary</code>、<code>byAgent</code>、<code>trend</code> 和各时段起点 <code>slots</code>。没有可确认的数据返回 null；各指标的 Records 计数表示覆盖的记录数。只统计本 Board 新采集的事件，不导入终端历史。删除任务不会删除已计入的用量，不保存对话正文。</p>
+        <p><code>GET /api/usage?from=1780272000000&amp;to=1780358400000&amp;bucket=hour&amp;timezone=Asia%2FShanghai</code>。时间为毫秒时间戳，含开始、不含结束；可选 <code>agent</code>、<code>provider</code>、<code>model</code> 和 <code>status</code>；<code>providerUnknown=1</code> / <code>modelUnknown=1</code> 只选未知组。图表按小时最多 32 天，按日最多 372 天；全部历史的图段可传 <code>chartFrom/chartTo</code>。不传时区时使用 <code>offset</code>（UTC 以东分钟数，默认 0）。</p>
+        <p>返回 <code>summary</code>、<code>byAgent</code>、<code>trend</code>、各时段起点 <code>slots</code>、独立供应商/模型分组 <code>providers/models</code> 和当前页 <code>logs</code>。日志按完成时间倒序，<code>page</code> 从 1 开始，<code>pageSize</code> 为 1–100。<code>summary.records</code> 含轮次；<code>summary.requests</code> 只含可确认调用，不能相互替代。无可确认数据返回 null；各指标的 Records 计数表示覆盖记录数。只统计本 Board 新采集的事件，不导入终端历史。删除任务不会删除已计入的用量，不保存对话正文。</p>
       </section>
 
       <section id="webhook">

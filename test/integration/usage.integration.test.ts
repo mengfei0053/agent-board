@@ -25,7 +25,8 @@ it("deduplicates by run and event, weights cache rate, reports coverage, filters
   recordUsage("b", "codex", { ...row, input: 18, cacheRead: 2, cacheWrite: null, total: 24, requests: null, costUsd: null }, 2 * day);
   recordUsage("c", "pi", row, 3 * day);
   const r = await read(url(day, 3 * day));
-  assert.deepEqual(r.summary, { records: 2, requests: 1, requestRecords: 1, tokens: 38, tokenRecords: 2, costUsd: 0.25, costRecords: 1, cacheRate: 10/30, cacheRecords: 2 });
+  const expected = { records: 2, requests: 1, requestRecords: 1, tokens: 38, tokenRecords: 2, costUsd: 0.25, costRecords: 1, cacheRate: 10/30, cacheRecords: 2 };
+  for (const [key, value] of Object.entries(expected)) assert.equal(r.summary[key], value, key);
   assert.deepEqual(r.trend.map((r: {start: number}) => r.start), [day, 2 * day]);
   assert.equal(r.byAgent.length, 2);
   await closePool();

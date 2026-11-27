@@ -170,6 +170,14 @@ CREATE TABLE IF NOT EXISTS usage_events (
 CREATE INDEX IF NOT EXISTS usage_time_idx ON usage_events(occurred_ms);
 CREATE INDEX IF NOT EXISTS usage_agent_time_idx ON usage_events(agent, occurred_ms);
 
+CREATE TABLE IF NOT EXISTS usage_prices (
+  model TEXT PRIMARY KEY,
+  input_rate DOUBLE PRECISION NOT NULL,
+  output_rate DOUBLE PRECISION NOT NULL,
+  read_rate DOUBLE PRECISION NOT NULL,
+  write_rate DOUBLE PRECISION NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_models (
   kind TEXT NOT NULL,
   model TEXT NOT NULL,
@@ -301,6 +309,9 @@ export async function ensureSchema(): Promise<void> {
     ["tasks", "workspace_id", "TEXT"], ["tasks", "attachments", "JSONB"],
     ["tasks", "worktree", "JSONB"], ["tasks", "thinking_effort", "TEXT"],
     ["workspaces", "settings", "JSONB"], ["workspaces", "sort_order", "INT"],
+    ["usage_events", "provider", "TEXT"], ["usage_events", "source", "TEXT"],
+    ["usage_events", "status", "TEXT"], ["usage_events", "cost_source", "TEXT"],
+    ["usage_events", "duration_ms", "BIGINT"], ["usage_events", "first_token_ms", "BIGINT"],
   ]) {
     if (sqlite) {
       const { rows } = await p.query<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -309,6 +320,8 @@ export async function ensureSchema(): Promise<void> {
     await p.query(`ALTER TABLE ${table} ADD COLUMN ${sqlite ? "" : "IF NOT EXISTS "}${column} ${sqlite && type === "JSONB" ? "TEXT" : type}`);
   }
   await p.query(`CREATE INDEX IF NOT EXISTS tasks_workspace_id_idx ON tasks(workspace_id)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS usage_provider_time_idx ON usage_events(provider, occurred_ms)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS usage_model_time_idx ON usage_events(model, occurred_ms)`);
   // Recover models used before model history was introduced.
   await p.query(`
     INSERT INTO model_history (kind, model, last_used_at)
